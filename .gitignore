@@ -1,0 +1,17 @@
+# Build-Ergebnisse (PyInstaller)
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# Von der App geschriebene Dateien: lokale Einstellungen, Schluessel der Browser-Anzeige, Resultate
+swv_einstellungen.json
+swv_kategorien.json
+swv_resultate_autosave.json
+wettkampf_zeiten_log.txt
+
+# Startlisten und Exporte enthalten Personendaten
+*.xls
+*.xlsx
+*.csv
