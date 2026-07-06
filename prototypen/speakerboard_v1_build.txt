@@ -1,0 +1,1 @@
+C:\Users\kueng.DESKTOP-JLJSES0\Documents\SWV Timing\CP545_Speaker>pyinstaller --noconfirm --onedir --windowed --name="CP545_SpeakerBoard" --clean app.py
