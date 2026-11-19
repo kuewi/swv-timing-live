@@ -220,6 +220,7 @@ class LiveRankingApp:
         self.categories = self.load_categories()
         self.results = {}          # nr -> {"secs": float, "str": str, "ts": float}
         self.current_nr = None
+        self.live_time = None
         self.blink = {}            # nr -> Endzeitpunkt Blinken
         self.blink_phase = False
         self.prev_top = {}         # Kategorie-Name -> Set Startnummern in Top 5
@@ -467,9 +468,35 @@ class LiveRankingApp:
         frm.pack(fill="x", padx=10, pady=10)
         tk.Label(frm, text="Empfangene Daten", bg=PANEL, fg=GOLD, font=self.f_side_head,
                  anchor="w").pack(fill="x", padx=10, pady=(8, 4))
-        self.txt_log = tk.Text(frm, height=10,bg="#020617", fg=MUTED, font=self.f_log, relief="flat",
-                               state="disabled", wrap="none", highlightthickness=0)
-        self.txt_log.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        tabs = tk.Frame(frm, bg=PANEL)
+        tabs.pack(fill="x", padx=10, pady=(0, 4))
+        holder = tk.Frame(frm, bg=PANEL)
+        holder.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        holder.columnconfigure(0, weight=1)
+        holder.rowconfigure(0, weight=1)
+        self.log_tabs = {}
+        for key, label in (("focus", "Fokussiert"), ("all", "Alle")):
+            btn = tk.Button(tabs, text=label, command=lambda k=key: self.show_log_tab(k), fg=WHITE,
+                            activebackground=BLUE, activeforeground=WHITE, relief="flat", bd=0,
+                            padx=12, pady=3, font=self.f_side_bold, cursor="hand2")
+            btn.pack(side="left", padx=(0, 4))
+            txt = tk.Text(holder, height=10, bg="#020617", fg=MUTED, font=self.f_log, relief="flat",
+                          state="disabled", wrap="word" if key == "focus" else "none",
+                          highlightthickness=0)
+            txt.grid(row=0, column=0, sticky="nsew")
+            txt.tag_configure("ziel", foreground=GREEN)
+            txt.tag_configure("warn", foreground=GOLD)
+            txt.tag_configure("error", foreground=RED)
+            txt.tag_configure("ok", foreground="#38bdf8")
+            self.log_tabs[key] = (btn, txt)
+        self.show_log_tab("focus")
+
+    def show_log_tab(self, key):
+        for k, (btn, _txt) in self.log_tabs.items():
+            btn.configure(bg=BLUE if k == key else BORDER)
+        txt = self.log_tabs[key][1]
+        txt.tkraise()
+        txt.see("end")
 
     # ---------------- Kategorie-Karten ---------------- #
     def build_cards(self):
@@ -608,7 +635,7 @@ class LiveRankingApp:
         cat = self.category_of(nr)
         cat_name = cat["name"] if cat else "ohne Kategorie"
         self._set(self.lbl_ziel, text=f"ZIEL: Nr {nr} ({cat_name}) ➔ {tstr}s")
-        self.log(f"ZIEL Nr {nr} {tstr}s [{source}]")
+        self.log(f"ZIEL Nr {nr} ({cat_name}) {tstr}s [{source}]", tag="ziel")
         self.update_rankings()
         self.save_autosave()
 
@@ -621,33 +648,42 @@ class LiveRankingApp:
                     self.handle_line(payload)
                 elif kind == "connected":
                     self.set_connected(True, f"Verbunden: {payload}")
+                    self.log(f"Verbunden mit {payload}", tag="ok")
                 elif kind == "disconnected":
                     self.set_connected(False, "Nicht verbunden")
                     self.reader = None
+                    self.log(f"Verbindung zu {payload} getrennt", tag="warn")
                 elif kind == "error":
                     self.set_connected(False, "Fehler")
                     self.reader = None
-                    self.log(payload)
+                    self.log(payload, tag="error")
                     messagebox.showerror("Verbindung", payload)
         except queue.Empty:
             pass
         self.root.after(POLL_INTERVAL_MS, self.poll_queue)
 
+    def update_live_label(self):
+        nr_txt = self.current_nr if self.current_nr is not None else "-"
+        self._set(self.lbl_live, text=f"LAUFEND: Nr {nr_txt} ➔ {self.live_time or '-'}")
+
     def handle_line(self, text):
-        self.log("<STX>" + text.replace("\r", "<CR>"))
+        self.log("<STX>" + text.replace("\r", "<CR>"), focus=False)
         msg = parse_message(text)
         if msg is None:
             return
         if msg[0] == "nr":
-            self.current_nr = msg[1]
-            self._set(self.lbl_live, text=f"LAUFEND: Nr {self.current_nr} ➔ -")
+            # Der CP 545 wiederholt die Startnummer nach jeder Zeit: Zeit nur bei neuer Nummer zuruecksetzen
+            if msg[1] != self.current_nr:
+                self.current_nr = msg[1]
+                self.live_time = None
+            self.update_live_label()
         elif msg[0] in ("running", "final"):
             _, tstr, secs = msg
-            nr_txt = self.current_nr if self.current_nr is not None else "?"
-            self._set(self.lbl_live, text=f"LAUFEND: Nr {nr_txt} ➔ {tstr}")
+            self.live_time = tstr
+            self.update_live_label()
             if msg[0] == "final":
                 if self.current_nr is None:
-                    self.log("Zielzeit ohne aktive Startnummer verworfen")
+                    self.log("Zielzeit ohne aktive Startnummer verworfen", tag="warn")
                     return
                 prev = self.results.get(self.current_nr)
                 if prev and prev["str"] == tstr and time.time() - prev["ts"] < 10:
@@ -695,14 +731,18 @@ class LiveRankingApp:
         self.btn_connect.configure(text="Trennen" if connected else "Verbinden",
                                    bg="#7f1d1d" if connected else GREEN)
 
-    def log(self, text):
-        self.txt_log.configure(state="normal")
-        self.txt_log.insert("end", f"{time.strftime('%H:%M:%S')}  {text}\n")
-        lines = int(self.txt_log.index("end-1c").split(".")[0])
-        if lines > LOG_MAX_LINES:
-            self.txt_log.delete("1.0", f"{lines - LOG_MAX_LINES}.0")
-        self.txt_log.see("end")
-        self.txt_log.configure(state="disabled")
+    def log(self, text, focus=True, tag=None):
+        """focus=False: nur im Tab 'Alle' (Rohdaten). Sonst in beiden Tabs."""
+        line = f"{time.strftime('%H:%M:%S')}  {text}\n"
+        for key in (("all", "focus") if focus else ("all",)):
+            txt = self.log_tabs[key][1]
+            txt.configure(state="normal")
+            txt.insert("end", line, (tag,) if tag else ())
+            lines = int(txt.index("end-1c").split(".")[0])
+            if lines > LOG_MAX_LINES:
+                txt.delete("1.0", f"{lines - LOG_MAX_LINES}.0")
+            txt.see("end")
+            txt.configure(state="disabled")
 
     # ---------------- Kategorien ---------------- #
     def refresh_category_list(self):
@@ -773,6 +813,7 @@ class LiveRankingApp:
 
     def categories_changed(self, select=None):
         self.save_categories()
+        self.log("Kategorien geändert: " + ", ".join(f"{c['name']} {c['min']}-{c['max']}" for c in self.categories))
         self.refresh_category_list()
         if select is not None:
             self.lst_cat.selection_set(select)
@@ -943,6 +984,7 @@ class LiveRankingApp:
         self.results.clear()
         self.blink.clear()
         self.current_nr = None
+        self.live_time = None
         self._set(self.lbl_ziel, text="ZIEL: -")
         self._set(self.lbl_live, text="LAUFEND: -")
         self.update_rankings(initial=True)
