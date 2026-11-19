@@ -22,6 +22,7 @@ Strafpunkte kommen vom Onlinetool und dienen nur dem Speaker-Ranking.
 
 import base64
 import csv
+import datetime
 import hmac
 import io
 import ipaddress
@@ -66,11 +67,13 @@ except Exception:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
+APP_VERSION = "2026-11-20"
 DEFAULT_BAUD = 9600
 TOP_N = 5
 BLINK_SECONDS = 30
 BLINK_INTERVAL_MS = 450
 POLL_INTERVAL_MS = 30
+RECONNECT_MS = 2000
 WEB_SNAPSHOT_MS = 700
 LOG_MAX_LINES = 300
 TICKER_MAX = 60
@@ -106,9 +109,11 @@ DEFAULT_SETTINGS = {
     "wettkampf": "einzel",
     "show": {
         "vergleich": True, "prognose": True, "einordnung": True, "ticker": True,
-        "naechste": True, "statistik": False, "namen": True,
+        "naechste": True, "statistik": False, "namen": True, "notizen": True,
     },
-    "collapsed": {"kategorien": True, "online": True, "web": True},
+    "collapsed": {"wettkampf": False, "verbindung": False, "speaker": False, "daten": False,
+                  "kategorien": True, "online": True, "web": True},
+    "event": {"name": "", "von": "", "bis": ""},
     "online": {
         "mode": "offline", "url": "", "comp_id": "", "token": "",
         "send_mode": "confirm", "auto_startlist": True,
@@ -121,7 +126,7 @@ SHOW_LABELS = [
     ("vergleich", "Bestzeit-Vergleich"), ("prognose", "Rangprognose"),
     ("einordnung", "Einordnung Ziel"), ("ticker", "Ereignis-Ticker"),
     ("naechste", "Als nächstes"), ("statistik", "Statistik"),
-    ("namen", "Namen in Rangliste"),
+    ("namen", "Namen in Rangliste"), ("notizen", "Notizen"),
 ]
 
 CATEGORIES_FILE = "swv_kategorien.json"
@@ -230,9 +235,60 @@ def fmt_secs(secs, decimals=2):
     return f"{s:.{decimals}f}"
 
 
+def fmt_gap(secs):
+    """Abstand: '2.35 s' oder ab einer Minute '1:05.20'."""
+    return f"{secs:.2f} s" if secs < 60 else fmt_secs(secs)
+
+
 def sanitize_filename(name, fallback="Datei"):
     clean = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name)).strip(" .")
     return (clean or fallback)[:80]
+
+
+def file_part(name, fallback="Datei"):
+    """Fuer Dateinamen: unzulaessige Zeichen entfernen, Leerzeichen zu '_'."""
+    return re.sub(r"_+", "_", sanitize_filename(name, fallback).replace(" ", "_")).strip("_") or fallback
+
+
+def parse_date(text):
+    """'12.06.2027' / '12.6.27' -> date, sonst None."""
+    m = re.fullmatch(r"\s*(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})\s*", str(text))
+    if not m:
+        return None
+    day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if year < 100:
+        year += 2000
+    try:
+        return datetime.date(year, month, day)
+    except ValueError:
+        return None
+
+
+def short_date_range(von, bis):
+    """Kurzes Datum fuer Kopfzeilen: 12.06.27 | 12.-13.06.27 | 30.06.-01.07.27"""
+    if von is None:
+        return ""
+    if bis is None:
+        return von.strftime("%d.%m.%y")
+    if (von.year, von.month) == (bis.year, bis.month):
+        return f"{von.day:02d}.-{bis.strftime('%d.%m.%y')}"
+    if von.year == bis.year:
+        return f"{von.strftime('%d.%m.')}-{bis.strftime('%d.%m.%y')}"
+    return f"{von.strftime('%d.%m.%y')}-{bis.strftime('%d.%m.%y')}"
+
+
+def fit_text(font, text, width):
+    """Text auf Breite kuerzen und mit '…' enden lassen (nie mitten im Buchstaben abschneiden)."""
+    if width <= 10 or font.measure(text) <= width:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if font.measure(text[:mid].rstrip() + "…") <= width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return (text[:lo].rstrip() + "…") if lo else "…"
 
 
 # --------------------------------------------------------------------------- #
@@ -290,34 +346,530 @@ def cell_nr(value):
     return None
 
 
-def read_table(path):
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".xls":
-        if xlrd is None:
-            raise RuntimeError("Modul 'xlrd' fehlt (pip install xlrd).")
-        wb = xlrd.open_workbook(path, ignore_workbook_corruption=True)
-        sh = wb.sheet_by_index(0)
-        rows = [[sh.cell_value(r, c) for c in range(sh.ncols)] for r in range(sh.nrows)]
-    elif ext in (".xlsx", ".xlsm"):
-        if openpyxl is None:
-            raise RuntimeError("Modul 'openpyxl' fehlt (pip install openpyxl).")
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-        try:
-            rows = [list(r) for r in wb.worksheets[0].iter_rows(values_only=True)]
-        finally:
-            wb.close()
-    elif ext in (".csv", ".txt"):
-        with open(path, "rb") as fh:
-            raw = fh.read()
-        try:
-            text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = raw.decode("cp1252", errors="replace")
-        first = text.splitlines()[0] if text else ""
-        delim = max(";,\t", key=first.count)
-        rows = list(csv.reader(io.StringIO(text), delimiter=delim))
+# --------------------------------------------------------------------------- #
+# Eingebaute Leser und Schreiber fuer Excel (ohne Zusatzmodule)
+# --------------------------------------------------------------------------- #
+OLE_SIGNATURE = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
+
+
+class StartlistError(Exception):
+    """Verstaendliche Fehlermeldung beim Einlesen einer Startliste."""
+
+
+def sniff_format(path):
+    """Dateiformat am Inhalt erkennen (Endung kann falsch sein)."""
+    with open(path, "rb") as fh:
+        head = fh.read(4096)
+    if head.startswith(OLE_SIGNATURE):
+        return "xls"
+    if head.startswith(b"PK\x03\x04"):
+        return "xlsx"
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "text16"
+    low = head.lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    if low.startswith(b"<"):
+        if b"<table" in low or b"<html" in low or b"<!doctype html" in low:
+            return "html"
+        if b"urn:schemas-microsoft-com:office:spreadsheet" in low:
+            return "xml2003"
+    if b"\x00" in head:
+        return "binary"
+    return "text"
+
+
+def _ole_stream(data, names=("workbook", "book")):
+    """Stream aus einer OLE2-Verbunddatei (alte Office-Dateien) lesen."""
+    import struct
+    if data[:8] != OLE_SIGNATURE:
+        raise ValueError("keine OLE2-Datei")
+    ssz = 1 << struct.unpack_from("<H", data, 30)[0]
+    mssz = 1 << struct.unpack_from("<H", data, 32)[0]
+    n_fat = struct.unpack_from("<I", data, 44)[0]
+    dir_start = struct.unpack_from("<I", data, 48)[0]
+    cutoff = struct.unpack_from("<I", data, 56)[0]
+    minifat_start, _n_minifat = struct.unpack_from("<II", data, 60)
+    difat_start, n_difat = struct.unpack_from("<II", data, 68)
+    difat = list(struct.unpack_from("<109I", data, 76))
+    per = ssz // 4
+    max_secs = len(data) // ssz + 2
+
+    def sector(i):
+        off = (i + 1) * ssz
+        return data[off:off + ssz]
+
+    s, guard = difat_start, 0
+    while s < 0xFFFFFFFA and guard <= n_difat and (s + 1) * ssz < len(data):
+        vals = struct.unpack(f"<{per}I", sector(s))
+        difat.extend(vals[:-1])
+        s = vals[-1]
+        guard += 1
+    fat = []
+    for fs in [x for x in difat if x < 0xFFFFFFFA][:n_fat]:
+        sec = sector(fs)
+        if len(sec) == ssz:
+            fat.extend(struct.unpack(f"<{per}I", sec))
+
+    def chain(start, table):
+        out, s, seen = [], start, set()
+        while s < 0xFFFFFFFA and s < len(table) and s not in seen and len(out) < max_secs:
+            seen.add(s)
+            out.append(s)
+            s = table[s]
+        return out
+
+    dir_data = b"".join(sector(i) for i in chain(dir_start, fat))
+    entries = []
+    for off in range(0, len(dir_data) - 127, 128):
+        raw = dir_data[off:off + 128]
+        nlen = struct.unpack_from("<H", raw, 64)[0]
+        name = raw[:max(0, nlen - 2)].decode("utf-16-le", errors="replace")
+        etype = raw[66]
+        start = struct.unpack_from("<I", raw, 116)[0]
+        size = struct.unpack_from("<Q" if ssz == 4096 else "<I", raw, 120)[0]
+        entries.append((name, etype, start, size))
+    if not entries:
+        raise ValueError("leeres Verzeichnis")
+    root = entries[0]
+    for name, etype, start, size in entries:
+        if etype == 2 and name.lower() in names:
+            if size < cutoff:
+                mini_stream = b"".join(sector(i) for i in chain(root[2], fat))[:root[3]]
+                minifat = []
+                for sec_i in chain(minifat_start, fat):
+                    minifat.extend(struct.unpack(f"<{per}I", sector(sec_i)))
+                return b"".join(mini_stream[i * mssz:(i + 1) * mssz] for i in chain(start, minifat))[:size]
+            return b"".join(sector(i) for i in chain(start, fat))[:size]
+    raise ValueError("kein Workbook-Stream")
+
+
+class _ChunkCursor:
+    """Liest ueber SST- und CONTINUE-Records hinweg."""
+
+    def __init__(self, chunks, pos=0):
+        self.chunks, self.ci, self.pos = chunks, 0, pos
+
+    def read(self, n):
+        out = bytearray()
+        while n > 0 and self.ci < len(self.chunks):
+            chunk = self.chunks[self.ci]
+            if self.pos >= len(chunk):
+                self.ci, self.pos = self.ci + 1, 0
+                continue
+            take = min(n, len(chunk) - self.pos)
+            out += chunk[self.pos:self.pos + take]
+            self.pos += take
+            n -= take
+        return bytes(out)
+
+    def read_string(self):
+        import struct
+        nch = struct.unpack("<H", self.read(2))[0]
+        flags = self.read(1)[0]
+        rt = struct.unpack("<H", self.read(2))[0] if flags & 8 else 0
+        sz = struct.unpack("<I", self.read(4))[0] if flags & 4 else 0
+        wide = flags & 1
+        parts, left = [], nch
+        while left > 0 and self.ci < len(self.chunks):
+            chunk = self.chunks[self.ci]
+            bpc = 2 if wide else 1
+            take = min(left, (len(chunk) - self.pos) // bpc)
+            if take > 0:
+                raw = chunk[self.pos:self.pos + take * bpc]
+                self.pos += take * bpc
+                parts.append(raw.decode("utf-16-le" if wide else "latin-1", errors="replace"))
+                left -= take
+            if left > 0:  # Fortsetzung im naechsten CONTINUE-Record beginnt mit neuem Flag-Byte
+                self.ci, self.pos = self.ci + 1, 0
+                if self.ci < len(self.chunks):
+                    wide = self.chunks[self.ci][0] & 1
+                    self.pos = 1
+        self.read(4 * rt + sz)
+        return "".join(parts)
+
+
+def _biff_string(body, pos, len_bytes=2):
+    """Einfacher BIFF8-String innerhalb eines Records (LABEL, STRING, BOUNDSHEET)."""
+    import struct
+    if len_bytes == 2:
+        nch = struct.unpack_from("<H", body, pos)[0]
+        pos += 2
     else:
-        raise RuntimeError(f"Dateityp {ext} wird nicht unterstützt (.xls, .xlsx, .csv).")
+        nch = body[pos]
+        pos += 1
+    flags = body[pos]
+    pos += 1
+    if flags & 8:
+        pos += 2
+    if flags & 4:
+        pos += 4
+    if flags & 1:
+        return body[pos:pos + 2 * nch].decode("utf-16-le", errors="replace")
+    return body[pos:pos + nch].decode("latin-1", errors="replace")
+
+
+def _rk_value(rk):
+    import struct
+    if rk & 2:
+        val = rk >> 2
+    else:
+        val = struct.unpack("<d", struct.pack("<Q", (rk & 0xFFFFFFFC) << 32))[0]
+    return val / 100 if rk & 1 else float(val)
+
+
+def read_xls_builtin(path):
+    """Excel 97-2003 (.xls, BIFF8) ohne Zusatzmodule lesen: erste Tabelle, Text und Zahlen."""
+    import struct
+    with open(path, "rb") as fh:
+        data = fh.read()
+    wb = _ole_stream(data)
+    recs, pos = [], 0
+    while pos + 4 <= len(wb):
+        rid, ln = struct.unpack_from("<HH", wb, pos)
+        recs.append((pos, rid, wb[pos + 4:pos + 4 + ln]))
+        pos += 4 + ln
+    if not recs or recs[0][1] != 0x0809 or struct.unpack_from("<H", recs[0][2], 0)[0] != 0x0600:
+        raise ValueError("nur Excel 97-2003 (BIFF8) wird unterstützt")
+    sst, sheets, i = [], [], 1
+    while i < len(recs) and recs[i][1] != 0x000A:
+        _off, rid, body = recs[i]
+        if rid == 0x0085:
+            sheets.append((struct.unpack_from("<I", body, 0)[0], body[5], _biff_string(body, 6, 1)))
+        elif rid == 0x00FC:
+            chunks, j = [body], i + 1
+            while j < len(recs) and recs[j][1] == 0x003C:
+                chunks.append(recs[j][2])
+                j += 1
+            unique = struct.unpack_from("<I", body, 4)[0]
+            cur = _ChunkCursor(chunks, 8)
+            for _ in range(unique):
+                if cur.ci >= len(chunks):
+                    break
+                sst.append(cur.read_string())
+        i += 1
+    target = next((off for off, typ, _n in sheets if typ == 0), None)
+    start = next((k for k, r in enumerate(recs) if r[0] == target), None)
+    if start is None:
+        raise ValueError("keine Tabelle gefunden")
+    cells, pending = {}, None
+    for _off, rid, body in recs[start + 1:]:
+        if rid == 0x000A:
+            break
+        if rid == 0x00FD and len(body) >= 10:
+            r, c, _xf, idx = struct.unpack_from("<HHHI", body, 0)
+            cells[(r, c)] = sst[idx] if idx < len(sst) else ""
+        elif rid == 0x0204:
+            r, c = struct.unpack_from("<HH", body, 0)
+            cells[(r, c)] = _biff_string(body, 6)
+        elif rid == 0x0203:
+            r, c, _xf, val = struct.unpack_from("<HHHd", body, 0)
+            cells[(r, c)] = val
+        elif rid == 0x027E:
+            r, c, _xf, rk = struct.unpack_from("<HHHi", body, 0)
+            cells[(r, c)] = _rk_value(rk)
+        elif rid == 0x00BD:
+            r, c0 = struct.unpack_from("<HH", body, 0)
+            for k in range((len(body) - 6) // 6):
+                rk = struct.unpack_from("<i", body, 4 + 6 * k + 2)[0]
+                cells[(r, c0 + k)] = _rk_value(rk)
+        elif rid == 0x0006 and len(body) >= 14:
+            r, c = struct.unpack_from("<HH", body, 0)
+            res = body[6:14]
+            if res[6:8] == b"\xff\xff":
+                if res[0] == 0:
+                    pending = (r, c)
+                elif res[0] == 1:
+                    cells[(r, c)] = bool(res[2])
+            else:
+                cells[(r, c)] = struct.unpack("<d", res)[0]
+        elif rid == 0x0207 and pending is not None:
+            cells[pending] = _biff_string(body, 0)
+            pending = None
+        elif rid == 0x0205:
+            r, c, _xf, val, err = struct.unpack_from("<HHHBB", body, 0)
+            if not err:
+                cells[(r, c)] = bool(val)
+    if not cells:
+        return []
+    n_rows = max(r for r, _c in cells) + 1
+    n_cols = max(c for _r, c in cells) + 1
+    rows = [[""] * n_cols for _ in range(n_rows)]
+    for (r, c), v in cells.items():
+        rows[r][c] = v
+    return rows
+
+
+def read_xlsx_builtin(path):
+    """Excel .xlsx ohne Zusatzmodule lesen: erste Tabelle."""
+    import posixpath
+    import zipfile
+    import xml.etree.ElementTree as ET
+    m = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        shared = []
+        if "xl/sharedStrings.xml" in names:
+            for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall(f"{{{m}}}si"):
+                shared.append("".join(t.text or "" for t in si.iter(f"{{{m}}}t")))
+        wb = ET.fromstring(z.read("xl/workbook.xml"))
+        first = wb.find(f"{{{m}}}sheets/{{{m}}}sheet")
+        rid = first.get(f"{{{rns}}}id")
+        rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+        target = next(r.get("Target") for r in rels if r.get("Id") == rid)
+        part = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join("xl", target))
+        sheet = ET.fromstring(z.read(part))
+    cells = {}
+    for row_i, row in enumerate(sheet.iter(f"{{{m}}}row")):
+        r = int(row.get("r", row_i + 1)) - 1
+        for col_i, c in enumerate(row.findall(f"{{{m}}}c")):
+            ref = c.get("r")
+            if ref:
+                letters = "".join(ch for ch in ref if ch.isalpha())
+                col = 0
+                for ch in letters.upper():
+                    col = col * 26 + (ord(ch) - 64)
+                col -= 1
+            else:
+                col = col_i
+            t = c.get("t", "n")
+            v = c.find(f"{{{m}}}v")
+            text = v.text if v is not None and v.text is not None else ""
+            if t == "s":
+                val = shared[int(text)] if text.isdigit() and int(text) < len(shared) else ""
+            elif t == "inlineStr":
+                val = "".join(x.text or "" for x in c.iter(f"{{{m}}}t"))
+            elif t in ("str", "e"):
+                val = text
+            elif t == "b":
+                val = text == "1"
+            else:
+                try:
+                    val = float(text) if text else ""
+                except ValueError:
+                    val = text
+            cells[(r, col)] = val
+    if not cells:
+        return []
+    n_rows = max(r for r, _c in cells) + 1
+    n_cols = max(c for _r, c in cells) + 1
+    rows = [[""] * n_cols for _ in range(n_rows)]
+    for (r, c), v in cells.items():
+        rows[r][c] = v
+    return rows
+
+
+def read_html_table(text):
+    """Erste Tabelle einer als .xls getarnten HTML-Datei lesen."""
+    from html.parser import HTMLParser
+
+    class P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.rows, self.row, self.cell, self.depth = [], None, None, 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "table":
+                self.depth += 1
+            elif tag == "tr" and self.depth == 1:
+                self.row = []
+            elif tag in ("td", "th") and self.row is not None:
+                self.cell = []
+            elif tag == "br" and self.cell is not None:
+                self.cell.append(" ")
+
+        def handle_endtag(self, tag):
+            if tag in ("td", "th") and self.cell is not None and self.row is not None:
+                self.row.append(" ".join("".join(self.cell).split()))
+                self.cell = None
+            elif tag == "tr" and self.row is not None:
+                self.rows.append(self.row)
+                self.row = None
+            elif tag == "table":
+                self.depth -= 1
+
+        def handle_data(self, data):
+            if self.cell is not None:
+                self.cell.append(data)
+
+    p = P()
+    p.feed(text)
+    return p.rows
+
+
+def _xml(text):
+    return (str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
+def _col_letter(idx):
+    out = ""
+    idx += 1
+    while idx:
+        idx, rem = divmod(idx - 1, 26)
+        out = chr(65 + rem) + out
+    return out
+
+
+def write_xlsx_builtin(path, sheets, title="", subject="", decimal_cols=()):
+    """Einfache .xlsx-Datei ohne Zusatzmodule schreiben.
+    sheets: [(tabellenname, [kopfzeile, zeile, ...])], decimal_cols: Spaltentitel mit Format 0.00."""
+    import zipfile
+    ct = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+          '<Default Extension="xml" ContentType="application/xml"/>',
+          '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+          '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>',
+          '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>']
+    wb_sheets, wb_rels, sheet_xml = [], [], []
+    for i, (name, rows) in enumerate(sheets, start=1):
+        ct.append(f'<Override PartName="/xl/worksheets/sheet{i}.xml" '
+                  'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>')
+        wb_sheets.append(f'<sheet name="{_xml(name)}" sheetId="{i}" r:id="rId{i}"/>')
+        wb_rels.append(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+                       f'relationships/worksheet" Target="worksheets/sheet{i}.xml"/>')
+        header = rows[0] if rows else []
+        dec = {k for k, h in enumerate(header) if h in decimal_cols}
+        widths = [max([len(str(r[k])) for r in rows if k < len(r)] + [4]) for k in range(len(header))]
+        out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+               '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+               '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" '
+               'state="frozen"/></sheetView></sheetViews>']
+        if widths:
+            out.append("<cols>" + "".join(f'<col min="{k + 1}" max="{k + 1}" width="{min(45, w + 2)}" customWidth="1"/>'
+                                          for k, w in enumerate(widths)) + "</cols>")
+        out.append("<sheetData>")
+        for r_i, row in enumerate(rows, start=1):
+            cells = []
+            for c_i, val in enumerate(row):
+                ref = f"{_col_letter(c_i)}{r_i}"
+                if val is None or val == "":
+                    continue
+                if isinstance(val, bool):
+                    cells.append(f'<c r="{ref}" t="b"><v>{int(val)}</v></c>')
+                elif isinstance(val, (int, float)):
+                    style = ' s="2"' if (c_i in dec and r_i > 1) else ""
+                    cells.append(f'<c r="{ref}"{style}><v>{val!r}</v></c>')
+                else:
+                    style = ' s="1"' if r_i == 1 else ""
+                    cells.append(f'<c r="{ref}" t="inlineStr"{style}><is><t xml:space="preserve">{_xml(val)}</t></is></c>')
+            out.append(f'<row r="{r_i}">' + "".join(cells) + "</row>")
+        out.append("</sheetData></worksheet>")
+        sheet_xml.append("".join(out))
+    ct.append("</Types>")
+    styles = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+              '<numFmts count="1"><numFmt numFmtId="164" formatCode="0.00"/></numFmts>'
+              '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>'
+              '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+              '<fills count="2"><fill><patternFill patternType="none"/></fill>'
+              '<fill><patternFill patternType="gray125"/></fill></fills>'
+              '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+              '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+              '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+              '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
+              '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>'
+              '<cellStyles count="1"><cellStyle name="Standard" xfId="0" builtinId="0"/></cellStyles>'
+              '</styleSheet>')
+    workbook = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                '<sheets>' + "".join(wb_sheets) + '</sheets></workbook>')
+    n = len(sheets)
+    wb_rels.append(f'<Relationship Id="rId{n + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+                   'relationships/styles" Target="styles.xml"/>')
+    workbook_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                     + "".join(wb_rels) + '</Relationships>')
+    root_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                 '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                 '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+                 'officeDocument" Target="xl/workbook.xml"/>'
+                 '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/'
+                 'core-properties" Target="docProps/core.xml"/></Relationships>')
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    core = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" '
+            'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+            f'<dc:title>{_xml(title)}</dc:title><dc:subject>{_xml(subject)}</dc:subject>'
+            '<dc:creator>SWV Live-Ranking</dc:creator>'
+            f'<dcterms:created xsi:type="dcterms:W3CDTF">{now}</dcterms:created></cp:coreProperties>')
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", "".join(ct))
+        z.writestr("_rels/.rels", root_rels)
+        z.writestr("docProps/core.xml", core)
+        z.writestr("xl/workbook.xml", workbook)
+        z.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        z.writestr("xl/styles.xml", styles)
+        for i, xml_text in enumerate(sheet_xml, start=1):
+            z.writestr(f"xl/worksheets/sheet{i}.xml", xml_text)
+
+
+def _decode_text(raw):
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1", errors="replace")
+
+
+def _read_delimited(text):
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    first = lines[0] if lines else ""
+    delim = max(";,\t", key=first.count)
+    # newline="" laesst csv alle Zeilenenden (Windows, Linux, alter Mac) selbst behandeln
+    return list(csv.reader(io.StringIO(text, newline=""), delimiter=delim))
+
+
+def read_table(path):
+    """Startliste lesen. Format wird am Inhalt erkannt; Zusatzmodule nur, wenn vorhanden."""
+    try:
+        kind = sniff_format(path)
+    except OSError as exc:
+        raise StartlistError(f"Die Datei kann nicht geöffnet werden:\n{exc}")
+    try:
+        if kind == "xls":
+            rows = None
+            if xlrd is not None:
+                try:
+                    wb = xlrd.open_workbook(path, ignore_workbook_corruption=True)
+                    sh = wb.sheet_by_index(0)
+                    rows = [[sh.cell_value(r, c) for c in range(sh.ncols)] for r in range(sh.nrows)]
+                except Exception:
+                    rows = None
+            if rows is None:
+                rows = read_xls_builtin(path)
+        elif kind == "xlsx":
+            rows = None
+            if openpyxl is not None:
+                try:
+                    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+                    try:
+                        rows = [list(r) for r in wb.worksheets[0].iter_rows(values_only=True)]
+                    finally:
+                        wb.close()
+                except Exception:
+                    rows = None
+            if rows is None:
+                rows = read_xlsx_builtin(path)
+        elif kind in ("text", "text16", "html"):
+            with open(path, "rb") as fh:
+                raw = fh.read()
+            text = raw.decode("utf-16") if kind == "text16" else _decode_text(raw)
+            rows = read_html_table(text) if kind == "html" else _read_delimited(text)
+        elif kind == "xml2003":
+            raise StartlistError("Die Datei ist im Format «XML-Kalkulationstabelle 2003».\n"
+                                 "Bitte in Excel als .xlsx oder als CSV speichern und erneut einlesen.")
+        else:
+            raise StartlistError("Die Datei ist keine Startliste im Format .xls, .xlsx oder .csv.")
+    except StartlistError:
+        raise
+    except Exception as exc:
+        raise StartlistError("Die Datei konnte nicht als Startliste gelesen werden.\n"
+                             "Bitte in Excel öffnen und als .xlsx oder als CSV speichern.\n\n"
+                             f"Technische Details: {exc}")
     rows = [["" if c is None else c for c in r] for r in rows]
     while rows and not any(cell_str(c) for c in rows[-1]):
         rows.pop()
@@ -449,7 +1001,7 @@ def local_ipv4s():
     if preferred in lan:
         lan.remove(preferred)
         lan.insert(0, preferred)
-    return lan + ["127.0.0.1"]
+    return lan
 
 
 def removable_drives():
@@ -543,7 +1095,7 @@ footer{padding:6px 10px;font-size:12px;color:#94a3b8}footer.err{color:#ef4444}
 
 WEB_JS = r"""
 (function(){
-  var key=document.body.getAttribute('data-key'), last='';
+  var key=document.body.getAttribute('data-key'), last='', lastOk=0, lastTry=0, busy=false;
   function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e;}
   function clear(n){while(n.firstChild)n.removeChild(n.firstChild);}
   function lines(box,arr){clear(box);(arr||[]).forEach(function(t,i){if(t)box.appendChild(el('div',i===0?'big':'sub',t));});}
@@ -566,15 +1118,30 @@ WEB_JS = r"""
       d.next.forEach(function(n){nx.appendChild(el('div','row','Nr '+n.nr+'  '+n.name));nx.appendChild(el('div','who',n.info));});}
     else nx.hidden=true;
   }
-  function tick(){
-    fetch('/data?key='+encodeURIComponent(key),{cache:'no-store'}).then(function(r){
-      if(!r.ok)throw new Error(r.status);return r.text();
-    }).then(function(t){
-      if(t!==last){last=t;render(JSON.parse(t));}
-      var s=document.getElementById('state');s.className='';s.textContent='Verbunden, Stand '+JSON.parse(t).time;
-    }).catch(function(){var s=document.getElementById('state');s.className='err';s.textContent='Keine Verbindung zum Speaker-PC';})
-    .then(function(){setTimeout(tick,1000);});
+  function state(){
+    var s=document.getElementById('state'), age=(Date.now()-lastOk)/1000;
+    if(lastOk&&age<=5){s.className='';}
+    else{s.className='err';s.textContent=lastOk?('Verbindung unterbrochen, Daten '+Math.round(age)+' s alt. Neuer Versuch läuft ...'):'Keine Verbindung zum Speaker-PC';}
   }
+  function tick(){
+    busy=true;lastTry=Date.now();
+    var x=new XMLHttpRequest(), done=false;
+    function finish(){if(done)return;done=true;busy=false;state();setTimeout(tick,1000);}
+    // eindeutige Adresse pro Abfrage: nie eine Antwort aus dem Zwischenspeicher
+    x.open('GET','/data?key='+encodeURIComponent(key)+'&t='+Date.now(),true);
+    x.timeout=3000;
+    x.onload=function(){
+      if(x.status===200){
+        try{var t=x.responseText,d=JSON.parse(t);if(t!==last){last=t;render(d);}
+          lastOk=Date.now();document.getElementById('state').textContent='Verbunden, Stand '+d.time;}catch(e){}
+      }
+      finish();
+    };
+    x.onerror=finish;x.ontimeout=finish;x.onabort=finish;
+    try{x.send();}catch(e){finish();}
+  }
+  // Notbremse: falls die Abfrageschleife trotzdem stehen bleibt, neu starten
+  setInterval(function(){if(busy&&Date.now()-lastTry>8000){busy=false;tick();}else if(!busy&&Date.now()-lastTry>15000){tick();}state();},2000);
   tick();
 })();
 """
@@ -673,6 +1240,49 @@ class LanServer:
             httpd.server_close()
 
 
+def friendly_open_error(port, exc):
+    """Verstaendliche Meldung, wenn ein COM-Port nicht geoeffnet werden kann."""
+    text = str(exc)
+    low = text.lower()
+    if "permissionerror" in low or "zugriff verweigert" in low or "access is denied" in low or "errno 13" in low:
+        return (f"{port} wird von einem anderen Programm verwendet oder ist blockiert.\n"
+                "Anderes Programm mit dem CP 545 schliessen (z.B. ein Terminalprogramm) und erneut verbinden.")
+    if ("filenotfounderror" in low or "nicht gefunden" in low or "cannot find" in low
+            or "no such file" in low or "could not open port" in low):
+        return f"{port} wurde nicht gefunden.\nIst der USB-Adapter eingesteckt? Danach ⟳ drücken und erneut verbinden."
+    return f"{port} konnte nicht geöffnet werden.\nUSB-Adapter aus- und wieder einstecken und erneut verbinden."
+
+
+def port_identity(device):
+    """Geraetekennung (Hersteller, Produkt, Seriennummer) eines COM-Ports, sofern vorhanden."""
+    if serial is None:
+        return None
+    for p in serial.tools.list_ports.comports():
+        if p.device == device and p.vid is not None:
+            return {"vid": p.vid, "pid": p.pid, "serial": p.serial_number or ""}
+    return None
+
+
+def find_port(device, identity):
+    """Adapter wiederfinden: zuerst ueber die Geraetekennung (COM-Nummer kann wechseln), sonst gleiche COM-Nummer."""
+    if serial is None:
+        return None
+    ports = list(serial.tools.list_ports.comports())
+    if identity:
+        same = [p for p in ports if p.vid == identity["vid"] and p.pid == identity["pid"]]
+        if identity.get("serial"):
+            exact = [p for p in same if (p.serial_number or "") == identity["serial"]]
+            if exact:
+                return exact[0].device
+        if len(same) == 1:
+            return same[0].device
+        if any(p.device == device for p in same):
+            return device
+    if any(p.device == device for p in ports):
+        return device
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Serieller Lese-Thread
 # --------------------------------------------------------------------------- #
@@ -694,9 +1304,9 @@ class SerialReader(threading.Thread):
                 parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE, timeout=0.1,
             )
         except Exception as exc:
-            self.q.put(("error", f"Port {self.port} konnte nicht geöffnet werden: {exc}"))
+            self.q.put(("open_error", exc, self))
             return
-        self.q.put(("connected", self.port))
+        self.q.put(("connected", self.port, self))
         buf = bytearray()
         try:
             while not self.stop_event.is_set():
@@ -713,18 +1323,18 @@ class SerialReader(threading.Thread):
                     stx = frame.rfind(b"\x02")
                     if stx >= 0:
                         frame = frame[stx + 1:]
-                    self.q.put(("line", frame.decode("latin-1", errors="replace")))
+                    self.q.put(("line", frame.decode("latin-1", errors="replace"), self))
                 if len(buf) > 4096:
                     buf.clear()
         except Exception as exc:
             if not self.stop_event.is_set():
-                self.q.put(("error", f"Verbindung unterbrochen: {exc}"))
+                self.q.put(("lost", exc, self))
         finally:
             try:
                 ser.close()
             except Exception:
                 pass
-            self.q.put(("disconnected", self.port))
+            self.q.put(("disconnected", self.port, self))
 
 
 # --------------------------------------------------------------------------- #
@@ -767,6 +1377,18 @@ class LiveRankingApp:
         self._text_cache = {}
         self.participant_dialogs = {}
         self.upload_win = None
+        self._full_text = {}
+        self._event_job = None
+        self._last_suggested = None
+        self.card_cols = 3
+        self.cards_scrolling = False
+        self.panel_orient = "right"
+        self._drag = None
+        self.card_inner_w = 300
+        self.reconnecting = False
+        self._reconnect_job = None
+        self.conn_target = {"port": "", "baud": DEFAULT_BAUD, "identity": None}
+        self._row_tpl = ("5. Nr. 888", "8:88.88s", "")
 
         self.online = OnlineClient(self.settings["online"])
         self.web = LanServer()
@@ -781,6 +1403,8 @@ class LiveRankingApp:
         self.load_autosave()
         self.update_live_info()
         self.update_ziel_info()
+        self.update_window_title()
+        self.report_missing_modules()
 
         self.root.after(POLL_INTERVAL_MS, self.poll_queue)
         self.root.after(BLINK_INTERVAL_MS, self.blink_tick)
@@ -816,8 +1440,24 @@ class LiveRankingApp:
     def setup_fonts(self):
         fam = "Segoe UI" if sys.platform.startswith("win") else "DejaVu Sans"
         mono = "Consolas" if sys.platform.startswith("win") else "DejaVu Sans Mono"
+        try:
+            dpi = float(self.root.winfo_fpixels("1i"))
+        except tk.TclError:
+            dpi = 96.0
+        self.ui_scale = max(1.0, min(3.0, dpi / 96.0))
+        self.side_w = int(358 * self.ui_scale)
+        self.wrap_w = self.side_w - int(70 * self.ui_scale)
         self.f_status = tkfont.Font(family=fam, size=-28, weight="bold")
+        self.f_status_name = tkfont.Font(family=fam, size=-18, weight="bold")
         self.f_status_sub = tkfont.Font(family=fam, size=-16)
+        self.f_ticker = tkfont.Font(family=fam, size=-20)
+        self.f_ticker_bold = tkfont.Font(family=fam, size=-20, weight="bold")
+        self.f_ticker_time = tkfont.Font(family=fam, size=-15)
+        self._mf_bold = tkfont.Font(family=fam, size=-30, weight="bold")
+        self._mf_row = tkfont.Font(family=fam, size=-30, weight="bold")
+        self._mf_title = tkfont.Font(family=fam, size=-20, weight="bold")
+        self._mf_sub = tkfont.Font(family=fam, size=-15)
+        self._mf_pen = tkfont.Font(family=fam, size=-16, weight="bold")
         self.f_title = tkfont.Font(family=fam, size=-22, weight="bold")
         self.f_row = tkfont.Font(family=fam, size=-28, weight="bold")
         self.f_first = tkfont.Font(family=fam, size=-36, weight="bold")
@@ -891,11 +1531,17 @@ class LiveRankingApp:
                           width=width, state=state)
         return cb
 
-    def _section(self, parent, title, key=None):
+    def _section(self, parent, title, key=None, status=False):
         frm = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         frm.pack(fill="x", padx=10, pady=(10, 0))
-        head = tk.Label(frm, bg=PANEL, fg=GOLD, font=self.f_side_head, anchor="w", cursor="hand2" if key else "")
-        head.pack(fill="x", padx=10, pady=(8, 6))
+        headf = tk.Frame(frm, bg=PANEL, cursor="hand2" if key else "")
+        headf.pack(fill="x", padx=10, pady=(8, 6))
+        head = tk.Label(headf, bg=PANEL, fg=GOLD, font=self.f_side_head, anchor="w")
+        head.pack(side="left")
+        stat = None
+        if status:
+            stat = tk.Label(headf, bg=PANEL, fg=MUTED, font=self.f_side_bold, anchor="w")
+            stat.pack(side="left", padx=(8, 0))
         body = tk.Frame(frm, bg=PANEL)
 
         def render():
@@ -911,9 +1557,12 @@ class LiveRankingApp:
                 self.settings["collapsed"][key] = not self.settings["collapsed"].get(key, False)
                 render()
                 self.save_settings()
-            head.bind("<Button-1>", toggle)
+            for w in (headf, head, stat):
+                if w is not None:
+                    w.bind("<Button-1>", toggle)
+                    w.configure(cursor="hand2")
         render()
-        return body
+        return (body, stat) if status else body
 
     def _toplevel(self, title):
         dlg = tk.Toplevel(self.root)
@@ -930,6 +1579,39 @@ class LiveRankingApp:
         y = self.root.winfo_rooty() + (self.root.winfo_height() - dlg.winfo_height()) // 3
         dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
 
+    def confirm_danger(self, title, message, action_label):
+        """Sichere Rückfrage: 'Abbrechen' ist vorausgewählt, Enter und Escape brechen ab."""
+        dlg = self._toplevel(title)
+        dlg.resizable(False, False)
+        result = {"ok": False}
+        row = tk.Frame(dlg, bg=PANEL)
+        row.pack(fill="x")
+        tk.Label(row, text="⚠", bg=PANEL, fg=GOLD, font=self.f_dialog).pack(side="left", padx=(0, 14), anchor="n")
+        tk.Label(row, text=message, bg=PANEL, fg=TEXT, font=self.f_side, justify="left", anchor="w",
+                 wraplength=int(460 * self.ui_scale)).pack(side="left", fill="x")
+        btns = tk.Frame(dlg, bg=PANEL)
+        btns.pack(fill="x", pady=(16, 0))
+
+        def ok():
+            result["ok"] = True
+            dlg.destroy()
+
+        cancel = self._button(btns, "Abbrechen", dlg.destroy, BLUE)
+        cancel.pack(side="right")
+        self._button(btns, action_label, ok, DARK_RED).pack(side="right", padx=(0, 8))
+        cancel.bind("<Return>", lambda e: dlg.destroy())
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+        for w in (dlg, cancel):
+            w.bind("<Escape>", lambda e: dlg.destroy())
+        self._center(dlg)
+        dlg.grab_set()
+        dlg.lift()
+        dlg.focus_force()
+        cancel.focus_set()
+        self.root.wait_window(dlg)
+        return result["ok"]
+
     @staticmethod
     def _set(widget, **kw):
         changed = {k: v for k, v in kw.items() if str(widget.cget(k)) != str(v)}
@@ -945,8 +1627,24 @@ class LiveRankingApp:
         widget.configure(state="normal")
         widget.delete("1.0", "end")
         for text, tag in segments:
-            widget.insert("end", text, (tag,) if tag else ())
+            tags = tag if isinstance(tag, tuple) else ((tag,) if tag else ())
+            widget.insert("end", text, tags)
         widget.configure(state="disabled")
+
+    def _set_fit(self, label, text, font=None, width=None, **kw):
+        """Text setzen und bei Platzmangel sauber mit '…' kuerzen (Volltext bleibt gespeichert)."""
+        self._full_text[str(label)] = text
+        font = font or self._label_font(label)
+        if width is None:
+            width = label.winfo_width() - 6
+        self._set(label, text=fit_text(font, text, width), **kw)
+
+    def _label_font(self, label):
+        name = str(label.cget("font"))
+        for f in (self.f_status, self.f_status_name, self.f_status_sub, self.f_title, self.f_sub):
+            if str(f) == name:
+                return f
+        return tkfont.nametofont(name) if name in tkfont.names(self.root) else self.f_side
 
     # ================================================================== #
     # Aufbau UI
@@ -957,7 +1655,7 @@ class LiveRankingApp:
         self.root.rowconfigure(0, weight=1)
 
         # Seitenleiste (scrollbar)
-        outer = tk.Frame(self.root, bg=BG, width=358)
+        outer = tk.Frame(self.root, bg=BG, width=self.side_w)
         outer.grid(row=0, column=0, sticky="ns")
         outer.grid_propagate(False)
         outer.rowconfigure(0, weight=1)
@@ -983,9 +1681,7 @@ class LiveRankingApp:
 
         def on_wheel(event):
             w = self.root.winfo_containing(event.x_root, event.y_root)
-            if w is None or not str(w).startswith(str(outer)) or isinstance(w, (tk.Listbox, tk.Text)):
-                return
-            if not sbar.winfo_ismapped():
+            if w is None:
                 return
             if event.num == 4:
                 step = -1
@@ -993,13 +1689,18 @@ class LiveRankingApp:
                 step = 1
             else:
                 step = -1 if event.delta > 0 else 1
-            canvas.yview_scroll(step * 3, "units")
+            path = str(w)
+            if path.startswith(str(outer)):
+                if isinstance(w, (tk.Listbox, tk.Text)) or not sbar.winfo_ismapped():
+                    return
+                canvas.yview_scroll(step * 3, "units")
+            elif path.startswith(str(self.cards_canvas)) and self.cards_scrolling:
+                self.cards_canvas.yview_scroll(step * 3, "units")
 
         self.root.bind_all("<MouseWheel>", on_wheel, add="+")
         self.root.bind_all("<Button-4>", on_wheel, add="+")
         self.root.bind_all("<Button-5>", on_wheel, add="+")
         self.side_canvas = canvas
-        self.build_sidebar(side)
 
         # Hauptbereich
         main = tk.Frame(self.root, bg=BG)
@@ -1021,24 +1722,45 @@ class LiveRankingApp:
         content.grid(row=1, column=0, sticky="nsew")
         content.columnconfigure(0, weight=1)
         content.rowconfigure(0, weight=1)
-        self.cards_area = tk.Frame(content, bg=BG)
-        self.cards_area.grid(row=0, column=0, sticky="nsew")
-        self.cards_area.bind("<Configure>", lambda e: self.schedule_font_scale())
+        self.content = content
+        self.cards_canvas = tk.Canvas(content, bg=BG, highlightthickness=0, bd=0)
+        self.cards_canvas.grid(row=0, column=0, sticky="nsew")
+        self.cards_sb = tk.Scrollbar(content, orient="vertical", command=self.cards_canvas.yview)
+        self.cards_canvas.configure(yscrollcommand=self.cards_sb.set)
+        self.cards_area = tk.Frame(self.cards_canvas, bg=BG)
+        self.cards_win = self.cards_canvas.create_window(0, 0, window=self.cards_area, anchor="nw")
+        self.cards_canvas.bind("<Configure>", lambda e: self.schedule_font_scale())
 
-        self.right_panel = tk.Frame(content, bg=BG, width=400)
-        self.right_panel.grid(row=0, column=1, sticky="ns", padx=(6, 6), pady=6)
+        self.right_panel = tk.Frame(content, bg=BG, width=400, height=240)
         self.right_panel.grid_propagate(False)
         self.right_panel.pack_propagate(False)
         self.panel_next, self.txt_next = self._panel(self.right_panel, "Als nächstes am Start", NEXT_COUNT * 2 + 3)
+        self.panel_note, self.txt_note = self._panel(self.right_panel, "Notiz", 3)
+        self.panel_note.configure(highlightbackground=GOLD)
+        self.txt_note.configure(font=self.f_ticker, fg=WHITE)
+        self.txt_note.tag_configure("nr", font=self.f_ticker_bold, foreground=GOLD, spacing1=0)
+        self.txt_note.tag_configure("sub", font=self.f_ticker_time, foreground=MUTED)
+        self._note_visible = False
         self.panel_ticker, self.txt_ticker = self._panel(self.right_panel, "Ereignis-Ticker", 6)
         self.panel_stats, self.txt_stats = self._panel(self.right_panel, "Statistik", 9)
+        # Ticker: groessere, kontrastreichere Schrift (Punkt 9)
+        self.txt_ticker.configure(font=self.f_ticker, fg=WHITE, spacing1=0, spacing3=0)
+        self.txt_ticker.tag_configure("time", font=self.f_ticker_time, foreground=MUTED)
+        self.txt_ticker.tag_configure("ziel", foreground="#34d399")
+        self.txt_ticker.tag_configure("warn", foreground="#fcd34d")
+        self.txt_ticker.tag_configure("test", foreground=MUTED)
+        self.txt_ticker.tag_configure("entry", spacing1=8)
+        self.txt_ticker.tag_configure("newest", font=self.f_ticker_bold)
+
+        # Seitenleiste erst jetzt, weil sie auf Kartenbereich und Panels verweist
+        self.build_sidebar(side)
 
     def _status_box(self, parent, col, color, text):
         box = tk.Frame(parent, bg=color, padx=16, pady=6)
         box.grid(row=0, column=col, sticky="nsew", padx=(6, 3) if col == 0 else (3, 6))
         big = tk.Label(box, text=text, bg=color, fg=WHITE, font=self.f_status, anchor="w", width=1)
         big.pack(fill="x")
-        sub1 = tk.Label(box, text="", bg=color, fg=WHITE, font=self.f_status_sub, anchor="w", width=1)
+        sub1 = tk.Label(box, text="", bg=color, fg=WHITE, font=self.f_status_name, anchor="w", width=1)
         sub1.pack(fill="x")
         sub2 = tk.Label(box, text="", bg=color, fg=WHITE, font=self.f_status_sub, anchor="w", width=1)
         sub2.pack(fill="x")
@@ -1048,8 +1770,8 @@ class LiveRankingApp:
         frm = tk.Frame(parent, bg=PANEL, highlightthickness=2, highlightbackground=BORDER)
         tk.Label(frm, text=title, bg=PANEL, fg=MUTED, font=self.f_panel_head, anchor="w").pack(
             fill="x", padx=12, pady=(8, 2))
-        txt = tk.Text(frm, height=height, bg=PANEL, fg=TEXT, font=self.f_panel, relief="flat", wrap="word",
-                      state="disabled", highlightthickness=0, padx=12, pady=4, cursor="arrow", bd=0)
+        txt = tk.Text(frm, height=height, width=1, bg=PANEL, fg=TEXT, font=self.f_panel, relief="flat",
+                      wrap="word", state="disabled", highlightthickness=0, padx=12, pady=4, cursor="arrow", bd=0)
         txt.pack(fill="both", expand=True, pady=(0, 8))
         txt.tag_configure("nr", font=self.f_panel_bold, foreground=WHITE, spacing1=6)
         txt.tag_configure("sub", foreground=MUTED)
@@ -1062,11 +1784,33 @@ class LiveRankingApp:
         return frm, txt
 
     def build_sidebar(self, side):
-        tk.Label(side, text="SWV Live-Ranking", bg=BG, fg=TEXT, font=self.f_side_head,
-                 anchor="w").pack(fill="x", padx=12, pady=(12, 0))
+        wrap = self.wrap_w
 
-        # Verbindung
-        b = self._section(side, "Verbindung")
+        # Wettkampf (Punkt 13)
+        b, self.lbl_event_head = self._section(side, "Wettkampf", "wettkampf", status=True)
+        b.columnconfigure(1, weight=1)
+        b.columnconfigure(3, weight=1)
+        ev = self.settings["event"]
+        self._label(b, "Name").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.e_event_name = self._entry(b, width=18)
+        self.e_event_name.grid(row=0, column=1, columnspan=3, sticky="ew")
+        self._label(b, "Datum").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(6, 0))
+        self.e_event_from = self._entry(b, width=10)
+        self.e_event_from.grid(row=1, column=1, sticky="ew", pady=(6, 0))
+        self._label(b, "bis").grid(row=1, column=2, sticky="w", padx=6, pady=(6, 0))
+        self.e_event_to = self._entry(b, width=10)
+        self.e_event_to.grid(row=1, column=3, sticky="ew", pady=(6, 0))
+        self.lbl_event_hint = self._label(b, "Datum als TT.MM.JJJJ, «bis» leer lassen bei einem Tag",
+                                          fg=MUTED, wraplength=wrap, justify="left")
+        self.lbl_event_hint.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        for entry, key in ((self.e_event_name, "name"), (self.e_event_from, "von"), (self.e_event_to, "bis")):
+            entry.insert(0, ev.get(key, ""))
+            entry.bind("<KeyRelease>", lambda e: self.schedule_event_save())
+            entry.bind("<FocusOut>", lambda e: self.save_event_fields(normalize=True))
+            entry.bind("<Return>", lambda e: self.save_event_fields(normalize=True))
+
+        # Verbindung (Punkt 6: aufklappbar, Status immer in der Kopfzeile)
+        b, self.lbl_conn_head = self._section(side, "Verbindung", "verbindung", status=True)
         b.columnconfigure(0, weight=1)
         self._label(b, "COM-Port").grid(row=0, column=0, columnspan=2, sticky="w")
         self.cmb_port = self._combo(b)
@@ -1079,14 +1823,13 @@ class LiveRankingApp:
         self._label(b, "8N1", fg=MUTED).grid(row=3, column=1, sticky="e")
         self.btn_connect = self._button(b, "Verbinden", self.toggle_connection, GREEN)
         self.btn_connect.grid(row=4, column=0, columnspan=2, sticky="ew")
-        self.lbl_conn = self._label(b, "Nicht verbunden", fg=MUTED)
-        self.lbl_conn.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.set_conn_status("nicht verbunden", MUTED)
 
         # Startliste
         b = self._section(side, "Startliste")
         b.columnconfigure(0, weight=1)
         b.columnconfigure(1, weight=1)
-        self.lbl_startlist = self._label(b, "Keine Startliste geladen", fg=MUTED, wraplength=300, justify="left")
+        self.lbl_startlist = self._label(b, "Keine Startliste geladen", fg=MUTED, wraplength=wrap, justify="left")
         self.lbl_startlist.grid(row=0, column=0, columnspan=2, sticky="w")
         self.var_mode = tk.StringVar(value=self.settings["wettkampf"])
         self.mode_buttons = {}
@@ -1117,7 +1860,7 @@ class LiveRankingApp:
             row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         # Speaker-Anzeige
-        b = self._section(side, "Speaker-Anzeige")
+        b, self.lbl_speaker_head = self._section(side, "Speaker-Anzeige", "speaker", status=True)
         b.columnconfigure(0, weight=1, uniform="tg")
         b.columnconfigure(1, weight=1, uniform="tg")
         self.show_buttons = {}
@@ -1139,28 +1882,38 @@ class LiveRankingApp:
                                   exportselection=False, activestyle="none")
         self.lst_cat.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.lst_cat.bind("<<ListboxSelect>>", self.on_category_select)
-        self._label(b, "Name").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self._label(b, "Von").grid(row=1, column=1, sticky="w", pady=(6, 0))
-        self._label(b, "Bis").grid(row=1, column=2, sticky="w", pady=(6, 0))
+        mv = tk.Frame(b, bg=PANEL)
+        mv.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        mv.columnconfigure(0, weight=1)
+        mv.columnconfigure(1, weight=1)
+        self._button(mv, "▲ nach oben", lambda: self.move_selected_category(-1)).grid(
+            row=0, column=0, sticky="ew", padx=(0, 3))
+        self._button(mv, "▼ nach unten", lambda: self.move_selected_category(1)).grid(
+            row=0, column=1, sticky="ew", padx=(3, 0))
+        self._label(b, "Name").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self._label(b, "Von").grid(row=2, column=1, sticky="w", pady=(6, 0))
+        self._label(b, "Bis").grid(row=2, column=2, sticky="w", pady=(6, 0))
         self.e_cat_name = self._entry(b, width=12)
-        self.e_cat_name.grid(row=2, column=0, sticky="ew", padx=(0, 4))
+        self.e_cat_name.grid(row=3, column=0, sticky="ew", padx=(0, 4))
         self.e_cat_min = self._entry(b, width=5)
-        self.e_cat_min.grid(row=2, column=1, sticky="ew", padx=(0, 4))
+        self.e_cat_min.grid(row=3, column=1, sticky="ew", padx=(0, 4))
         self.e_cat_max = self._entry(b, width=5)
-        self.e_cat_max.grid(row=2, column=2, sticky="ew")
-        self._label(b, "Rekord / Referenzzeit (optional, z.B. 1:18.20)").grid(
-            row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.e_cat_max.grid(row=3, column=2, sticky="ew")
+        self._label(b, "Rekord / Referenzzeit (optional, z.B. 1:18.20)", wraplength=wrap, justify="left").grid(
+            row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self.e_cat_rekord = self._entry(b, width=12)
-        self.e_cat_rekord.grid(row=4, column=0, columnspan=3, sticky="ew")
-        self._button(b, "Übernehmen", self.category_update).grid(row=5, column=0, sticky="ew", pady=(6, 0), padx=(0, 4))
-        self._button(b, "Hinzufügen", self.category_add).grid(row=5, column=1, sticky="ew", pady=(6, 0), padx=(0, 4))
-        self._button(b, "Löschen", self.category_delete, DARK_RED).grid(row=5, column=2, sticky="ew", pady=(6, 0))
+        self.e_cat_rekord.grid(row=5, column=0, columnspan=3, sticky="ew")
+        self._button(b, "Übernehmen", self.category_update).grid(row=6, column=0, sticky="ew", pady=(6, 0), padx=(0, 4))
+        self._button(b, "Hinzufügen", self.category_add).grid(row=6, column=1, sticky="ew", pady=(6, 0), padx=(0, 4))
+        self._button(b, "Löschen", self.category_delete, DARK_RED).grid(row=6, column=2, sticky="ew", pady=(6, 0))
+        self._label(b, "Karten lassen sich auch direkt an der Titelzeile verschieben.", fg=MUTED,
+                    wraplength=wrap, justify="left").grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self.refresh_category_list()
 
         # Onlinetool
         b = self._section(side, "Onlinetool", "online")
         b.columnconfigure(0, weight=1)
-        self.lbl_online = self._label(b, "", fg=MUTED, wraplength=300, justify="left")
+        self.lbl_online = self._label(b, "", fg=MUTED, wraplength=wrap, justify="left")
         self.lbl_online.grid(row=0, column=0, sticky="w")
         self.lbl_upload = self._label(b, "", fg=MUTED)
         self.lbl_upload.grid(row=1, column=0, sticky="w", pady=(2, 0))
@@ -1170,11 +1923,11 @@ class LiveRankingApp:
                      lambda: self.request_startlist_update("manuell", manual=True)).grid(row=4, column=0, sticky="ew", pady=(6, 0))
         self.update_online_labels()
 
-        # Browser-Anzeige
+        # Browser-Anzeige (Punkte 10 und 12)
         b = self._section(side, "Browser-Anzeige (lokales Netz)", "web")
         b.columnconfigure(0, weight=1)
         self._label(b, "Netzwerkadresse dieses PCs").grid(row=0, column=0, columnspan=2, sticky="w")
-        self.cmb_bind = self._combo(b, width=16)
+        self.cmb_bind = self._combo(b, width=16, state="readonly")
         self.cmb_bind.grid(row=1, column=0, sticky="ew", pady=(2, 4))
         self._button(b, "⟳", self.refresh_bind_ips).grid(row=1, column=1, sticky="e", padx=(6, 0), pady=(2, 4))
         self._label(b, "Port").grid(row=2, column=0, sticky="w")
@@ -1183,24 +1936,22 @@ class LiveRankingApp:
         self.e_port.grid(row=2, column=1, sticky="e")
         self.btn_web = self._button(b, "Browser-Anzeige starten", self.toggle_web, GREEN)
         self.btn_web.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        self.e_web_url = tk.Entry(b, bg=BG, fg=TEXT, readonlybackground=BG, relief="flat", font=self.f_log,
-                                  highlightthickness=0)
-        self.e_web_url.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        self.e_web_url.insert(0, "Aus")
-        self.e_web_url.configure(state="readonly")
+        self.lbl_web_url = self._label(b, "Aus", fg=MUTED, wraplength=wrap, justify="left")
+        self.lbl_web_url.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
         btns = tk.Frame(b, bg=PANEL)
         btns.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        for c in range(3):
-            btns.columnconfigure(c, weight=1)
+        btns.columnconfigure(0, weight=1, uniform="wb")
+        btns.columnconfigure(1, weight=1, uniform="wb")
         self._button(btns, "Link kopieren", self.copy_web_url).grid(row=0, column=0, sticky="ew", padx=(0, 3))
-        self._button(btns, "QR-Code", self.show_web_qr).grid(row=0, column=1, sticky="ew", padx=3)
-        self._button(btns, "Neuer Schlüssel", self.new_web_key).grid(row=0, column=2, sticky="ew", padx=(3, 0))
+        self._button(btns, "QR-Code", self.show_web_qr).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        self._button(btns, "Neuer Schlüssel", self.new_web_key).grid(row=1, column=0, columnspan=2, sticky="ew",
+                                                                      pady=(6, 0))
         self._label(b, "Nur lesend, nur private Netzwerke, Zugriff nur mit Schlüssel im Link.",
-                    fg=MUTED, wraplength=300, justify="left").grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+                    fg=MUTED, wraplength=wrap, justify="left").grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.refresh_bind_ips()
 
         # Daten
-        b = self._section(side, "Daten")
+        b, self.lbl_data_head = self._section(side, "Daten", "daten", status=True)
         b.columnconfigure(0, weight=1)
         self._button(b, "Resultate als CSV exportieren", self.export_csv, GREEN).grid(row=0, column=0, sticky="ew")
         self._button(b, "Export pro Verein (USB-Stick)", self.open_club_export, GREEN).grid(
@@ -1227,7 +1978,7 @@ class LiveRankingApp:
                             activebackground=BLUE, activeforeground=WHITE, relief="flat", bd=0,
                             padx=12, pady=3, font=self.f_side_bold, cursor="hand2")
             btn.pack(side="left", padx=(0, 4))
-            txt = tk.Text(holder, height=10, bg="#020617", fg=MUTED, font=self.f_log, relief="flat",
+            txt = tk.Text(holder, height=10, width=1, bg="#020617", fg=MUTED, font=self.f_log, relief="flat",
                           state="disabled", wrap="word" if key == "focus" else "none",
                           highlightthickness=0)
             txt.grid(row=0, column=0, sticky="nsew")
@@ -1235,6 +1986,7 @@ class LiveRankingApp:
             txt.tag_configure("warn", foreground=GOLD)
             txt.tag_configure("error", foreground=RED)
             txt.tag_configure("ok", foreground="#38bdf8")
+            txt.tag_configure("test", foreground="#64748b")
             self.log_tabs[key] = (btn, txt)
         self.show_log_tab("focus")
 
@@ -1245,11 +1997,94 @@ class LiveRankingApp:
         txt.tkraise()
         txt.see("end")
 
+    def set_conn_status(self, text, color):
+        self._set(self.lbl_conn_head, text=text, fg=color)
+
+    # ---------------- Wettkampf (Punkt 13) ---------------- #
+    def schedule_event_save(self):
+        if self._event_job is not None:
+            self.root.after_cancel(self._event_job)
+        self._event_job = self.root.after(600, self.save_event_fields)
+
+    def save_event_fields(self, normalize=False):
+        self._event_job = None
+        ev = self.settings["event"]
+        name = self.e_event_name.get().strip()
+        von_txt, bis_txt = self.e_event_from.get().strip(), self.e_event_to.get().strip()
+        von, bis = parse_date(von_txt), parse_date(bis_txt)
+        ok_von = not von_txt or von is not None
+        ok_bis = not bis_txt or (bis is not None and (von is None or bis >= von))
+        self.e_event_from.configure(highlightbackground=BORDER if ok_von else RED,
+                                    highlightcolor=BLUE if ok_von else RED)
+        self.e_event_to.configure(highlightbackground=BORDER if ok_bis else RED,
+                                  highlightcolor=BLUE if ok_bis else RED)
+        if not ok_von or not ok_bis:
+            hint = "Datum ungültig (TT.MM.JJJJ)" if not (ok_von and (not bis_txt or bis is not None)) \
+                else "«bis» liegt vor «von»"
+            self._set(self.lbl_event_hint, text=hint, fg=RED)
+        else:
+            self._set(self.lbl_event_hint, text="Datum als TT.MM.JJJJ, «bis» leer lassen bei einem Tag", fg=MUTED)
+        new = {"name": name,
+               "von": von.strftime("%d.%m.%Y") if von else ("" if not von_txt else ev["von"]),
+               "bis": bis.strftime("%d.%m.%Y") if (bis and ok_bis) else ("" if not bis_txt else ev["bis"])}
+        if new != ev:
+            ev.update(new)
+            self.save_settings()
+        if normalize:
+            for entry, date in ((self.e_event_from, von), (self.e_event_to, bis if ok_bis else None)):
+                if date is not None and entry.get().strip() != date.strftime("%d.%m.%Y"):
+                    entry.delete(0, "end")
+                    entry.insert(0, date.strftime("%d.%m.%Y"))
+        self.update_window_title()
+
+    def event_dates(self):
+        ev = self.settings["event"]
+        von, bis = parse_date(ev["von"]), parse_date(ev["bis"])
+        if von is None:
+            return None, None
+        if bis is not None and bis <= von:
+            bis = None
+        return von, bis
+
+    def event_label(self):
+        ev = self.settings["event"]
+        von, bis = self.event_dates()
+        dates = ""
+        if von:
+            dates = von.strftime("%d.%m.%Y") + (f" bis {bis.strftime('%d.%m.%Y')}" if bis else "")
+        return "  ".join(x for x in (ev["name"].strip(), dates) if x)
+
+    def event_prefix(self):
+        """Dateinamen-Praefix: 2027-06-12[_bis_2027-06-13]_Wettkampfname."""
+        von, bis = self.event_dates()
+        if von is None:
+            von, bis = datetime.date.today(), None
+        dates = von.isoformat() + (f"_bis_{bis.isoformat()}" if bis else "")
+        return f"{dates}_{file_part(self.settings['event']['name'].strip() or 'SWV')}"
+
+    def update_window_title(self):
+        label = self.event_label()
+        self.root.title(f"{APP_TITLE}  |  {label}" if label else APP_TITLE)
+        if hasattr(self, "lbl_event_head"):
+            avail = self.wrap_w - self.f_side_head.measure("▾ Wettkampf") - 4
+            if label:
+                von, bis = self.event_dates()
+                dates = short_date_range(von, bis)
+                name = self.settings["event"]["name"].strip()
+                tail = f"  {dates}" if dates and name else dates
+                name_w = avail - self.f_side_bold.measure(tail)
+                text = (fit_text(self.f_side_bold, name, name_w) if name and name_w > 30 else "") + tail
+                self._set(self.lbl_event_head, text=text.strip(), fg=TEXT)
+            else:
+                self._set(self.lbl_event_head, text="nicht erfasst", fg=GOLD)
+
     # ---------------- Speaker-Anzeige ein/aus ---------------- #
     def update_show_buttons(self):
         for key, btn in self.show_buttons.items():
             on = self.settings["show"].get(key, False)
             btn.configure(bg=GREEN if on else BORDER, activebackground=GREEN if on else BLUE)
+        on = sum(1 for key, _l in SHOW_LABELS if self.settings["show"].get(key))
+        self._set(self.lbl_speaker_head, text=f"{on} von {len(SHOW_LABELS)} ein", fg=MUTED)
 
     def toggle_show(self, key):
         self.settings["show"][key] = not self.settings["show"].get(key, False)
@@ -1257,23 +2092,69 @@ class LiveRankingApp:
         self.save_settings()
         self.apply_show_settings()
 
+    def any_panel(self):
+        show = self.settings["show"]
+        return any(show.get(k) for k in ("naechste", "ticker", "statistik")) or self._note_visible
+
+    def note_segments(self):
+        """Notiz der Nummer auf der Strecke, leer wenn nichts erfasst ist."""
+        nr = self.current_nr
+        if nr is None or not self.settings["show"].get("notizen") or self.is_test(nr):
+            return []
+        p = self.participants.get(nr) or {}
+        notiz, bem = p.get("notiz", "").strip(), p.get("bemerkung", "").strip()
+        if not notiz and not bem:
+            return []
+        name = display_name(p, self.settings["wettkampf"])
+        seg = [(f"Nr {nr}" + (f"  {name}" if name else "") + "\n", "nr")]
+        if notiz:
+            seg.append((notiz + ("\n" if bem else ""), None))
+        if bem:
+            seg.append((f"Bemerkung (Startliste): {bem}", "sub"))
+        return seg
+
+    def update_note_panel(self):
+        seg = self.note_segments()
+        visible = bool(seg)
+        if visible:
+            self._set_text(self.txt_note, seg)
+            lines = sum(t.count("\n") for t, _tag in seg) + 1
+            self.txt_note.configure(height=max(2, lines + 1))
+        if visible == self._note_visible:
+            return
+        self._note_visible = visible
+        if not visible:
+            self.panel_note.pack_forget()
+        else:
+            ticker_packed = self.panel_ticker.winfo_manager() == "pack"
+            if self.panel_orient == "right":
+                opts = {"side": "top", "fill": "x", "pady": (0, 6)}
+            else:
+                opts = {"side": "left", "fill": "both", "expand": True, "padx": (0, 6)}
+            if ticker_packed:
+                opts["before"] = self.panel_ticker
+            self.panel_note.pack(**opts)
+        self.place_right_panel()
+
     def apply_show_settings(self):
         show = self.settings["show"]
-        for frame, key in ((self.panel_next, "naechste"), (self.panel_ticker, "ticker"), (self.panel_stats, "statistik")):
+        for frame in (self.panel_next, self.panel_note, self.panel_ticker, self.panel_stats):
             frame.pack_forget()
-        any_panel = False
+        self._note_visible = False
         self.txt_stats.configure(height=len(self.categories) + 3)
-        for frame, key, side, expand in ((self.panel_next, "naechste", "top", False),
-                                         (self.panel_stats, "statistik", "bottom", False),
-                                         (self.panel_ticker, "ticker", "top", True)):
-            if show.get(key):
-                frame.pack(side=side, fill="both" if expand else "x", expand=expand,
-                           pady=(6, 0) if side == "bottom" else (0, 6))
-                any_panel = True
-        if any_panel:
-            self.right_panel.grid()
+        if self.panel_orient == "right":
+            layout = ((self.panel_next, "naechste", "top", False), (self.panel_stats, "statistik", "bottom", False),
+                      (self.panel_ticker, "ticker", "top", True))
+            for frame, key, side, expand in layout:
+                if show.get(key):
+                    frame.pack(side=side, fill="both" if expand else "x", expand=expand,
+                               pady=(6, 0) if side == "bottom" else (0, 6))
         else:
-            self.right_panel.grid_remove()
+            for frame, key in ((self.panel_next, "naechste"), (self.panel_ticker, "ticker"),
+                               (self.panel_stats, "statistik")):
+                if show.get(key):
+                    frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        self.place_right_panel()
         for card in self.cards:
             for row in card["rows"]:
                 if show.get("namen"):
@@ -1285,28 +2166,28 @@ class LiveRankingApp:
         self.update_panels()
         self.schedule_font_scale()
 
+    def place_right_panel(self):
+        if not self.any_panel():
+            self.right_panel.grid_remove()
+            return
+        if self.panel_orient == "right":
+            self.right_panel.grid(row=0, column=2, rowspan=1, columnspan=1, sticky="ns", padx=(6, 6), pady=6)
+        else:
+            self.right_panel.grid(row=1, column=0, rowspan=1, columnspan=3, sticky="ew", padx=6, pady=(6, 6))
+
     # ================================================================== #
-    # Kategorie-Karten
+    # Kategorie-Karten (Punkte 7 und 14)
     # ================================================================== #
     def build_cards(self):
         for card in self.cards:
             card["frame"].destroy()
         self.cards = []
-        for r in range(12):
-            self.cards_area.rowconfigure(r, weight=0, uniform="")
-        rows = max(1, -(-len(self.categories) // 3))
-        for r in range(rows):
-            self.cards_area.rowconfigure(r, weight=1, uniform="row")
-        for c in range(3):
-            self.cards_area.columnconfigure(c, weight=1, uniform="col")
-
-        for i, cat in enumerate(self.categories):
+        for cat in self.categories:
             f = tk.Frame(self.cards_area, bg=PANEL, highlightthickness=2, highlightbackground=BORDER)
-            f.grid(row=i // 3, column=i % 3, sticky="nsew", padx=6, pady=6)
             f.grid_propagate(False)
             for c, w in ((0, 0), (1, 0), (2, 0), (3, 1)):
                 f.columnconfigure(c, weight=w)
-            title = tk.Label(f, text=self.card_title(cat), font=self.f_title, bg=PANEL, fg=MUTED, anchor="w")
+            title = tk.Label(f, text="", font=self.f_title, bg=PANEL, fg=MUTED, anchor="w", cursor="fleur")
             title.grid(row=0, column=0, columnspan=4, sticky="ew", padx=14, pady=(8, 2))
             rows_w = []
             for k in range(TOP_N):
@@ -1325,14 +2206,29 @@ class LiveRankingApp:
                 f.rowconfigure(r_main, weight=1)
                 f.rowconfigure(r_sub, weight=0)
                 rows_w.append({"txt": l_txt, "arrow": l_arr, "time": l_time, "pen": l_pen, "sub": l_sub,
-                               "nr": None, "rank": None, "color": WHITE})
-            self.cards.append({"cat": cat, "frame": f, "title": title, "rows": rows_w})
+                               "nr": None, "rank": None, "color": WHITE, "sub_full": ""})
+            card = {"cat": cat, "frame": f, "title": title, "rows": rows_w}
+            title.bind("<ButtonPress-1>", lambda e, c=card: self.drag_start(c))
+            title.bind("<B1-Motion>", self.drag_motion)
+            title.bind("<ButtonRelease-1>", self.drag_end)
+            self.cards.append(card)
 
+        self.layout_cards()
         self.prev_top = {}
         self.update_rankings(initial=True)
-        if hasattr(self, "panel_next"):
+        if hasattr(self, "lbl_count"):
             self.apply_show_settings()
         self.schedule_font_scale()
+
+    def layout_cards(self):
+        nc = max(1, self.card_cols)
+        rows = max(1, -(-len(self.cards) // nc))
+        for r in range(40):
+            self.cards_area.rowconfigure(r, weight=1 if r < rows else 0, uniform="row" if r < rows else "")
+        for c in range(3):
+            self.cards_area.columnconfigure(c, weight=1 if c < nc else 0, uniform="col" if c < nc else "")
+        for i, card in enumerate(self.cards):
+            card["frame"].grid(row=i // nc, column=i % nc, sticky="nsew", padx=6, pady=6)
 
     def card_title(self, cat):
         title = f"{cat['name']}   {cat['min']}-{cat['max']}"
@@ -1340,42 +2236,241 @@ class LiveRankingApp:
             title += f"   Rekord {cat['rekord']}s"
         return title
 
+    # ---------------- Karten verschieben (Punkt 7) ---------------- #
+    def card_from_widget(self, widget):
+        frames = {str(c["frame"]): c for c in self.cards}
+        while widget is not None:
+            card = frames.get(str(widget))
+            if card:
+                return card
+            widget = widget.master
+        return None
+
+    def drag_start(self, card):
+        self._drag = {"card": card, "target": None}
+        card["frame"].configure(highlightbackground=BLUE)
+
+    def drag_motion(self, event):
+        if not self._drag:
+            return
+        target = self.card_from_widget(self.root.winfo_containing(event.x_root, event.y_root))
+        if target is self._drag["card"]:
+            target = None
+        if target is not self._drag["target"]:
+            if self._drag["target"] is not None:
+                self._drag["target"]["frame"].configure(highlightbackground=BORDER)
+            if target is not None:
+                target["frame"].configure(highlightbackground=GOLD)
+            self._drag["target"] = target
+
+    def drag_end(self, _event=None):
+        if not self._drag:
+            return
+        source, target = self._drag["card"], self._drag["target"]
+        self._drag = None
+        source["frame"].configure(highlightbackground=BORDER)
+        if target is not None:
+            target["frame"].configure(highlightbackground=BORDER)
+            self.move_category(self.cards.index(source), self.cards.index(target))
+
+    def move_selected_category(self, delta):
+        sel = self.lst_cat.curselection()
+        if not sel:
+            messagebox.showinfo("Kategorie", "Zuerst eine Kategorie in der Liste anklicken.")
+            return
+        i = sel[0]
+        j = i + delta
+        if 0 <= j < len(self.categories):
+            self.move_category(i, j)
+
+    def move_category(self, i, j):
+        """Kategorie i an Position j verschieben, Karten nur neu anordnen (kein Neuaufbau)."""
+        if i == j:
+            return
+        self.categories.insert(j, self.categories.pop(i))
+        if len(self.cards) == len(self.categories):
+            self.cards.insert(j, self.cards.pop(i))
+            self.layout_cards()
+        else:
+            self.build_cards()
+        self.rebuild_cat_lookup()
+        self.save_categories()
+        self.refresh_category_list()
+        self.lst_cat.selection_clear(0, "end")
+        self.lst_cat.selection_set(j)
+        self.lst_cat.see(j)
+        self.log("Reihenfolge der Kategorien: " + ", ".join(c["name"] for c in self.categories))
+        self.update_panels()
+
+    # ---------------- Layout und Schriftgroessen (Punkt 14) ---------------- #
     def schedule_font_scale(self):
         if self._scale_job is not None:
             self.root.after_cancel(self._scale_job)
         self._scale_job = self.root.after(80, self.apply_font_scale)
 
+    def row_template(self):
+        """Laengste tatsaechlich vorkommende Zeile: Nummernlaenge, Zeitformat, Strafpunkte."""
+        real = self.real_results()
+        nrs = [n for n in self.start_order] + real
+        digits = max([3] + [len(str(n)) for n in nrs])
+        times = [self.disp_time(n) for n in real]
+        longest = max(times + ["1:23.45"], key=len)
+        time_txt = re.sub(r"\d", "8", longest) + "s"
+        pen = max([self.penalty(n) for n in real] + [0])
+        return (f"5. Nr. {'8' * digits}", time_txt, f"+{'8' * len(str(pen))}" if pen else "")
+
+    def row_width(self, px):
+        """Benoetigte Kartenbreite fuer die laengste vorkommende Zeile bei Schriftgroesse px."""
+        rank_txt, time_txt, pen_txt = self._row_tpl
+        self._mf_bold.configure(size=-max(1, int(px * 1.25)))
+        self._mf_pen.configure(size=-max(10, int(px * 0.6)))
+        return (self._mf_bold.measure(rank_txt) + self._mf_bold.measure("➔") + self._mf_bold.measure(time_txt) +
+                (self._mf_pen.measure(pen_txt) if pen_txt else 0) + 64)
+
+    def card_sizes(self, px):
+        """Schriftgroessen der Karte aus der Grundgroesse px (identisch zu apply_font_scale)."""
+        s = self.ui_scale
+        return {"row": px, "first": int(px * 1.25), "title": max(int(11 * s), int(px * 0.72)),
+                "sub": max(int(10 * s), int(px * 0.58)), "pen": max(10, int(px * 0.6))}
+
+    def card_height(self, px):
+        """Benoetigte Kartenhoehe bei Schriftgroesse px, gemessen mit echten Zeilenhoehen."""
+        sz = self.card_sizes(px)
+        self._mf_title.configure(size=-sz["title"])
+        self._mf_bold.configure(size=-sz["first"])
+        self._mf_row.configure(size=-sz["row"])
+        self._mf_sub.configure(size=-sz["sub"])
+        lines = (self._mf_title.metrics("linespace") + 10 + self._mf_bold.metrics("linespace")
+                 + 4 * self._mf_row.metrics("linespace"))
+        if self.settings["show"].get("namen"):
+            lines += 5 * self._mf_sub.metrics("linespace")
+        return lines + 16  # Rahmen und Abstaende
+
+    def fit_px_h(self, card_h):
+        lo, hi = 6, int(110 * self.ui_scale)
+        if self.card_height(lo) > card_h:
+            return lo
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self.card_height(mid) <= card_h:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo
+
+    def fit_px(self, card_w):
+        lo, hi = 6, int(110 * self.ui_scale)
+        if self.row_width(lo) > card_w:
+            return lo
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self.row_width(mid) <= card_w:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo
+
     def apply_font_scale(self):
         self._scale_job = None
-        w = self.cards_area.winfo_width()
-        h = self.cards_area.winfo_height()
-        if w < 50 or h < 50:
-            return
-        rows = max(1, -(-len(self.categories) // 3))
-        card_w = w / 3 - 16
-        card_h = h / rows - 16
-        names = self.settings["show"].get("namen")
-        px = int(min(card_h / (12.8 if names else 8.6), card_w / 18.5))
-        px = max(11, min(px, 110))
-        self.f_row.configure(size=-px)
-        self.f_first.configure(size=-int(px * 1.25))
-        self.f_title.configure(size=-max(11, int(px * 0.72)))
-        self.f_sub.configure(size=-max(10, int(px * 0.58)))
-        self.f_pen.configure(size=-max(10, int(px * 0.6)))
         mw, mh = self.main.winfo_width(), self.main.winfo_height()
-        panel_w = int(max(260, min(420, mw * 0.22)))
-        if int(self.right_panel.cget("width")) != panel_w:
-            self.right_panel.configure(width=panel_w)
-        sp = max(14, min(52, int(min(mw / 48, mh / 22))))
+        if mw < 50 or mh < 50:
+            return
+        s = self.ui_scale
+
+        # Status-Balken und Seitenpanels
+        sp = max(int(14 * s), min(int(52 * s), int(min(mw / 48, mh / 22))))
         self.f_status.configure(size=-sp)
-        self.f_status_sub.configure(size=-max(11, int(sp * 0.55)))
-        pp = max(12, min(17, int(mh / 62)))
+        self.f_status_name.configure(size=-max(int(12 * s), int(sp * 0.62)))
+        self.f_status_sub.configure(size=-max(int(11 * s), int(sp * 0.55)))
+        pp = max(int(12 * s), min(int(17 * s), int(mh / 62)))
         self.f_panel.configure(size=-pp)
         self.f_panel_bold.configure(size=-pp)
-        self.f_panel_head.configure(size=-max(12, pp))
-        col0 = self.f_first.measure("5. Nr. 888")
+        self.f_panel_head.configure(size=-pp)
+        tp = int(pp * 1.33)
+        self.f_ticker.configure(size=-tp)
+        self.f_ticker_bold.configure(size=-tp)
+        self.f_ticker_time.configure(size=-max(int(10 * s), int(tp * 0.78)))
+
+        # Seitenpanels rechts nur, wenn daneben zwei Kartenspalten gut lesbar Platz haben
+        self._row_tpl = self.row_template()
+        panel_w = int(max(260 * s, min(420 * s, mw * 0.22)))
+        orient = "right"
+        if self.any_panel() and (mw - panel_w - 12) / 2 - 12 < self.row_width(int(16 * s)):
+            orient = "below"
+        changed = orient != self.panel_orient
+        self.panel_orient = orient
+        if orient == "right":
+            if int(self.right_panel.cget("width")) != panel_w:
+                self.right_panel.configure(width=panel_w)
+        else:
+            panel_h = int(max(200 * s, min(320 * s, mh * 0.3)))
+            if int(self.right_panel.cget("height")) != panel_h:
+                self.right_panel.configure(height=panel_h)
+        if changed:
+            self.apply_show_settings()
+            return
+
+        # Kartenraster: Spaltenzahl und Schrift nach gemessener Textbreite
+        w, h = self.cards_canvas.winfo_width(), self.cards_canvas.winfo_height()
+        if w < 50 or h < 50:
+            return
+        n = max(1, len(self.cards))
+        self._row_tpl = self.row_template()
+        cols = [c for c in (3, 2, 1) if c <= n] or [1]
+        best = None
+        for nc in cols:
+            rows = -(-n // nc)
+            px_w = self.fit_px(w / nc - 12)
+            px_h = self.fit_px_h(h / rows - 12)
+            px = min(px_w, px_h, int(110 * s))
+            if best is None or px > best[0]:
+                best = (px, nc, rows)
+        px, nc, rows = best
+        min_px = int(11 * s)
+        inner_h = h
+        if px < min_px:
+            # Zu wenig Platz: Schrift lesbar halten und den Kartenbereich scrollen statt unlesbar klein.
+            # Mehr Spalten bevorzugt, solange die Schrift dort mindestens 'target' erreicht.
+            target = int(16 * s)
+            widths = {c: min(self.fit_px(w / c - 12), int(110 * s)) for c in cols}
+            good = [c for c in cols if widths[c] >= target]
+            nc = max(good) if good else max(cols, key=lambda c: (widths[c], c))
+            rows = -(-n // nc)
+            px = min(widths[nc], target)
+            inner_h = max(h, int(rows * (self.card_height(px) + 12)))
+        scrolling = inner_h > h + 1
+        if nc != self.card_cols:
+            self.card_cols = nc
+            self.layout_cards()
+        self.cards_scrolling = scrolling
+        self.cards_canvas.itemconfigure(self.cards_win, width=w, height=inner_h)
+        self.cards_canvas.configure(scrollregion=(0, 0, w, inner_h))
+        if scrolling:
+            self.cards_sb.grid(row=0, column=1, sticky="ns")
+        else:
+            self.cards_sb.grid_remove()
+            self.cards_canvas.yview_moveto(0)
+
+        sz = self.card_sizes(max(6, px))
+        self.f_row.configure(size=-sz["row"])
+        self.f_first.configure(size=-sz["first"])
+        self.f_title.configure(size=-sz["title"])
+        self.f_sub.configure(size=-sz["sub"])
+        self.f_pen.configure(size=-sz["pen"])
+        col0 = self.f_first.measure("5. Nr. 8888")
         for card in self.cards:
             card["frame"].columnconfigure(0, minsize=col0)
+        self.card_inner_w = int(w / nc - 12 - 28 - 4)
+        self.root.after_idle(self.refit_texts)
+
+    def refit_texts(self):
+        """Titel, Namen und Status-Zeilen an die aktuelle Breite anpassen ('…' statt Abschneiden)."""
+        for card in self.cards:
+            self._set_fit(card["title"], self.card_title(card["cat"]), self.f_title, self.card_inner_w)
+            for row in card["rows"]:
+                self._set(row["sub"], text=fit_text(self.f_sub, row["sub_full"], self.card_inner_w))
+        for label in self.live_labels + self.ziel_labels:
+            self._set_fit(label, self._full_text.get(str(label), label.cget("text")))
 
     # ================================================================== #
     # Kategorien / Ranking
@@ -1397,6 +2492,20 @@ class LiveRankingApp:
             if cat:
                 return cat
         return self.range_category(nr)
+
+    def is_test(self, nr):
+        """Testnummer: in keinem Kategorienbereich und nicht (mit Kategorie) in der Startliste."""
+        if nr is None:
+            return False
+        p = self.participants.get(nr)
+        if p and not p.get("unknown"):
+            return False
+        if p and p.get("kategorie") and self._cat_lookup.get(p["kategorie"].strip().casefold()):
+            return False
+        return self.range_category(nr) is None
+
+    def real_results(self):
+        return [nr for nr in self.results if not self.is_test(nr)]
 
     def penalty(self, nr):
         p = self.participants.get(nr)
@@ -1495,10 +2604,17 @@ class LiveRankingApp:
                 self._set(row["time"], text=tstr, fg=color, font=font)
                 self._set(row["arrow"], text=arrow, fg=self._arrow_color(row, now), font=font)
                 self._set(row["pen"], text=pen_txt)
-                self._set(row["sub"], text=sub_txt)
+                row["sub_full"] = sub_txt
+                self._set(row["sub"], text=fit_text(self.f_sub, sub_txt, self.card_inner_w))
 
-        n = len(self.results)
-        self._set(self.lbl_count, text=f"{n} Resultat{'e' if n != 1 else ''} erfasst")
+        if hasattr(self, "_row_tpl") and self.row_template() != self._row_tpl:
+            self.schedule_font_scale()
+        n = len(self.real_results())
+        tests = len(self.results) - n
+        self._set(self.lbl_count, text=f"{n} Resultat{'e' if n != 1 else ''} erfasst"
+                                       + (f" (+{tests} Test)" if tests else ""))
+        self._set(self.lbl_data_head, text=f"{n} Resultat{'e' if n != 1 else ''}"
+                                           + (f" (+{tests} Test)" if tests else ""), fg=MUTED)
 
     def blink_tick(self):
         self.blink_phase = not self.blink_phase
@@ -1526,6 +2642,14 @@ class LiveRankingApp:
     # Zielzeiten
     # ================================================================== #
     def register_final(self, nr, secs, tstr, source="CP 545"):
+        if self.is_test(nr):
+            prev = self.results.get(nr)
+            self.results[nr] = {"secs": secs, "str": tstr, "ts": time.time(), "source": source,
+                                "run": (prev.get("run", 1) + 1) if prev else 1, "prev": None, "status": ST_OPEN}
+            self.log(f"TEST Nr {nr} {tstr}s [{source}]", tag="test")
+            self.add_ticker(f"Test: Nr {nr} im Ziel, {tstr}s", "test")
+            self.on_data_changed()
+            return
         cat = self.category_of(nr)
         before = list(self.ranking(cat)) if cat else []
         prev = self.results.get(nr)
@@ -1567,7 +2691,7 @@ class LiveRankingApp:
                 diff = lead_t - total
                 if diff > 0:
                     self.add_ticker(f"Neue Bestzeit {cat['name']}: Nr {nr}{who_txt} {disp}, "
-                                    f"{diff:.2f} s vor Nr {lead_nr}", "ziel")
+                                    f"{fmt_gap(diff)} vor Nr {lead_nr}", "ziel")
                 elif diff == 0:
                     self.add_ticker(f"Bestzeit {cat['name']} egalisiert: Nr {nr}{who_txt} {disp}, "
                                     f"zeitgleich mit Nr {lead_nr}", "ziel")
@@ -1608,23 +2732,21 @@ class LiveRankingApp:
                 parts.append("nicht in Startliste")
         if cat:
             parts.append(cat["name"])
-        line = "  ·  ".join(parts)
-        notes = [x for x in ((p or {}).get("notiz", ""), (p or {}).get("bemerkung", "")) if x]
-        if notes:
-            line += "   |   " + "  ·  ".join(notes)
-        return line
+        return "  ·  ".join(parts)
 
     def update_live_info(self):
         if not hasattr(self, "live_labels"):
             return
         big, sub1, sub2 = self.live_labels
         nr = self.current_nr
-        self._set(big, text=f"LAUFEND: Nr {nr if nr is not None else '-'} ➔ {self.live_time or '-'}")
-        if nr is None:
-            self._set(sub1, text="")
-            self._set(sub2, text="")
+        test = self.is_test(nr)
+        self._set_fit(big, f"LAUFEND: Nr {nr if nr is not None else '-'} ➔ {self.live_time or '-'}"
+                           + ("   TEST" if test else ""))
+        if nr is None or test:
+            self._set_fit(sub1, "Testfahrt, Nummer liegt in keinem Kategorienbereich" if test else "")
+            self._set_fit(sub2, "", fg=WHITE)
             return
-        self._set(sub1, text=self.participant_line(nr))
+        self._set_fit(sub1, self.participant_line(nr))
         show = self.settings["show"]
         cat = self.category_of(nr)
         info, behind = [], False
@@ -1652,25 +2774,25 @@ class LiveRankingApp:
             if show.get("prognose") and others and running is not None:
                 possible = 1 + sum(1 for t, _n in others if t < running)
                 info.append(f"Rang {possible} von {len(others) + 1} möglich")
-        self._set(sub2, text="  ·  ".join(info), fg=LIGHT_YELLOW if behind else WHITE)
+        self._set_fit(sub2, "  ·  ".join(info), fg=LIGHT_YELLOW if behind else WHITE)
 
     def update_ziel_info(self):
         if not hasattr(self, "ziel_labels"):
             return
         big, sub1, sub2 = self.ziel_labels
         nr = self.ziel_nr
-        if nr is None or nr not in self.results:
-            self._set(big, text="ZIEL: -")
-            self._set(sub1, text="")
-            self._set(sub2, text="")
+        if nr is None or nr not in self.results or self.is_test(nr):
+            self._set_fit(big, "ZIEL: -")
+            self._set_fit(sub1, "")
+            self._set_fit(sub2, "")
             return
         res = self.results[nr]
         cat = self.category_of(nr)
         cat_name = cat["name"] if cat else "ohne Kategorie"
         pen = self.penalty(nr)
         pen_txt = f"  (+{pen} = {fmt_secs(self.total_secs(nr))}s)" if pen else ""
-        self._set(big, text=f"ZIEL: Nr {nr} ({cat_name}) ➔ {res['str']}s{pen_txt}")
-        self._set(sub1, text=self.participant_line(nr))
+        self._set_fit(big, f"ZIEL: Nr {nr} ({cat_name}) ➔ {res['str']}s{pen_txt}")
+        self._set_fit(sub1, self.participant_line(nr))
         info = []
         if self.settings["show"].get("einordnung") and cat:
             ranked = self.ranking(cat)
@@ -1683,17 +2805,17 @@ class LiveRankingApp:
                 elif others[0][0] == total:
                     info.append(f"Rang 1 von {n}, zeitgleich mit Nr {others[0][1]}")
                 else:
-                    info.append(f"Rang 1 von {n}, {others[0][0] - total:.2f} s vor Nr {others[0][1]}")
+                    info.append(f"Rang 1 von {n}, {fmt_gap(others[0][0] - total)} vor Nr {others[0][1]}")
             elif rank is not None:
                 lead_t, lead_nr = ranked[0][2], ranked[0][1]
-                info.append(f"Rang {rank} von {n}, +{total - lead_t:.2f} s auf Nr {lead_nr}")
+                info.append(f"Rang {rank} von {n}, +{fmt_gap(total - lead_t)} auf Nr {lead_nr}")
             if res.get("prev"):
                 info.append(f"Wiederholung: {res['secs'] - res['prev']['secs']:+.2f} s "
                             f"gegenüber {res['prev']['str']}s")
             rekord = parse_time(cat.get("rekord", "")) if cat.get("rekord") else None
             if rekord is not None and total < rekord:
                 info.append(f"unter Rekord {cat['rekord']}s")
-        self._set(sub2, text="  ·  ".join(info))
+        self._set_fit(sub2, "  ·  ".join(info))
 
     # ================================================================== #
     # Seitenpanels (Als naechstes, Ticker, Statistik)
@@ -1713,6 +2835,7 @@ class LiveRankingApp:
     def update_panels(self):
         if not hasattr(self, "txt_next"):
             return
+        self.update_note_panel()
         show = self.settings["show"]
         mode = self.settings["wettkampf"]
         if show.get("naechste"):
@@ -1730,16 +2853,17 @@ class LiveRankingApp:
                     info = "  ·  ".join(x for x in (p.get("verein", ""), cat["name"] if cat else "") if x)
                     seg.append((f"{info}\n", "sub"))
                     notes = "  ·  ".join(x for x in (p.get("notiz", ""), p.get("bemerkung", "")) if x)
-                    if notes:
+                    if notes and show.get("notizen"):
                         seg.append((f"{notes}\n", "note"))
             self._set_text(self.txt_next, seg)
         if show.get("ticker"):
             seg = []
             if not self.ticker:
                 seg.append(("Noch keine Ereignisse", "sub"))
-            for t, text, tag in self.ticker:
-                seg.append((f"{t}  ", "time"))
-                seg.append((f"{text}\n", tag))
+            for i, (t, text, tag) in enumerate(self.ticker):
+                seg.append((f"{t}  ", ("time", "entry")))
+                tags = tuple(x for x in (tag, "entry", "newest" if i == 0 else None) if x)
+                seg.append((f"{text}\n", tags))
             self._set_text(self.txt_ticker, seg)
         if show.get("statistik"):
             self._set_text(self.txt_stats, self.stats_segments())
@@ -1760,12 +2884,14 @@ class LiveRankingApp:
             avg = f"  Ø {fmt_secs(sum(t for _r, _n, t in ranked) / done)}s" if done else ""
             seg.append((f"{cat['name']}  ", "bold"))
             seg.append((f"{count}{avg}\n", None))
-        n_res = len(self.results)
+        n_res = len(self.real_results())
         total_listed = len(self.start_order)
         seg.append((f"Gesamt  {n_res}/{total_listed} gefahren\n" if total_listed
                     else f"Gesamt  {n_res} gefahren\n", "bold"))
         best = None
         for nr in self.results:
+            if self.category_of(nr) is None:
+                continue
             t = self.total_secs(nr)
             if best is None or t < best[0]:
                 best = (t, nr)
@@ -1781,21 +2907,22 @@ class LiveRankingApp:
     def poll_queue(self):
         try:
             while True:
-                kind, payload = self.q.get_nowait()
+                kind, payload, reader = self.q.get_nowait()
+                if reader is not self.reader:
+                    continue  # Nachzuegler einer frueheren Verbindung
                 if kind == "line":
                     self.handle_line(payload)
                 elif kind == "connected":
-                    self.set_connected(True, f"Verbunden: {payload}")
-                    self.log(f"Verbunden mit {payload}", tag="ok")
+                    self.on_serial_connected(reader)
+                elif kind == "lost":
+                    self.on_serial_lost(reader, payload)
+                elif kind == "open_error":
+                    self.on_serial_open_error(reader, payload)
                 elif kind == "disconnected":
-                    self.set_connected(False, "Nicht verbunden")
                     self.reader = None
-                    self.log(f"Verbindung zu {payload} getrennt", tag="warn")
-                elif kind == "error":
-                    self.set_connected(False, "Fehler")
-                    self.reader = None
-                    self.log(payload, tag="error")
-                    messagebox.showerror("Verbindung", payload)
+                    if not self.reconnecting:
+                        self.set_connected(False, "nicht verbunden")
+                        self.log(f"Verbindung zu {payload} getrennt", tag="warn")
         except queue.Empty:
             pass
         self.root.after(POLL_INTERVAL_MS, self.poll_queue)
@@ -1828,7 +2955,25 @@ class LiveRankingApp:
                     return
                 self.register_final(self.current_nr, secs, tstr)
 
+    def suggest_part_nr(self, nr):
+        """Aktuelle Startnummer im Feld 'Startnummer' (Startliste) vorschlagen, Eingaben nie ueberschreiben."""
+        entry = self.e_part_nr
+        try:
+            if self.root.focus_get() is entry:
+                return
+        except (KeyError, tk.TclError):  # Fokus in einem Combobox-Popup
+            pass
+        current = entry.get().strip()
+        if current in ("", str(self._last_suggested)):
+            entry.delete(0, "end")
+            entry.insert(0, str(nr))
+            self._last_suggested = nr
+
     def on_new_starter(self, prev_nr, nr):
+        if self.is_test(nr):
+            self.update_panels()
+            return
+        self.suggest_part_nr(nr)
         if self.start_order and nr not in self.participants:
             self.ensure_participant(nr, after=prev_nr, prompt=True)
         pn = self.participants.get(nr)
@@ -1860,9 +3005,17 @@ class LiveRankingApp:
             self.cmb_port.set(values[0])
 
     def toggle_connection(self):
+        if self.reconnecting:
+            self.stop_reconnect()
+            if self.reader is not None:
+                self.reader.stop()
+                self.reader = None
+            self.set_connected(False, "nicht verbunden")
+            self.log("Warten auf den USB-Adapter abgebrochen", tag="warn")
+            return
         if self.reader is not None and self.reader.is_alive():
             self.reader.stop()
-            self.lbl_conn.configure(text="Trenne ...")
+            self.set_conn_status("trenne ...", GOLD)
             return
         if serial is None:
             messagebox.showerror("pyserial fehlt", "Modul 'pyserial' ist nicht installiert:\npip install pyserial")
@@ -1877,12 +3030,79 @@ class LiveRankingApp:
         except ValueError:
             messagebox.showwarning("Verbindung", "Baudrate ist ungültig.")
             return
+        self.conn_target = {"port": port, "baud": baud, "identity": port_identity(port)}
         self.reader = SerialReader(port, baud, self.q)
         self.reader.start()
-        self.lbl_conn.configure(text=f"Verbinde mit {port} ...")
+        self.set_conn_status(f"verbinde mit {port} ...", GOLD)
 
-    def set_connected(self, connected, text):
-        self.lbl_conn.configure(text=text, fg=GREEN if connected else MUTED)
+    def on_serial_connected(self, reader):
+        was_reconnecting = self.reconnecting
+        self.stop_reconnect()
+        self.conn_target["port"] = reader.port
+        if self.conn_target.get("identity") is None:
+            self.conn_target["identity"] = port_identity(reader.port)
+        self.set_connected(True, f"{reader.port} verbunden")
+        if was_reconnecting:
+            self.log(f"{reader.port} wieder verbunden", tag="ok")
+            self.add_ticker(f"Verbindung zum CP 545 wieder hergestellt ({reader.port})", "ziel")
+            if self.cmb_port.get().split(" - ")[0].strip() != reader.port:
+                self.refresh_ports()
+                match = next((label for label, dev in self.port_map.items() if dev == reader.port), reader.port)
+                self.cmb_port.set(match)
+        else:
+            self.log(f"Verbunden mit {reader.port}", tag="ok")
+
+    def on_serial_lost(self, reader, exc):
+        """Unerwarteter Abbruch (z.B. USB ausgesteckt): kein Fenster, automatisch wieder verbinden."""
+        self.reader = None
+        self.log(f"Verbindung zu {reader.port} unterbrochen, USB-Adapter ausgesteckt?", tag="error")
+        self.log(f"Details: {exc}", focus=False, tag="error")
+        self.add_ticker("Verbindung zum CP 545 unterbrochen, warte auf USB-Adapter", "warn")
+        self.start_reconnect()
+
+    def on_serial_open_error(self, reader, exc):
+        self.reader = None
+        if self.reconnecting:
+            self.log(f"Wiederverbinden mit {reader.port}: {exc}", focus=False, tag="warn")
+            return  # naechster Versuch folgt
+        msg = friendly_open_error(reader.port, exc)
+        self.set_connected(False, "Fehler beim Verbinden", RED)
+        self.log(msg.replace("\n", " "), tag="error")
+        self.log(f"Details: {exc}", focus=False, tag="error")
+        messagebox.showerror("Verbindung", msg)
+
+    def start_reconnect(self):
+        self.reconnecting = True
+        self.set_conn_status("USB getrennt, warte auf Gerät ...", RED)
+        self.btn_connect.configure(text="Warten abbrechen", bg=DARK_RED)
+        if self._reconnect_job is None:
+            self._reconnect_job = self.root.after(RECONNECT_MS, self.try_reconnect)
+
+    def stop_reconnect(self):
+        self.reconnecting = False
+        if self._reconnect_job is not None:
+            self.root.after_cancel(self._reconnect_job)
+            self._reconnect_job = None
+
+    def try_reconnect(self):
+        self._reconnect_job = None
+        if not self.reconnecting:
+            return
+        if self.reader is None:
+            port = self.find_reconnect_port()
+            if port:
+                self.set_conn_status(f"USB erkannt, verbinde mit {port} ...", GOLD)
+                self.reader = SerialReader(port, self.conn_target["baud"], self.q)
+                self.reader.start()
+            else:
+                self.set_conn_status("USB getrennt, warte auf Gerät ...", RED)
+        self._reconnect_job = self.root.after(RECONNECT_MS, self.try_reconnect)
+
+    def find_reconnect_port(self):
+        return find_port(self.conn_target["port"], self.conn_target.get("identity"))
+
+    def set_connected(self, connected, text, color=None):
+        self.set_conn_status(text, color or (GREEN if connected else MUTED))
         self.btn_connect.configure(text="Trennen" if connected else "Verbinden",
                                    bg=DARK_RED if connected else GREEN)
 
@@ -1939,8 +3159,8 @@ class LiveRankingApp:
             return
         try:
             rows = read_table(path)
-        except Exception as exc:
-            messagebox.showerror("Startliste", f"Datei konnte nicht gelesen werden:\n{exc}")
+        except StartlistError as exc:
+            messagebox.showerror("Startliste", str(exc))
             return
         if not rows:
             messagebox.showerror("Startliste", "Die Datei ist leer.")
@@ -2083,18 +3303,24 @@ class LiveRankingApp:
     def clear_startlist(self):
         if not self.start_order:
             return
-        if not messagebox.askyesno("Startliste", "Startliste entfernen?\nResultate bleiben bestehen."):
+        clubs = len({p.get("verein") for p in self.participants.values() if p.get("verein")})
+        if not self.confirm_danger(
+                "Startliste entfernen",
+                f"Startliste mit {len(self.start_order)} Starts aus {clubs} Vereinen wirklich entfernen?\n\n"
+                "Verloren gehen: Namen, Vereine, Startreihenfolge, nachgetragene Teilnehmer und Speaker-Notizen.\n"
+                "Die erfassten Zeiten bleiben bestehen.", "Startliste entfernen"):
             return
+        removed = f"{len(self.start_order)} Starts aus {clubs} Vereinen ({self.startlist_source or 'ohne Dateiname'})"
         self.start_order, self.participants, self.startlist_source = [], {}, ""
         self.rebuild_order_index()
         self.rebuild_cat_lookup()
         self.update_startlist_label()
-        self.log("Startliste entfernt", tag="warn")
+        self.log(f"Startliste entfernt: {removed}", tag="warn")
         self.on_data_changed()
 
     def ensure_participant(self, nr, after=None, prompt=True):
-        """Unbekannte Startnummer hinter 'after' in die Startreihenfolge einfuegen."""
-        if nr in self.participants or nr <= 0:
+        """Unbekannte Startnummer hinter 'after' in die Startreihenfolge einfuegen (nie fuer Testnummern)."""
+        if nr in self.participants or nr <= 0 or self.range_category(nr) is None:
             return
         cat = self.range_category(nr)
         self.participants[nr] = {
@@ -2122,6 +3348,11 @@ class LiveRankingApp:
         except ValueError:
             messagebox.showwarning("Teilnehmer", "Gültige Startnummer eingeben.")
             return
+        if nr not in self.participants and self.range_category(nr) is None:
+            messagebox.showinfo("Teilnehmer", f"Nr {nr} liegt in keinem Kategorienbereich und gilt als "
+                                              "Testnummer.\nFür einen Teilnehmer zuerst den Nummernbereich "
+                                              "einer Kategorie anpassen.")
+            return
         if nr not in self.participants:
             self.ensure_participant(nr, after=None, prompt=False)
         self.open_participant_dialog(nr)
@@ -2145,7 +3376,6 @@ class LiveRankingApp:
         fields = {}
         clubs = sorted({x.get("verein") for x in self.participants.values() if x.get("verein")}, key=str.casefold)
         specs = [("p1", labels[0], "entry"), ("p2", labels[1], "entry"), ("verein", "Verein", "club"),
-                 ("kategorie", "Kategorie", "cat"), ("strafpunkte", "Strafpunkte (nur Speaker-Ranking)", "entry"),
                  ("notiz", "Notiz für Speaker", "entry")]
         for i, (key, label, kind) in enumerate(specs, start=1):
             tk.Label(dlg, text=label, bg=PANEL, fg=TEXT, font=self.f_side, anchor="w").grid(
@@ -2153,13 +3383,9 @@ class LiveRankingApp:
             if kind == "club":
                 w = self._combo(dlg, clubs, width=34)
                 w.set(p.get("verein", ""))
-            elif kind == "cat":
-                w = self._combo(dlg, [""] + [c["name"] for c in self.categories], width=34, state="readonly")
-                current = self._cat_lookup.get(p.get("kategorie", "").casefold())
-                w.set(current["name"] if current else "")
             else:
                 w = self._entry(dlg, width=36)
-                w.insert(0, str(p.get(key, "") or ("" if key != "strafpunkte" else "0")))
+                w.insert(0, str(p.get(key, "") or ""))
             w.grid(row=i, column=1, sticky="ew", pady=2)
             fields[key] = w
 
@@ -2168,13 +3394,8 @@ class LiveRankingApp:
             dlg.destroy()
 
         def save():
-            pen_txt = fields["strafpunkte"].get().strip() or "0"
-            if not pen_txt.isdigit():
-                messagebox.showwarning("Teilnehmer", "Strafpunkte als ganze Zahl eingeben.", parent=dlg)
-                return
-            for key in ("p1", "p2", "verein", "kategorie", "notiz"):
+            for key in ("p1", "p2", "verein", "notiz"):
                 p[key] = fields[key].get().strip()
-            p["strafpunkte"] = int(pen_txt)
             self.log(f"Teilnehmer Nr {nr} gespeichert: {display_name(p, mode) or '-'}, {p['verein'] or '-'}")
             close()
             self.update_startlist_label()
@@ -2265,7 +3486,9 @@ class LiveRankingApp:
         if not sel:
             return
         cat = self.categories[sel[0]]
-        if messagebox.askyesno("Kategorie", f"Kategorie '{cat['name']}' löschen?"):
+        if self.confirm_danger("Kategorie löschen", f"Kategorie '{cat['name']}' ({cat['min']}-{cat['max']}) "
+                               "wirklich löschen?\n\nZeiten dieser Kategorie erscheinen danach nicht mehr im "
+                               "Ranking, bleiben aber gespeichert.", "Kategorie löschen"):
             del self.categories[sel[0]]
             self.categories_changed()
 
@@ -2328,7 +3551,7 @@ class LiveRankingApp:
     # Onlinetool (Oberflaeche vorbereitet, ohne Anbindung)
     # ================================================================== #
     def pending_uploads(self):
-        return [nr for nr, r in self.results.items() if r.get("status") != ST_SENT]
+        return [nr for nr, r in self.results.items() if r.get("status") != ST_SENT and not self.is_test(nr)]
 
     def update_online_labels(self):
         if not hasattr(self, "lbl_online"):
@@ -2461,7 +3684,7 @@ class LiveRankingApp:
         def approve(nrs):
             n = 0
             for nr in nrs:
-                if nr in self.results and self.results[nr].get("status") in (ST_OPEN, ST_ERROR):
+                if nr in self.results and not self.is_test(nr) and self.results[nr].get("status") in (ST_OPEN, ST_ERROR):
                     self.results[nr]["status"] = ST_APPROVED
                     n += 1
             if n:
@@ -2494,6 +3717,8 @@ class LiveRankingApp:
         tree.delete(*tree.get_children())
         mode = self.settings["wettkampf"]
         for nr, r in sorted(self.results.items(), key=lambda kv: kv[1]["ts"], reverse=True):
+            if self.is_test(nr):
+                continue
             p = self.participants.get(nr, {})
             cat = self.category_of(nr)
             status = r.get("status", ST_OPEN)
@@ -2511,13 +3736,10 @@ class LiveRankingApp:
         ips = local_ipv4s()
         self.cmb_bind["values"] = ips
         saved = self.settings["web"]["bind"]
-        self.cmb_bind.set(saved if saved in ips else ips[0])
+        self.cmb_bind.set(saved if saved in ips else (ips[0] if ips else ""))
 
-    def set_web_url(self, text):
-        self.e_web_url.configure(state="normal")
-        self.e_web_url.delete(0, "end")
-        self.e_web_url.insert(0, text)
-        self.e_web_url.configure(state="readonly")
+    def set_web_url(self, text, fg=MUTED):
+        self._set(self.lbl_web_url, text=text, fg=fg)
 
     def toggle_web(self):
         if self.web.running:
@@ -2527,6 +3749,13 @@ class LiveRankingApp:
             self.log("Browser-Anzeige gestoppt", tag="warn")
             return
         bind = self.cmb_bind.get().strip()
+        if not bind:
+            self.refresh_bind_ips()
+            bind = self.cmb_bind.get().strip()
+        if not bind:
+            messagebox.showwarning("Browser-Anzeige", "Kein lokales Netzwerk gefunden.\n"
+                                                      "WLAN oder LAN verbinden und ⟳ drücken.")
+            return
         try:
             port = int(self.e_port.get().strip())
             if not 1024 <= port <= 65535:
@@ -2543,7 +3772,8 @@ class LiveRankingApp:
         self.settings["web"]["bind"], self.settings["web"]["port"] = bind, port
         self.save_settings()
         self.btn_web.configure(text="Browser-Anzeige stoppen", bg=DARK_RED)
-        self.set_web_url(self.web.url)
+        self.set_web_url(f"Läuft: http://{bind}:{port}\nSchlüssel im Link verborgen, mit «Link kopieren» "
+                         f"oder «QR-Code» weitergeben.", GREEN)
         self.log(f"Browser-Anzeige läuft: http://{bind}:{port}/", tag="ok")
 
     def copy_web_url(self):
@@ -2638,7 +3868,10 @@ class LiveRankingApp:
         dlg.resizable(False, False)
         cat = self.category_of(nr)
         who = self.who_text(nr)
-        tk.Label(dlg, text=f"Nr {nr}  ({cat['name'] if cat else 'ohne Kategorie'})" + (f"  {who}" if who else ""),
+        head = f"Nr {nr}  ({cat['name'] if cat else 'ohne Kategorie'})" + (f"  {who}" if who else "")
+        if self.is_test(nr):
+            head = f"Nr {nr}  (Testnummer, erscheint nicht im Ranking)"
+        tk.Label(dlg, text=head,
                  bg=PANEL, fg=GOLD, font=self.f_side_head).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 12))
         for col, text in ((0, "Min"), (2, "Sek"), (4, "1/10")):
             tk.Label(dlg, text=text, bg=PANEL, fg=MUTED, font=self.f_side).grid(row=1, column=col)
@@ -2704,9 +3937,12 @@ class LiveRankingApp:
         for cat in self.categories:
             for rank, nr, _t in self.ranking(cat):
                 rows.append([cat["name"], rank, nr, self.results[nr]["str"], f"{self.results[nr]['secs']:.2f}"])
-        for nr in sorted(n for n in self.results if self.category_of(n) is None):
+        for nr in sorted(n for n in self.results if self.category_of(n) is None and not self.is_test(n)):
             r = self.results[nr]
             rows.append(["OHNE KATEGORIE", "", nr, r["str"], f"{r['secs']:.2f}"])
+        for nr in sorted(n for n in self.results if self.is_test(n)):
+            r = self.results[nr]
+            rows.append(["TEST", "", nr, r["str"], f"{r['secs']:.2f}"])
         return rows
 
     def export_csv(self):
@@ -2716,7 +3952,7 @@ class LiveRankingApp:
         path = filedialog.asksaveasfilename(
             title="Resultate exportieren", defaultextension=".csv",
             filetypes=[("CSV (Excel)", "*.csv")],
-            initialfile=f"SWV_Resultate_{time.strftime('%Y-%m-%d_%H%M')}.csv")
+            initialfile=f"{self.event_prefix()}_Resultate.csv")
         if not path:
             return
         try:
@@ -2739,9 +3975,9 @@ class LiveRankingApp:
         """{verein: [zeilen]} in Startlisten-Reihenfolge der Vereine."""
         mode = self.settings["wettkampf"]
         cat_order = {c["name"]: i for i, c in enumerate(self.categories)}
-        nrs = set(self.results)
+        nrs = set(self.real_results())
         if include_missing:
-            nrs |= set(self.participants)
+            nrs |= {n for n in self.participants if not self.is_test(n)}
         clubs = {}
         club_pos = {}
         for nr in sorted(nrs, key=lambda n: (self.order_index.get(n, 10 ** 6), n)):
@@ -2765,13 +4001,34 @@ class LiveRankingApp:
         ordered = sorted(clubs, key=lambda c: club_pos[c])
         return {c: [row for _k, row in sorted(clubs[c], key=lambda x: x[0])] for c in ordered}
 
+    def club_choices(self):
+        """[(anzeige, schluessel)] fuer die Vereinsauswahl: alle, jeder Verein, ohne Verein."""
+        counts = {}
+        for nr in self.real_results():
+            club = self.participants.get(nr, {}).get("verein") or "OHNE VEREIN"
+            counts[club] = counts.get(club, 0) + 1
+        order = []
+        for nr in self.start_order:
+            club = self.participants.get(nr, {}).get("verein")
+            if club and club not in order:
+                order.append(club)
+        for club in sorted((c for c in counts if c not in order and c != "OHNE VEREIN"), key=str.casefold):
+            order.append(club)
+        choices = [("Alle Vereine", None)]
+        for club in order:
+            n = counts.get(club, 0)
+            choices.append((f"{club} ({n} Zeit{'en' if n != 1 else ''})", club))
+        n = counts.get("OHNE VEREIN", 0)
+        choices.append((f"Ohne Verein ({n} Zeit{'en' if n != 1 else ''})", "OHNE VEREIN"))
+        return choices
+
     def open_club_export(self):
-        if not self.results:
+        if not self.real_results():
             messagebox.showinfo("Export", "Noch keine Resultate vorhanden.")
             return
         dlg = self._toplevel("Export pro Verein")
         dlg.columnconfigure(1, weight=1)
-        fmt_values = (["xlsx"] if openpyxl else []) + ["csv", "txt"]
+        fmt_values = ["xlsx", "csv", "txt"]
         var_fmt = tk.StringVar(value=fmt_values[0])
         var_split = tk.StringVar(value="einzeln")
         var_missing = tk.BooleanVar(value=False)
@@ -2785,51 +4042,83 @@ class LiveRankingApp:
             row=1, column=0, sticky="w", pady=(8, 0))
         sf = tk.Frame(dlg, bg=PANEL)
         sf.grid(row=1, column=1, sticky="w", pady=(8, 0))
-        self._radio(sf, "Eine Datei pro Verein", var_split, "einzeln").pack(side="left", padx=(0, 6))
-        self._radio(sf, "Eine Datei für alle Vereine", var_split, "gesamt").pack(side="left")
+        club_row = tk.Frame(dlg, bg=PANEL)
+        tk.Label(club_row, text="Verein", bg=PANEL, fg=TEXT, font=self.f_side, anchor="w").pack(side="left", padx=(0, 8))
+        choices = self.club_choices()
+        cmb_club = self._combo(club_row, [c[0] for c in choices], width=40, state="readonly")
+        cmb_club.current(0)
+        cmb_club.pack(side="left", fill="x", expand=True)
+
+        def on_split():
+            if var_split.get() == "einzeln":
+                club_row.grid(row=2, column=1, sticky="ew", pady=(6, 0))
+            else:
+                club_row.grid_remove()
+
+        self._radio(sf, "Eine Datei pro Verein", var_split, "einzeln", command=on_split).pack(side="left", padx=(0, 6))
+        self._radio(sf, "Eine Datei für alle Vereine", var_split, "gesamt", command=on_split).pack(side="left")
+        on_split()
         self._check(dlg, "Teilnehmer ohne Zeit mitexportieren", var_missing).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+            row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
         tk.Label(dlg, text="Ziel", bg=PANEL, fg=GOLD, font=self.f_side_head, anchor="w").grid(
-            row=3, column=0, sticky="w", pady=(8, 0))
+            row=4, column=0, sticky="nw", pady=(8, 0))
         tf = tk.Frame(dlg, bg=PANEL)
-        tf.grid(row=3, column=1, sticky="ew", pady=(8, 0))
+        tf.grid(row=4, column=1, sticky="ew", pady=(8, 0))
         tf.columnconfigure(0, weight=1)
-        cmb = self._combo(tf, width=40)
+        cmb = self._combo(tf, width=40, state="readonly")
         cmb.grid(row=0, column=0, sticky="ew")
+        lbl_path = tk.Label(tf, text="", bg=PANEL, fg=MUTED, font=self.f_side, anchor="w", justify="left",
+                            wraplength=int(520 * self.ui_scale))
+        lbl_path.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
         targets = {}
+
+        def short(path):
+            path = os.path.normpath(path)
+            return path if len(path) <= 44 else "…" + path[-43:]
+
+        def show_path(_e=None):
+            path = targets.get(cmb.get(), "")
+            lbl_path.configure(text=f"Zielordner: {path}" if path else "Kein Ziel gewählt")
 
         def refresh_targets():
             targets.clear()
             for path, label in removable_drives():
                 targets[f"USB: {label}"] = path
             if self.settings["export_dir"]:
-                targets[self.settings["export_dir"]] = self.settings["export_dir"]
+                targets[short(self.settings["export_dir"])] = self.settings["export_dir"]
             cmb["values"] = list(targets)
             if cmb.get() not in targets:
                 cmb.set(next(iter(targets), ""))
+            show_path()
 
         def choose():
             path = filedialog.askdirectory(title="Zielordner wählen", parent=dlg)
             if path:
-                targets[path] = path
+                targets[short(path)] = path
                 cmb["values"] = list(targets)
-                cmb.set(path)
+                cmb.set(short(path))
+                show_path()
 
+        cmb.bind("<<ComboboxSelected>>", show_path)
         self._button(tf, "⟳", refresh_targets).grid(row=0, column=1, padx=(6, 0))
         self._button(tf, "Ordner wählen", choose).grid(row=0, column=2, padx=(6, 0))
         refresh_targets()
 
         def do_export():
             sel = cmb.get().strip()
-            base = targets.get(sel, sel)
+            base = targets.get(sel, "")
             if not base or not os.path.isdir(base):
                 messagebox.showwarning("Export", "Gültigen Zielordner oder USB-Stick wählen.", parent=dlg)
                 return
+            per_club = var_split.get() == "einzeln"
+            only = choices[cmb_club.current()][1] if per_club and cmb_club.current() >= 0 else None
             try:
-                folder, files = self.write_club_export(base, var_fmt.get(), var_split.get() == "einzeln",
-                                                       var_missing.get())
+                folder, files = self.write_club_export(base, var_fmt.get(), per_club, var_missing.get(), only)
             except Exception as exc:
                 messagebox.showerror("Export", f"Export fehlgeschlagen:\n{exc}", parent=dlg)
+                return
+            if not files:
+                messagebox.showinfo("Export", "Für diese Auswahl sind keine Zeiten vorhanden.", parent=dlg)
                 return
             if not sel.startswith("USB: "):
                 self.settings["export_dir"] = base
@@ -2840,23 +4129,27 @@ class LiveRankingApp:
                                           "USB-Stick vor dem Entfernen sicher auswerfen.")
 
         btns = tk.Frame(dlg, bg=PANEL)
-        btns.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        btns.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         self._button(btns, "Exportieren", do_export, GREEN).pack(side="left")
         self._button(btns, "Abbrechen", dlg.destroy).pack(side="left", padx=(8, 0))
         self._center(dlg)
         dlg.grab_set()
 
-    def write_club_export(self, base, fmt, per_club, include_missing):
+    def write_club_export(self, base, fmt, per_club, include_missing, only_club=None):
         data = self.club_data(include_missing)
+        if per_club and only_club is not None:
+            data = {c: rows for c, rows in data.items() if c == only_club}
+        if not data:
+            return "", []
         cols = self.club_columns()
-        stamp = time.strftime("%Y-%m-%d_%H%M")
-        folder = os.path.join(base, f"SWV_Resultate_{stamp}")
+        folder = os.path.join(base, f"{self.event_prefix()}_Resultate_{time.strftime('%H%M')}")
         os.makedirs(folder, exist_ok=True)
         files = []
+        all_clubs = list(self.club_data(include_missing))
         groups = ([(c, {c: rows}) for c, rows in data.items()] if per_club else [("Alle_Vereine", data)])
-        for i, (fname, subset) in enumerate(groups, start=1):
-            prefix = f"{i:02d}_" if per_club else ""
-            path = os.path.join(folder, f"{prefix}{sanitize_filename(fname, 'Verein')}.{fmt}")
+        for fname, subset in groups:
+            prefix = f"{all_clubs.index(fname) + 1:02d}_" if per_club and fname in all_clubs else ""
+            path = os.path.join(folder, f"{prefix}{file_part(fname, 'Verein')}.{fmt}")
             if fmt == "xlsx":
                 self._write_xlsx(path, cols, subset)
             elif fmt == "csv":
@@ -2887,8 +4180,10 @@ class LiveRankingApp:
         stamp = time.strftime("%d.%m.%Y %H:%M")
         paar = self.settings["wettkampf"] == "paar"
         with open(path, "w", encoding="utf-8-sig", newline="\r\n") as fh:
+            event = self.event_label() or "SWV"
             for club, rows in subset.items():
-                fh.write(f"SWV Resultate  |  Verein: {club}\n")
+                fh.write(f"{event}\n")
+                fh.write(f"Resultate  |  Verein: {club}\n")
                 fh.write(f"Stand {stamp}  (Rang provisorisch, Speaker-Auswertung)\n\n")
                 fh.write(f"{'Kategorie':<12} {'Rang':>4} {'Nr':>5}  {'Name':<40} {'Zeit':>9} {'Straf':>5} "
                          f"{'Total':>9}  Status\n")
@@ -2907,6 +4202,24 @@ class LiveRankingApp:
             self._fsync_close(fh)
 
     def _write_xlsx(self, path, cols, subset):
+        if openpyxl is None:
+            sheets, used = [], set()
+            for club, rows in subset.items():
+                title = re.sub(r"[\[\]:*?/\\]", "_", club)[:31] or "Verein"
+                base, n = title, 2
+                while title.casefold() in used:
+                    suffix = f" ({n})"
+                    title = base[:31 - len(suffix)] + suffix
+                    n += 1
+                used.add(title.casefold())
+                sheets.append((title, [cols] + rows))
+            tmp = path + ".tmp"
+            write_xlsx_builtin(tmp, sheets, self.settings["event"]["name"].strip() or "SWV Resultate",
+                               self.event_label(), ("Gefahrene Zeit (s)", "Total (s)"))
+            with open(tmp, "rb+") as fh:
+                self._fsync_close(fh)
+            os.replace(tmp, path)
+            return
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
         used = set()
@@ -2932,11 +4245,32 @@ class LiveRankingApp:
                     for c in ws[letter][1:]:
                         c.number_format = "0.00"
             ws.freeze_panes = "A2"
+        wb.properties.title = self.settings["event"]["name"].strip() or "SWV Resultate"
+        wb.properties.subject = self.event_label()
+        wb.properties.creator = "SWV Live-Ranking"
         tmp = path + ".tmp"
         wb.save(tmp)
         with open(tmp, "rb+") as fh:
             self._fsync_close(fh)
         os.replace(tmp, path)
+
+    def report_missing_modules(self):
+        mods = (("pyserial", serial is not None, "Verbindung zum CP 545"),
+                ("qrcode / pypng", qrcode is not None, "QR-Code der Browser-Anzeige"))
+        frozen = getattr(sys, "frozen", False)
+        try:
+            stamp = time.strftime("%d.%m.%Y %H:%M", time.localtime(
+                os.path.getmtime(sys.executable if frozen else os.path.abspath(__file__))))
+        except OSError:
+            stamp = "unbekannt"
+        available = ", ".join([mod for mod, ok, _u in mods if ok] +
+                              [mod for mod, mo in (("xlrd", xlrd), ("openpyxl", openpyxl)) if mo is not None]) or "keine"
+        self.log(f"Version {APP_VERSION}, {'gebaut' if frozen else 'Skript vom'} {stamp}, "
+                 f"Python {sys.version.split()[0]}, Module: {available}. "
+                 "Excel-Startlisten und Excel-Export funktionieren auch ohne Zusatzmodule.", tag="ok")
+        missing = [(mod, use) for mod, ok, use in mods if not ok]
+        for mod, use in missing:
+            self.log(f"Modul {mod} fehlt: {use} nicht verfügbar. build.bat neu ausführen.", tag="warn")
 
     # ================================================================== #
     # Persistenz
@@ -2995,9 +4329,9 @@ class LiveRankingApp:
     def reset_results(self):
         if not self.results:
             return
-        if not messagebox.askyesno("Zurücksetzen",
-                                   f"Alle {len(self.results)} Resultate löschen?\nVorher exportieren!\n"
-                                   "Die Startliste bleibt erhalten."):
+        if not self.confirm_danger("Resultate zurücksetzen",
+                                   f"Alle {len(self.results)} Resultate wirklich löschen?\n\n"
+                                   "Vorher exportieren! Die Startliste bleibt erhalten.", "Alle löschen"):
             return
         self.results.clear()
         self.blink.clear()
@@ -3012,6 +4346,7 @@ class LiveRankingApp:
         self.log("Resultate zurückgesetzt", tag="warn")
 
     def on_close(self):
+        self.stop_reconnect()
         if self.reader is not None:
             self.reader.stop()
         self.web.stop()
