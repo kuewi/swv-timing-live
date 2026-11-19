@@ -20,7 +20,6 @@ folgt, sobald die API-Dokumentation vorliegt. Gesendet werden nur gefahrene Zeit
 Strafpunkte kommen vom Onlinetool und dienen nur dem Speaker-Ranking.
 """
 
-import base64
 import csv
 import datetime
 import hmac
@@ -57,11 +56,6 @@ try:
     from openpyxl.utils import get_column_letter
 except ImportError:
     openpyxl = None
-try:
-    import qrcode
-    from qrcode.image.pure import PyPNGImage
-except Exception:
-    qrcode = None
 
 # --------------------------------------------------------------------------- #
 # Konfiguration
@@ -79,21 +73,28 @@ LOG_MAX_LINES = 300
 TICKER_MAX = 60
 NEXT_COUNT = 3
 
-BG = "#0f172a"
-PANEL = "#1e293b"
-BORDER = "#334155"
-TEXT = "#f8fafc"
-MUTED = "#94a3b8"
-BLUE = "#2563eb"
-GREEN = "#10b981"
-GOLD = "#facc15"
+# Apple Dark Mode. Flaechen mit weisser Schrift leicht abgedunkelt (Kontrast >= 4.6:1 fuer Sonnenlicht).
+BG = "#000000"            # systemBackground
+PANEL = "#1c1c1e"         # secondarySystemBackground
+PANEL2 = "#2c2c2e"        # tertiarySystemBackground / Eingabefelder
+BUTTON = "#3a3a3c"        # graue Knoepfe
+BORDER = "#38383a"        # separator
+TEXT = "#ffffff"
+MUTED = "#98989d"         # secondaryLabel
+BLUE = "#0872dd"          # systemBlue, abgedunkelt fuer weisse Schrift
+ACCENT = "#0a84ff"        # systemBlue fuer Text und Linien auf dunklem Grund
+GREEN = "#1e8538"         # systemGreen, abgedunkelt fuer weisse Schrift
+GREEN_TEXT = "#30d158"    # systemGreen fuer Text auf dunklem Grund
+GOLD = "#ffd60a"          # systemYellow
 WHITE = "#ffffff"
-RED = "#ef4444"
-ORANGE = "#fb923c"
-LIGHT_YELLOW = "#fde68a"
-DARK_RED = "#7f1d1d"
-INPUT_BG = "#f8fafc"
-INPUT_FG = "#0f172a"
+RED = "#ff453a"           # systemRed
+ORANGE = "#ff9f0a"        # systemOrange
+LIGHT_YELLOW = "#fff3c4"
+DARK_RED = "#d63930"      # systemRed, abgedunkelt fuer weisse Schrift
+INPUT_BG = PANEL2
+INPUT_FG = TEXT
+LIST_BG = "#f2f2f7"       # Aufklappliste der Auswahlfelder: dunkle Schrift auf hellem Grund
+LIST_FG = "#000000"
 
 DEFAULT_CATEGORIES = [
     {"name": "AKTIVE", "min": 1, "max": 199, "rekord": ""},
@@ -175,6 +176,226 @@ def deep_merge(defaults, data):
         else:
             out[key] = val if isinstance(val, type(dval)) else dval
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Bausteine im Apple-Stil (abgerundete Flaechen, Knoepfe, Schalter, Segmente)
+# --------------------------------------------------------------------------- #
+def parent_bg(widget):
+    try:
+        return widget.cget("bg")
+    except tk.TclError:
+        return BG
+
+
+def mix(color, other, t):
+    """Farbe color um Anteil t Richtung other verschieben."""
+    a = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(other[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{int(x + (y - x) * t):02x}" for x, y in zip(a, b))
+
+
+def round_rect(canvas, x1, y1, x2, y2, r, **kw):
+    """Rechteck mit exakt runden Ecken (Kreisboegen), als ein Polygon."""
+    import math
+    r = max(0.0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
+    steps = max(4, int(r / 1.5))
+    pts = []
+    for cx, cy, a0 in ((x2 - r, y1 + r, -90), (x2 - r, y2 - r, 0), (x1 + r, y2 - r, 90), (x1 + r, y1 + r, 180)):
+        for k in range(steps + 1):
+            a = math.radians(a0 + 90 * k / steps)
+            pts += [cx + r * math.cos(a), cy + r * math.sin(a)]
+    return canvas.create_polygon(pts, **kw)
+
+
+class RoundedPanel(tk.Canvas):
+    """Flaeche mit abgerundeten Ecken. Inhalt kommt in .inner (normales Frame)."""
+
+    def __init__(self, parent, fill=None, radius=14, pad=0, fit_height=False, outline="", outline_width=0):
+        self.fill = fill or PANEL
+        super().__init__(parent, bg=parent_bg(parent), highlightthickness=0, bd=0)
+        # Inhalt so weit einruecken, dass er die runden Ecken nicht ueberdeckt
+        self.radius, self.pad, self.fit = radius, max(pad, int(radius * 0.3) + 1), fit_height
+        self.outline, self.outline_width = outline, outline_width
+        self.inner = tk.Frame(self, bg=self.fill)
+        self._win = self.create_window(self.pad, self.pad, window=self.inner, anchor="nw")
+        self._shape = None
+        self.bind("<Configure>", self._redraw)
+        if fit_height:
+            self.inner.bind("<Configure>", self._fit)
+
+    def _fit(self, _e=None):
+        h = self.inner.winfo_reqheight() + 2 * self.pad
+        if int(self.cget("height")) != h:
+            self.configure(height=h)
+
+    def _redraw(self, _e=None):
+        w, h = self.winfo_width(), self.winfo_height()
+        if self._shape is not None:
+            self.delete(self._shape)
+        ow = self.outline_width
+        self._shape = round_rect(self, ow / 2, ow / 2, w - ow / 2, h - ow / 2, self.radius, fill=self.fill,
+                                 outline=self.outline or self.fill, width=max(1, ow))
+        self.tag_lower(self._shape)
+        self.itemconfigure(self._win, width=max(1, w - 2 * self.pad))
+        if not self.fit:
+            self.itemconfigure(self._win, height=max(1, h - 2 * self.pad))
+
+    def set_outline(self, color, width=2):
+        self.outline, self.outline_width = color, width if color else 0
+        self._redraw()
+
+
+class RoundButton(tk.Canvas):
+    """Abgerundeter Knopf. Versteht text, bg, fg, state, command wie tk.Button."""
+
+    _OWN = ("text", "bg", "background", "fg", "foreground", "state", "command", "activebackground", "font")
+
+    def __init__(self, parent, text="", command=None, bg=None, fg=None, font=None, radius=9, padx=14, pady=7,
+                 activebackground=None, **_ignored):
+        self._o = {"text": text, "command": command, "bg": bg or BUTTON, "fg": fg or WHITE, "state": "normal",
+                   "activebackground": activebackground, "font": font}
+        self._hover = self._down = False
+        self.radius, self.padx, self.pady = radius, padx, pady
+        super().__init__(parent, bg=parent_bg(parent), highlightthickness=0, bd=0, cursor="hand2")
+        self._size()
+        self.bind("<Configure>", lambda e: self._draw())
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<ButtonPress-1>", self._press)
+        self.bind("<ButtonRelease-1>", self._release)
+
+    def _font(self):
+        return self._o["font"] or tkfont.nametofont("TkDefaultFont")
+
+    def _size(self):
+        f = self._font()
+        super().configure(height=f.metrics("linespace") + 2 * self.pady,
+                          width=f.measure(self._o["text"]) + 2 * self.padx)
+
+    def _draw(self):
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        if w < 4 or h < 4:
+            return
+        bg = self._o["bg"]
+        if self._o["state"] == "disabled":
+            fill, fg = mix(bg, BG, 0.55), "#6e6e73"
+        else:
+            fill = mix(bg, WHITE, 0.18) if self._down else (mix(bg, WHITE, 0.09) if self._hover else bg)
+            fg = self._o["fg"]
+        round_rect(self, 0, 0, w, h, self.radius, fill=fill, outline=fill)
+        self.create_text(w / 2, h / 2, text=self._o["text"], fill=fg, font=self._font())
+
+    def _set_hover(self, on):
+        self._hover = on
+        if not on:
+            self._down = False
+        self._draw()
+
+    def _press(self, _e):
+        if self._o["state"] != "disabled":
+            self._down = True
+            self._draw()
+
+    def _release(self, e):
+        was = self._down
+        self._down = False
+        self._draw()
+        inside = 0 <= e.x <= self.winfo_width() and 0 <= e.y <= self.winfo_height()
+        if was and inside:
+            self.invoke()
+
+    def invoke(self):
+        if self._o["state"] != "disabled" and self._o["command"]:
+            return self._o["command"]()
+
+    def configure(self, cnf=None, **kw):
+        if cnf:
+            kw.update(cnf)
+        own = {k: kw.pop(k) for k in list(kw) if k in self._OWN}
+        if "background" in own:
+            own["bg"] = own.pop("background")
+        if "foreground" in own:
+            own["fg"] = own.pop("foreground")
+        self._o.update(own)
+        if kw:
+            super().configure(**kw)
+        if "text" in own or "font" in own:
+            self._size()
+        self._draw()
+
+    config = configure
+
+    def cget(self, key):
+        key = {"background": "bg", "foreground": "fg"}.get(key, key)
+        if key in self._o:
+            return self._o[key] if self._o[key] is not None else ""
+        return super().cget(key)
+
+
+class Switch(tk.Canvas):
+    """Ein/Aus-Schalter wie in den iPhone-Einstellungen."""
+
+    def __init__(self, parent, command=None, scale=1.0, on=False):
+        self.w, self.h = int(46 * scale), int(28 * scale)
+        super().__init__(parent, width=self.w, height=self.h, bg=parent_bg(parent), highlightthickness=0, bd=0,
+                         cursor="hand2")
+        self.on, self.command = on, command
+        self.bind("<Button-1>", lambda e: self.command and self.command())
+        self._draw()
+
+    def set(self, on):
+        if bool(on) != self.on:
+            self.on = bool(on)
+            self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        w, h = self.w, self.h
+        track = "#30d158" if self.on else "#39393d"
+        round_rect(self, 0, 0, w, h, h / 2, fill=track, outline=track)
+        m = 2
+        d = h - 2 * m
+        x = w - m - d if self.on else m
+        self.create_oval(x, m, x + d, m + d, fill=WHITE, outline=WHITE)
+
+
+class Segmented(tk.Canvas):
+    """Segment-Schalter (Apple): mehrere Optionen, eine ist aktiv."""
+
+    def __init__(self, parent, options, variable, command=None, font=None, scale=1.0):
+        self.options, self.var, self.command, self.font = options, variable, command, font
+        self.pad = int(2 * scale)
+        h = (font.metrics("linespace") if font else 18) + int(12 * scale)
+        super().__init__(parent, height=h, bg=parent_bg(parent), highlightthickness=0, bd=0, cursor="hand2")
+        self.bind("<Configure>", lambda e: self.redraw())
+        self.bind("<Button-1>", self._click)
+
+    def _click(self, e):
+        w = self.winfo_width()
+        idx = min(len(self.options) - 1, max(0, int(e.x / max(1, w) * len(self.options))))
+        value = self.options[idx][0]
+        if self.var.get() != value:
+            self.var.set(value)
+            self.redraw()
+            if self.command:
+                self.command()
+
+    def redraw(self):
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        if w < 4:
+            return
+        round_rect(self, 0, 0, w, h, 9, fill="#2c2c2e", outline="#2c2c2e")
+        seg = w / len(self.options)
+        for i, (value, label) in enumerate(self.options):
+            x1, x2 = i * seg, (i + 1) * seg
+            active = self.var.get() == value
+            if active:
+                round_rect(self, x1 + self.pad, self.pad, x2 - self.pad, h - self.pad, 7, fill="#636366",
+                           outline="#636366")
+            self.create_text((x1 + x2) / 2, h / 2, text=label, fill=WHITE if active else "#c7c7cc", font=self.font)
 
 
 # --------------------------------------------------------------------------- #
@@ -1042,6 +1263,222 @@ def removable_drives():
 
 
 # --------------------------------------------------------------------------- #
+# QR-Code ohne Zusatzmodul (ISO/IEC 18004, Byte-Modus, Fehlerkorrektur M)
+# --------------------------------------------------------------------------- #
+# Version: (EC-Codewoerter pro Block, [(Anzahl Bloecke, Datencodewoerter pro Block), ...])
+_QR_M = {
+    1: (10, [(1, 16)]), 2: (16, [(1, 28)]), 3: (26, [(1, 44)]), 4: (18, [(2, 32)]),
+    5: (24, [(2, 43)]), 6: (16, [(4, 27)]), 7: (18, [(4, 31)]), 8: (22, [(2, 38), (2, 39)]),
+    9: (22, [(3, 36), (2, 37)]), 10: (26, [(4, 43), (1, 44)]),
+}
+_QR_ALIGN = {1: [], 2: [6, 18], 3: [6, 22], 4: [6, 26], 5: [6, 30], 6: [6, 34], 7: [6, 22, 38],
+             8: [6, 24, 42], 9: [6, 26, 46], 10: [6, 28, 50]}
+
+
+def _gf_tables():
+    exp, log = [0] * 512, [0] * 256
+    x = 1
+    for i in range(255):
+        exp[i] = x
+        log[x] = i
+        x <<= 1
+        if x & 0x100:
+            x ^= 0x11D
+    for i in range(255, 512):
+        exp[i] = exp[i - 255]
+    return exp, log
+
+
+_GF_EXP, _GF_LOG = _gf_tables()
+
+
+def _gf_mul(a, b):
+    return 0 if a == 0 or b == 0 else _GF_EXP[_GF_LOG[a] + _GF_LOG[b]]
+
+
+def _rs_remainder(data, degree):
+    gen = [1]
+    for i in range(degree):
+        nxt = [0] * (len(gen) + 1)
+        for j, coef in enumerate(gen):
+            nxt[j] ^= coef
+            nxt[j + 1] ^= _gf_mul(coef, _GF_EXP[i])
+        gen = nxt
+    rem = [0] * degree
+    for byte in data:
+        factor = byte ^ rem[0]
+        rem = rem[1:] + [0]
+        for k in range(degree):
+            rem[k] ^= _gf_mul(gen[k + 1], factor)
+    return rem
+
+
+def qr_matrix(text, mask=None):
+    """QR-Code als Liste von Zeilen (True = dunkel). mask=None waehlt die beste Maske."""
+    data = text.encode("utf-8")
+    version = None
+    for v in range(1, 11):
+        ec, groups = _QR_M[v]
+        capacity = sum(n * k for n, k in groups)
+        count_bits = 8 if v <= 9 else 16
+        if 4 + count_bits + 8 * len(data) <= capacity * 8:
+            version = v
+            break
+    if version is None:
+        raise ValueError("Text zu lang für den QR-Code")
+    ec, groups = _QR_M[version]
+    capacity = sum(n * k for n, k in groups)
+    count_bits = 8 if version <= 9 else 16
+
+    # Bitstrom: Modus 0100, Laenge, Daten, Abschluss, Fuellbytes
+    bits = [0, 1, 0, 0] + [(len(data) >> i) & 1 for i in range(count_bits - 1, -1, -1)]
+    for byte in data:
+        bits += [(byte >> i) & 1 for i in range(7, -1, -1)]
+    bits += [0] * min(4, capacity * 8 - len(bits))
+    bits += [0] * (-len(bits) % 8)
+    codewords = [int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8)]
+    pad = 0xEC
+    while len(codewords) < capacity:
+        codewords.append(pad)
+        pad = 0x11 if pad == 0xEC else 0xEC
+
+    # Bloecke, Fehlerkorrektur, Verschraenkung
+    blocks, pos = [], 0
+    for n, k in groups:
+        for _ in range(n):
+            blocks.append(codewords[pos:pos + k])
+            pos += k
+    ecs = [_rs_remainder(b, ec) for b in blocks]
+    final = []
+    for i in range(max(len(b) for b in blocks)):
+        final += [b[i] for b in blocks if i < len(b)]
+    for i in range(ec):
+        final += [e[i] for e in ecs]
+
+    size = 17 + 4 * version
+    mod = [[False] * size for _ in range(size)]
+    func = [[False] * size for _ in range(size)]
+
+    def put(x, y, dark):
+        mod[y][x] = dark
+        func[y][x] = True
+
+    for i in range(size):
+        put(6, i, i % 2 == 0)
+        put(i, 6, i % 2 == 0)
+    for cx, cy in ((3, 3), (size - 4, 3), (3, size - 4)):
+        for dy in range(-4, 5):
+            for dx in range(-4, 5):
+                x, y = cx + dx, cy + dy
+                if 0 <= x < size and 0 <= y < size:
+                    put(x, y, max(abs(dx), abs(dy)) not in (2, 4))
+    al = _QR_ALIGN[version]
+    for i, ax in enumerate(al):
+        for j, ay in enumerate(al):
+            if (i == 0 and j == 0) or (i == 0 and j == len(al) - 1) or (i == len(al) - 1 and j == 0):
+                continue
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
+                    put(ax + dx, ay + dy, max(abs(dx), abs(dy)) != 1)
+
+    def format_bits(m):
+        d = (0 << 3) | m  # Stufe M = 00
+        rem = d
+        for _ in range(10):
+            rem = (rem << 1) ^ ((rem >> 9) * 0x537)
+        return ((d << 10) | rem) ^ 0x5412
+
+    def draw_format(m):
+        b = format_bits(m)
+        for i in range(6):
+            put(8, i, (b >> i) & 1)
+        put(8, 7, (b >> 6) & 1)
+        put(8, 8, (b >> 7) & 1)
+        put(7, 8, (b >> 8) & 1)
+        for i in range(9, 15):
+            put(14 - i, 8, (b >> i) & 1)
+        for i in range(8):
+            put(size - 1 - i, 8, (b >> i) & 1)
+        for i in range(8, 15):
+            put(8, size - 15 + i, (b >> i) & 1)
+        put(8, size - 8, True)
+
+    draw_format(0)  # reserviert die Formatbereiche
+    if version >= 7:
+        rem = version
+        for _ in range(12):
+            rem = (rem << 1) ^ ((rem >> 11) * 0x1F25)
+        vb = (version << 12) | rem
+        for i in range(18):
+            bit = (vb >> i) & 1
+            a, b = size - 11 + i % 3, i // 3
+            put(a, b, bit)
+            put(b, a, bit)
+
+    # Daten im Zickzack platzieren
+    i, right = 0, size - 1
+    while right >= 1:
+        if right == 6:
+            right = 5
+        for vert in range(size):
+            for j in range(2):
+                x = right - j
+                upward = ((right + 1) & 2) == 0
+                y = size - 1 - vert if upward else vert
+                if not func[y][x] and i < len(final) * 8:
+                    mod[y][x] = bool((final[i >> 3] >> (7 - (i & 7))) & 1)
+                    i += 1
+        right -= 2
+
+    masks = [lambda x, y: (x + y) % 2 == 0, lambda x, y: y % 2 == 0, lambda x, y: x % 3 == 0,
+             lambda x, y: (x + y) % 3 == 0, lambda x, y: (x // 3 + y // 2) % 2 == 0,
+             lambda x, y: x * y % 2 + x * y % 3 == 0, lambda x, y: (x * y % 2 + x * y % 3) % 2 == 0,
+             lambda x, y: ((x + y) % 2 + x * y % 3) % 2 == 0]
+
+    def apply(m):
+        out = [row[:] for row in mod]
+        for y in range(size):
+            for x in range(size):
+                if not func[y][x] and masks[m](x, y):
+                    out[y][x] = not out[y][x]
+        return out
+
+    def penalty(g):
+        p = 0
+        lines = g + [list(col) for col in zip(*g)]
+        for line in lines:
+            run, prev = 0, None
+            for v in line:
+                if v == prev:
+                    run += 1
+                else:
+                    if run >= 5:
+                        p += 3 + run - 5
+                    run, prev = 1, v
+            if run >= 5:
+                p += 3 + run - 5
+            s = "".join("1" if v else "0" for v in line)
+            p += 40 * (s.count("10111010000") + s.count("00001011101"))
+        for y in range(size - 1):
+            for x in range(size - 1):
+                if g[y][x] == g[y][x + 1] == g[y + 1][x] == g[y + 1][x + 1]:
+                    p += 3
+        dark = sum(sum(row) for row in g)
+        p += 10 * (abs(dark * 20 - size * size * 10) // (size * size))
+        return p
+
+    def with_format(m):
+        draw_format(m)
+        g = apply(m)
+        return g
+
+    if mask is None:
+        best = min(range(8), key=lambda m: penalty(with_format(m)))
+        return with_format(best)
+    return with_format(mask)
+
+
+# --------------------------------------------------------------------------- #
 # Onlinetool (Platzhalter)
 # --------------------------------------------------------------------------- #
 class OnlineClient:
@@ -1080,16 +1517,21 @@ WEB_HTML = """<!DOCTYPE html>
 </body></html>"""
 
 WEB_CSS = """
-*{box-sizing:border-box}body{margin:0;background:#0f172a;color:#f8fafc;font-family:Segoe UI,system-ui,sans-serif}
-header{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:6px}
-.bar{padding:8px 14px;border-radius:4px;min-height:3.2em}.blue{background:#2563eb}.green{background:#10b981}
-.big{font-size:clamp(18px,3vw,34px);font-weight:700}.sub{font-size:clamp(12px,1.6vw,18px);opacity:.95}
-#wrap{display:flex;gap:6px;padding:0 6px}#cats{flex:1;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:6px}
-.card,aside{background:#1e293b;border:2px solid #334155;border-radius:4px;padding:8px 12px}
-aside{width:320px}h2{margin:0 0 6px;font-size:16px;color:#94a3b8}
-.row{font-size:22px;font-weight:700;display:flex;gap:10px;align-items:baseline}.row.first{color:#facc15;font-size:26px}
-.pen{color:#fb923c;font-size:15px}.who{color:#94a3b8;font-size:14px;margin:0 0 4px}.empty{color:#94a3b8;font-size:18px}
-footer{padding:6px 10px;font-size:12px;color:#94a3b8}footer.err{color:#ef4444}
+*{box-sizing:border-box}
+body{margin:0;background:#000;color:#fff;
+ font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI Variable Display","Segoe UI",Inter,Roboto,sans-serif;
+ -webkit-font-smoothing:antialiased}
+header{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px}
+.bar{padding:12px 18px;border-radius:16px;min-height:3.4em}.blue{background:#0872dd}.green{background:#1e8538}
+.big{font-size:clamp(20px,3vw,36px);font-weight:700;letter-spacing:-.01em}
+.sub{font-size:clamp(13px,1.6vw,19px);font-weight:500;opacity:.96}
+#wrap{display:flex;gap:10px;padding:0 10px 10px}
+#cats{flex:1;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
+.card,aside{background:#1c1c1e;border-radius:18px;padding:14px 16px}
+aside{width:320px}h2{margin:0 0 8px;font-size:15px;font-weight:600;color:#98989d;letter-spacing:.02em}
+.row{font-size:22px;font-weight:700;display:flex;gap:10px;align-items:baseline}.row.first{color:#ffd60a;font-size:26px}
+.pen{color:#ff9f0a;font-size:15px}.who{color:#98989d;font-size:14px;margin:0 0 6px}.empty{color:#98989d;font-size:18px}
+footer{padding:6px 14px 12px;font-size:12px;color:#98989d}footer.err{color:#ff453a}
 @media(max-width:700px){header{grid-template-columns:1fr}#wrap{flex-direction:column}aside{width:auto}}
 """
 
@@ -1377,6 +1819,7 @@ class LiveRankingApp:
         self._text_cache = {}
         self.participant_dialogs = {}
         self.upload_win = None
+        self.note_win = None
         self._full_text = {}
         self._event_job = None
         self._last_suggested = None
@@ -1438,8 +1881,12 @@ class LiveRankingApp:
                         pass
 
     def setup_fonts(self):
-        fam = "Segoe UI" if sys.platform.startswith("win") else "DejaVu Sans"
-        mono = "Consolas" if sys.platform.startswith("win") else "DejaVu Sans Mono"
+        families = set(tkfont.families(self.root))
+        fam = next((f for f in ("SF Pro Display", "SF Pro Text", ".AppleSystemUIFont", "Segoe UI Variable Display",
+                                "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", "Inter", "DejaVu Sans")
+                    if f in families), "TkDefaultFont")
+        mono = next((f for f in ("SF Mono", "Menlo", "Cascadia Mono", "Consolas", "DejaVu Sans Mono")
+                     if f in families), "TkFixedFont")
         try:
             dpi = float(self.root.winfo_fpixels("1i"))
         except tk.TclError:
@@ -1473,8 +1920,8 @@ class LiveRankingApp:
         self.f_dialog = tkfont.Font(family=fam, size=-40, weight="bold")
 
     def setup_styles(self):
-        self.root.option_add("*TCombobox*Listbox.background", INPUT_BG)
-        self.root.option_add("*TCombobox*Listbox.foreground", INPUT_FG)
+        self.root.option_add("*TCombobox*Listbox.background", LIST_BG)
+        self.root.option_add("*TCombobox*Listbox.foreground", LIST_FG)
         self.root.option_add("*TCombobox*Listbox.selectBackground", BLUE)
         self.root.option_add("*TCombobox*Listbox.selectForeground", WHITE)
         self.root.option_add("*TCombobox*Listbox.font", self.f_side)
@@ -1483,31 +1930,31 @@ class LiveRankingApp:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("Port.TCombobox", fieldbackground=INPUT_BG, background="#e2e8f0",
-                        foreground=INPUT_FG, arrowcolor=INPUT_FG, padding=3)
+        style.configure("Port.TCombobox", fieldbackground=INPUT_BG, background=BUTTON, foreground=INPUT_FG,
+                        arrowcolor=WHITE, padding=4, bordercolor=BORDER, lightcolor=INPUT_BG, darkcolor=INPUT_BG,
+                        insertcolor=WHITE)
         style.map("Port.TCombobox",
                   fieldbackground=[("readonly", INPUT_BG), ("!disabled", INPUT_BG)],
                   foreground=[("readonly", INPUT_FG), ("!disabled", INPUT_FG)],
                   selectbackground=[("!disabled", BLUE)],
                   selectforeground=[("!disabled", WHITE)])
         style.configure("Dark.Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT,
-                        rowheight=24, font=self.f_side, borderwidth=0)
+                        rowheight=int(26 * self.ui_scale), font=self.f_side, borderwidth=0)
         style.map("Dark.Treeview", background=[("selected", BLUE)], foreground=[("selected", WHITE)])
-        style.configure("Dark.Treeview.Heading", background=BORDER, foreground=TEXT, font=self.f_side_bold,
-                        relief="flat")
+        style.configure("Dark.Treeview.Heading", background=PANEL2, foreground=MUTED, font=self.f_side_bold,
+                        relief="flat", borderwidth=0)
         style.map("Dark.Treeview.Heading", background=[("active", BLUE)])
 
     # ---------------- Widget-Helfer ---------------- #
-    def _button(self, parent, text, cmd, color=BORDER):
-        return tk.Button(parent, text=text, command=cmd, bg=color, fg=WHITE,
-                         activebackground=BLUE, activeforeground=WHITE, relief="flat",
-                         bd=0, padx=8, pady=5, font=self.f_side_bold, cursor="hand2",
-                         disabledforeground="#64748b")
+    def _button(self, parent, text, cmd, color=None):
+        color = BUTTON if color in (None, BORDER) else color
+        return RoundButton(parent, text=text, command=cmd, bg=color, fg=WHITE, font=self.f_side_bold,
+                           radius=int(9 * self.ui_scale), padx=int(12 * self.ui_scale), pady=int(6 * self.ui_scale))
 
     def _entry(self, parent, width=10, **kw):
         return tk.Entry(parent, width=width, bg=INPUT_BG, fg=INPUT_FG, insertbackground=INPUT_FG,
-                        relief="flat", font=self.f_side, highlightthickness=1,
-                        highlightbackground=BORDER, highlightcolor=BLUE, **kw)
+                        relief="flat", font=self.f_side, highlightthickness=1, selectbackground=BLUE,
+                        highlightbackground=BORDER, highlightcolor=ACCENT, **kw)
 
     def _label(self, parent, text, bold=False, fg=TEXT, bg=PANEL, **kw):
         return tk.Label(parent, text=text, bg=bg, fg=fg,
@@ -1515,13 +1962,13 @@ class LiveRankingApp:
 
     # Auswahl als Umschaltknoepfe: aktiv = blau. Eindeutig auf jedem System, unabhaengig vom Theme.
     def _check(self, parent, text, var, bg=PANEL):
-        return tk.Checkbutton(parent, text=text, variable=var, indicatoron=False, bg=BORDER, fg=WHITE,
+        return tk.Checkbutton(parent, text=text, variable=var, indicatoron=False, bg=BUTTON, fg=WHITE,
                               selectcolor=BLUE, activebackground=BLUE, activeforeground=WHITE,
                               font=self.f_side, relief="flat", offrelief="flat", overrelief="flat",
                               bd=0, padx=10, pady=4, highlightthickness=0, cursor="hand2")
 
     def _radio(self, parent, text, var, value, bg=PANEL, command=None):
-        return tk.Radiobutton(parent, text=text, variable=var, value=value, indicatoron=False, bg=BORDER,
+        return tk.Radiobutton(parent, text=text, variable=var, value=value, indicatoron=False, bg=BUTTON,
                               fg=WHITE, selectcolor=BLUE, activebackground=BLUE, activeforeground=WHITE,
                               font=self.f_side, relief="flat", offrelief="flat", overrelief="flat",
                               bd=0, padx=10, pady=4, highlightthickness=0, cursor="hand2", command=command)
@@ -1532,11 +1979,12 @@ class LiveRankingApp:
         return cb
 
     def _section(self, parent, title, key=None, status=False):
-        frm = tk.Frame(parent, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-        frm.pack(fill="x", padx=10, pady=(10, 0))
+        box = RoundedPanel(parent, fill=PANEL, radius=int(12 * self.ui_scale), fit_height=True)
+        box.pack(fill="x", padx=10, pady=(10, 0))
+        frm = box.inner
         headf = tk.Frame(frm, bg=PANEL, cursor="hand2" if key else "")
-        headf.pack(fill="x", padx=10, pady=(8, 6))
-        head = tk.Label(headf, bg=PANEL, fg=GOLD, font=self.f_side_head, anchor="w")
+        headf.pack(fill="x", padx=12, pady=(10, 8))
+        head = tk.Label(headf, bg=PANEL, fg=TEXT, font=self.f_side_head, anchor="w")
         head.pack(side="left")
         stat = None
         if status:
@@ -1546,11 +1994,11 @@ class LiveRankingApp:
 
         def render():
             collapsed = bool(key) and self.settings["collapsed"].get(key, False)
-            head.configure(text=(("▸ " if collapsed else "▾ ") if key else "") + title)
+            head.configure(text=(("›  " if collapsed else "⌄  ") if key else "") + title)
             if collapsed:
                 body.pack_forget()
             else:
-                body.pack(fill="x", padx=10, pady=(0, 10))
+                body.pack(fill="x", padx=12, pady=(0, 12))
 
         if key:
             def toggle(_e=None):
@@ -1736,18 +2184,18 @@ class LiveRankingApp:
         self.right_panel.pack_propagate(False)
         self.panel_next, self.txt_next = self._panel(self.right_panel, "Als nächstes am Start", NEXT_COUNT * 2 + 3)
         self.panel_note, self.txt_note = self._panel(self.right_panel, "Notiz", 3)
-        self.panel_note.configure(highlightbackground=GOLD)
+        self.panel_note.set_outline(GOLD, 2)
         self.txt_note.configure(font=self.f_ticker, fg=WHITE)
         self.txt_note.tag_configure("nr", font=self.f_ticker_bold, foreground=GOLD, spacing1=0)
         self.txt_note.tag_configure("sub", font=self.f_ticker_time, foreground=MUTED)
         self._note_visible = False
-        self.panel_ticker, self.txt_ticker = self._panel(self.right_panel, "Ereignis-Ticker", 6)
+        self.panel_ticker, self.txt_ticker = self._panel(self.right_panel, "Ereignis-Ticker", 6, fit=False)
         self.panel_stats, self.txt_stats = self._panel(self.right_panel, "Statistik", 9)
         # Ticker: groessere, kontrastreichere Schrift (Punkt 9)
         self.txt_ticker.configure(font=self.f_ticker, fg=WHITE, spacing1=0, spacing3=0)
         self.txt_ticker.tag_configure("time", font=self.f_ticker_time, foreground=MUTED)
-        self.txt_ticker.tag_configure("ziel", foreground="#34d399")
-        self.txt_ticker.tag_configure("warn", foreground="#fcd34d")
+        self.txt_ticker.tag_configure("ziel", foreground=GREEN_TEXT)
+        self.txt_ticker.tag_configure("warn", foreground=GOLD)
         self.txt_ticker.tag_configure("test", foreground=MUTED)
         self.txt_ticker.tag_configure("entry", spacing1=8)
         self.txt_ticker.tag_configure("newest", font=self.f_ticker_bold)
@@ -1756,8 +2204,10 @@ class LiveRankingApp:
         self.build_sidebar(side)
 
     def _status_box(self, parent, col, color, text):
-        box = tk.Frame(parent, bg=color, padx=16, pady=6)
-        box.grid(row=0, column=col, sticky="nsew", padx=(6, 3) if col == 0 else (3, 6))
+        panel = RoundedPanel(parent, fill=color, radius=int(16 * self.ui_scale), fit_height=True)
+        panel.grid(row=0, column=col, sticky="nsew", padx=(6, 3) if col == 0 else (3, 6))
+        box = panel.inner
+        box.configure(padx=int(18 * self.ui_scale), pady=int(8 * self.ui_scale))
         big = tk.Label(box, text=text, bg=color, fg=WHITE, font=self.f_status, anchor="w", width=1)
         big.pack(fill="x")
         sub1 = tk.Label(box, text="", bg=color, fg=WHITE, font=self.f_status_name, anchor="w", width=1)
@@ -1766,8 +2216,11 @@ class LiveRankingApp:
         sub2.pack(fill="x")
         return big, sub1, sub2
 
-    def _panel(self, parent, title, height):
-        frm = tk.Frame(parent, bg=PANEL, highlightthickness=2, highlightbackground=BORDER)
+    def _panel(self, parent, title, height, fit=True):
+        box = RoundedPanel(parent, fill=PANEL, radius=int(16 * self.ui_scale), pad=2, fit_height=fit)
+        if not fit:
+            box.configure(width=1, height=1)
+        frm = box.inner
         tk.Label(frm, text=title, bg=PANEL, fg=MUTED, font=self.f_panel_head, anchor="w").pack(
             fill="x", padx=12, pady=(8, 2))
         txt = tk.Text(frm, height=height, width=1, bg=PANEL, fg=TEXT, font=self.f_panel, relief="flat",
@@ -1781,7 +2234,8 @@ class LiveRankingApp:
         txt.tag_configure("error", foreground=RED)
         txt.tag_configure("time", foreground=MUTED)
         txt.tag_configure("bold", font=self.f_panel_bold)
-        return frm, txt
+        txt.tag_configure("ziel", foreground=GREEN_TEXT)
+        return box, txt
 
     def build_sidebar(self, side):
         wrap = self.wrap_w
@@ -1832,12 +2286,9 @@ class LiveRankingApp:
         self.lbl_startlist = self._label(b, "Keine Startliste geladen", fg=MUTED, wraplength=wrap, justify="left")
         self.lbl_startlist.grid(row=0, column=0, columnspan=2, sticky="w")
         self.var_mode = tk.StringVar(value=self.settings["wettkampf"])
-        self.mode_buttons = {}
-        for col, (value, label) in enumerate((("einzel", "Einzel"), ("paar", "Paar"))):
-            btn = self._button(b, label, lambda v=value: (self.var_mode.set(v), self.on_mode_change()))
-            btn.grid(row=1, column=col, sticky="ew", pady=(6, 0), padx=(0, 3) if col == 0 else (3, 0))
-            self.mode_buttons[value] = btn
-        self.update_mode_buttons()
+        self.mode_seg = Segmented(b, (("einzel", "Einzelwettfahren"), ("paar", "Paarwettfahren")), self.var_mode,
+                                  command=self.on_mode_change, font=self.f_side_bold, scale=self.ui_scale)
+        self.mode_seg.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self._button(b, "Excel / CSV laden", self.import_startlist, BLUE).grid(
             row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self._label(b, "Startnummer").grid(row=3, column=0, sticky="w", pady=(6, 0))
@@ -1845,7 +2296,9 @@ class LiveRankingApp:
         self.e_part_nr.grid(row=3, column=1, sticky="ew", pady=(6, 0))
         self.e_part_nr.bind("<Return>", lambda e: self.edit_participant_from_entry())
         self._button(b, "Teilnehmer bearbeiten", self.edit_participant_from_entry).grid(
-            row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+            row=4, column=0, sticky="ew", pady=(6, 0), padx=(0, 3))
+        self._button(b, "Notiz hinzufügen", self.open_note_search).grid(
+            row=4, column=1, sticky="ew", pady=(6, 0), padx=(3, 0))
         self._button(b, "Startliste entfernen", self.clear_startlist, DARK_RED).grid(
             row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
@@ -1861,15 +2314,17 @@ class LiveRankingApp:
 
         # Speaker-Anzeige
         b, self.lbl_speaker_head = self._section(side, "Speaker-Anzeige", "speaker", status=True)
-        b.columnconfigure(0, weight=1, uniform="tg")
-        b.columnconfigure(1, weight=1, uniform="tg")
+        b.columnconfigure(0, weight=1)
         self.show_buttons = {}
         for i, (key, label) in enumerate(SHOW_LABELS):
-            btn = tk.Button(b, text=label, command=lambda k=key: self.toggle_show(k), fg=WHITE,
-                            activeforeground=WHITE, relief="flat", bd=0, padx=2, pady=5,
-                            font=self.f_side, cursor="hand2")
-            btn.grid(row=i // 2, column=i % 2, sticky="ew", padx=(0, 4) if i % 2 == 0 else (0, 0), pady=2)
-            self.show_buttons[key] = btn
+            if i:
+                tk.Frame(b, bg=BORDER, height=1).grid(row=2 * i - 1, column=0, columnspan=2, sticky="ew")
+            lbl = tk.Label(b, text=label, bg=PANEL, fg=TEXT, font=self.f_side, anchor="w", cursor="hand2")
+            lbl.grid(row=2 * i, column=0, sticky="w", pady=int(5 * self.ui_scale))
+            sw = Switch(b, command=lambda k=key: self.toggle_show(k), scale=self.ui_scale)
+            sw.grid(row=2 * i, column=1, sticky="e", pady=int(5 * self.ui_scale))
+            lbl.bind("<Button-1>", lambda e, k=key: self.toggle_show(k))
+            self.show_buttons[key] = sw
         self.update_show_buttons()
 
         # Kategorien
@@ -1962,37 +2417,38 @@ class LiveRankingApp:
         self.lbl_count.grid(row=3, column=0, sticky="w", pady=(4, 0))
 
         # Log
-        frm = tk.Frame(side, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
-        frm.pack(fill="x", padx=10, pady=10)
-        tk.Label(frm, text="Empfangene Daten", bg=PANEL, fg=GOLD, font=self.f_side_head,
-                 anchor="w").pack(fill="x", padx=10, pady=(8, 4))
-        tabs = tk.Frame(frm, bg=PANEL)
-        tabs.pack(fill="x", padx=10, pady=(0, 4))
+        logbox = RoundedPanel(side, fill=PANEL, radius=int(12 * self.ui_scale), fit_height=True)
+        logbox.pack(fill="x", padx=10, pady=10)
+        frm = logbox.inner
+        tk.Label(frm, text="Empfangene Daten", bg=PANEL, fg=TEXT, font=self.f_side_head,
+                 anchor="w").pack(fill="x", padx=12, pady=(10, 6))
+        self.var_logtab = tk.StringVar(value="focus")
+        self.log_seg = Segmented(frm, (("focus", "Fokussiert"), ("all", "Alle")), self.var_logtab,
+                                 command=lambda: self.show_log_tab(self.var_logtab.get()), font=self.f_side_bold,
+                                 scale=self.ui_scale)
+        self.log_seg.pack(fill="x", padx=12, pady=(0, 6))
         holder = tk.Frame(frm, bg=PANEL)
-        holder.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        holder.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         holder.columnconfigure(0, weight=1)
         holder.rowconfigure(0, weight=1)
         self.log_tabs = {}
         for key, label in (("focus", "Fokussiert"), ("all", "Alle")):
-            btn = tk.Button(tabs, text=label, command=lambda k=key: self.show_log_tab(k), fg=WHITE,
-                            activebackground=BLUE, activeforeground=WHITE, relief="flat", bd=0,
-                            padx=12, pady=3, font=self.f_side_bold, cursor="hand2")
-            btn.pack(side="left", padx=(0, 4))
-            txt = tk.Text(holder, height=10, width=1, bg="#020617", fg=MUTED, font=self.f_log, relief="flat",
+            btn = None
+            txt = tk.Text(holder, height=10, width=1, bg=BG, fg=MUTED, font=self.f_log, relief="flat",
                           state="disabled", wrap="word" if key == "focus" else "none",
                           highlightthickness=0)
             txt.grid(row=0, column=0, sticky="nsew")
-            txt.tag_configure("ziel", foreground=GREEN)
+            txt.tag_configure("ziel", foreground=GREEN_TEXT)
             txt.tag_configure("warn", foreground=GOLD)
             txt.tag_configure("error", foreground=RED)
-            txt.tag_configure("ok", foreground="#38bdf8")
+            txt.tag_configure("ok", foreground=ACCENT)
             txt.tag_configure("test", foreground="#64748b")
             self.log_tabs[key] = (btn, txt)
         self.show_log_tab("focus")
 
     def show_log_tab(self, key):
-        for k, (btn, _txt) in self.log_tabs.items():
-            btn.configure(bg=BLUE if k == key else BORDER)
+        self.var_logtab.set(key)
+        self.log_seg.redraw()
         txt = self.log_tabs[key][1]
         txt.tkraise()
         txt.see("end")
@@ -2066,7 +2522,7 @@ class LiveRankingApp:
         label = self.event_label()
         self.root.title(f"{APP_TITLE}  |  {label}" if label else APP_TITLE)
         if hasattr(self, "lbl_event_head"):
-            avail = self.wrap_w - self.f_side_head.measure("▾ Wettkampf") - 4
+            avail = self.wrap_w - self.f_side_head.measure("⌄  Wettkampf") - int(14 * self.ui_scale)
             if label:
                 von, bis = self.event_dates()
                 dates = short_date_range(von, bis)
@@ -2080,9 +2536,8 @@ class LiveRankingApp:
 
     # ---------------- Speaker-Anzeige ein/aus ---------------- #
     def update_show_buttons(self):
-        for key, btn in self.show_buttons.items():
-            on = self.settings["show"].get(key, False)
-            btn.configure(bg=GREEN if on else BORDER, activebackground=GREEN if on else BLUE)
+        for key, sw in self.show_buttons.items():
+            sw.set(self.settings["show"].get(key, False))
         on = sum(1 for key, _l in SHOW_LABELS if self.settings["show"].get(key))
         self._set(self.lbl_speaker_head, text=f"{on} von {len(SHOW_LABELS)} ein", fg=MUTED)
 
@@ -2180,11 +2635,12 @@ class LiveRankingApp:
     # ================================================================== #
     def build_cards(self):
         for card in self.cards:
-            card["frame"].destroy()
+            card["box"].destroy()
         self.cards = []
         for cat in self.categories:
-            f = tk.Frame(self.cards_area, bg=PANEL, highlightthickness=2, highlightbackground=BORDER)
-            f.grid_propagate(False)
+            box = RoundedPanel(self.cards_area, fill=PANEL, radius=int(18 * self.ui_scale), pad=3)
+            box.configure(width=1, height=1)
+            f = box.inner
             for c, w in ((0, 0), (1, 0), (2, 0), (3, 1)):
                 f.columnconfigure(c, weight=w)
             title = tk.Label(f, text="", font=self.f_title, bg=PANEL, fg=MUTED, anchor="w", cursor="fleur")
@@ -2207,7 +2663,7 @@ class LiveRankingApp:
                 f.rowconfigure(r_sub, weight=0)
                 rows_w.append({"txt": l_txt, "arrow": l_arr, "time": l_time, "pen": l_pen, "sub": l_sub,
                                "nr": None, "rank": None, "color": WHITE, "sub_full": ""})
-            card = {"cat": cat, "frame": f, "title": title, "rows": rows_w}
+            card = {"cat": cat, "frame": f, "box": box, "title": title, "rows": rows_w}
             title.bind("<ButtonPress-1>", lambda e, c=card: self.drag_start(c))
             title.bind("<B1-Motion>", self.drag_motion)
             title.bind("<ButtonRelease-1>", self.drag_end)
@@ -2228,7 +2684,7 @@ class LiveRankingApp:
         for c in range(3):
             self.cards_area.columnconfigure(c, weight=1 if c < nc else 0, uniform="col" if c < nc else "")
         for i, card in enumerate(self.cards):
-            card["frame"].grid(row=i // nc, column=i % nc, sticky="nsew", padx=6, pady=6)
+            card["box"].grid(row=i // nc, column=i % nc, sticky="nsew", padx=6, pady=6)
 
     def card_title(self, cat):
         title = f"{cat['name']}   {cat['min']}-{cat['max']}"
@@ -2239,6 +2695,7 @@ class LiveRankingApp:
     # ---------------- Karten verschieben (Punkt 7) ---------------- #
     def card_from_widget(self, widget):
         frames = {str(c["frame"]): c for c in self.cards}
+        frames.update({str(c["box"]): c for c in self.cards})
         while widget is not None:
             card = frames.get(str(widget))
             if card:
@@ -2248,7 +2705,7 @@ class LiveRankingApp:
 
     def drag_start(self, card):
         self._drag = {"card": card, "target": None}
-        card["frame"].configure(highlightbackground=BLUE)
+        card["box"].set_outline(ACCENT, 3)
 
     def drag_motion(self, event):
         if not self._drag:
@@ -2258,9 +2715,9 @@ class LiveRankingApp:
             target = None
         if target is not self._drag["target"]:
             if self._drag["target"] is not None:
-                self._drag["target"]["frame"].configure(highlightbackground=BORDER)
+                self._drag["target"]["box"].set_outline("", 0)
             if target is not None:
-                target["frame"].configure(highlightbackground=GOLD)
+                target["box"].set_outline(GOLD, 3)
             self._drag["target"] = target
 
     def drag_end(self, _event=None):
@@ -2268,9 +2725,9 @@ class LiveRankingApp:
             return
         source, target = self._drag["card"], self._drag["target"]
         self._drag = None
-        source["frame"].configure(highlightbackground=BORDER)
+        source["box"].set_outline("", 0)
         if target is not None:
-            target["frame"].configure(highlightbackground=BORDER)
+            target["box"].set_outline("", 0)
             self.move_category(self.cards.index(source), self.cards.index(target))
 
     def move_selected_category(self, delta):
@@ -2426,7 +2883,7 @@ class LiveRankingApp:
             if best is None or px > best[0]:
                 best = (px, nc, rows)
         px, nc, rows = best
-        min_px = int(11 * s)
+        min_px = int(13 * s)
         inner_h = h
         if px < min_px:
             # Zu wenig Platz: Schrift lesbar halten und den Kartenbereich scrollen statt unlesbar klein.
@@ -3140,9 +3597,7 @@ class LiveRankingApp:
         self._set(self.lbl_startlist, text=txt, fg=TEXT)
 
     def update_mode_buttons(self):
-        for value, btn in self.mode_buttons.items():
-            on = self.var_mode.get() == value
-            btn.configure(bg=BLUE if on else BORDER, text=("● " if on else "") + btn.cget("text").lstrip("● "))
+        self.mode_seg.redraw()
 
     def on_mode_change(self):
         self.update_mode_buttons()
@@ -3276,8 +3731,8 @@ class LiveRankingApp:
 
         btns = tk.Frame(dlg, bg=PANEL)
         btns.grid(row=r + 4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        self._button(btns, "Importieren", do_import, GREEN).pack(side="left")
-        self._button(btns, "Abbrechen", dlg.destroy).pack(side="left", padx=(8, 0))
+        self._button(btns, "Importieren", do_import, BLUE).pack(side="right")
+        self._button(btns, "Abbrechen", dlg.destroy).pack(side="right", padx=(0, 8))
         refresh()
         self._center(dlg)
         dlg.grab_set()
@@ -3357,6 +3812,37 @@ class LiveRankingApp:
             self.ensure_participant(nr, after=None, prompt=False)
         self.open_participant_dialog(nr)
 
+    def order_label(self, nr):
+        p = self.participants.get(nr, {})
+        name = display_name(p, self.settings["wettkampf"])
+        return f"Nr {nr}" + (f" {name}" if name else "")
+
+    def parse_after(self, text, own_nr):
+        """'Einfuegen nach Nr': ('start', None) | ('after', nr) | (None, Fehlertext)."""
+        t = text.strip().casefold()
+        if t in ("", "0", "anfang", "start"):
+            return "start", None
+        if not t.isdigit():
+            return None, "Startnummer, 0 oder «Anfang» eingeben"
+        after = int(t)
+        if after == own_nr:
+            return None, "Nicht die eigene Startnummer"
+        if after not in self.order_index:
+            return None, f"Nr {after} ist nicht in der Startliste"
+        return "after", after
+
+    def move_in_order(self, nr, kind, after):
+        if nr not in self.order_index:
+            return False
+        order = [n for n in self.start_order if n != nr]
+        pos = 0 if kind == "start" else order.index(after) + 1
+        order.insert(pos, nr)
+        if order == self.start_order:
+            return False
+        self.start_order = order
+        self.rebuild_order_index()
+        return True
+
     def open_participant_dialog(self, nr, unknown=False):
         if nr in self.participant_dialogs and self.participant_dialogs[nr].winfo_exists():
             self.participant_dialogs[nr].lift()
@@ -3377,6 +3863,8 @@ class LiveRankingApp:
         clubs = sorted({x.get("verein") for x in self.participants.values() if x.get("verein")}, key=str.casefold)
         specs = [("p1", labels[0], "entry"), ("p2", labels[1], "entry"), ("verein", "Verein", "club"),
                  ("notiz", "Notiz für Speaker", "entry")]
+        if nr in self.order_index:
+            specs.append(("after", "Einfügen nach Nr", "entry"))
         for i, (key, label, kind) in enumerate(specs, start=1):
             tk.Label(dlg, text=label, bg=PANEL, fg=TEXT, font=self.f_side, anchor="w").grid(
                 row=i, column=0, sticky="w", padx=(0, 10), pady=2)
@@ -3385,31 +3873,233 @@ class LiveRankingApp:
                 w.set(p.get("verein", ""))
             else:
                 w = self._entry(dlg, width=36)
-                w.insert(0, str(p.get(key, "") or ""))
+                if key == "after":
+                    idx = self.order_index[nr]
+                    w.insert(0, str(self.start_order[idx - 1]) if idx > 0 else "Anfang")
+                else:
+                    w.insert(0, str(p.get(key, "") or ""))
             w.grid(row=i, column=1, sticky="ew", pady=2)
             fields[key] = w
+        row_after = len(specs) + 1
+        lbl_pos = tk.Label(dlg, text="", bg=PANEL, fg=MUTED, font=self.f_side, anchor="w", justify="left",
+                           wraplength=int(420 * self.ui_scale))
+        if "after" in fields:
+            lbl_pos.grid(row=row_after, column=1, sticky="w", pady=(0, 4))
+
+        def preview(_e=None):
+            if "after" not in fields:
+                return True
+            kind, val = self.parse_after(fields["after"].get(), nr)
+            entry = fields["after"]
+            if kind is None:
+                entry.configure(highlightbackground=RED, highlightcolor=RED)
+                lbl_pos.configure(text=val, fg=RED)
+                return False
+            entry.configure(highlightbackground=BORDER, highlightcolor=BLUE)
+            order = [n for n in self.start_order if n != nr]
+            pos = 0 if kind == "start" else order.index(val) + 1
+            before = order[pos - 1] if pos > 0 else None
+            after_nr = order[pos] if pos < len(order) else None
+            if before is None:
+                text = "am Anfang der Startliste" + (f", vor {self.order_label(after_nr)}" if after_nr else "")
+            elif after_nr is None:
+                text = f"am Ende, nach {self.order_label(before)}"
+            else:
+                text = f"zwischen {self.order_label(before)} und {self.order_label(after_nr)}"
+            lbl_pos.configure(text=text, fg=MUTED)
+            return True
+
+        if "after" in fields:
+            fields["after"].bind("<KeyRelease>", preview)
+            preview()
 
         def close():
             self.participant_dialogs.pop(nr, None)
             dlg.destroy()
 
         def save():
+            if not preview():
+                fields["after"].focus_set()
+                return
             for key in ("p1", "p2", "verein", "notiz"):
                 p[key] = fields[key].get().strip()
-            self.log(f"Teilnehmer Nr {nr} gespeichert: {display_name(p, mode) or '-'}, {p['verein'] or '-'}")
+            moved = ""
+            if "after" in fields:
+                kind, val = self.parse_after(fields["after"].get(), nr)
+                if self.move_in_order(nr, kind, val):
+                    moved = ", verschoben " + ("an den Anfang" if kind == "start" else f"nach Nr {val}")
+            self.log(f"Teilnehmer Nr {nr} gespeichert: {display_name(p, mode) or '-'}, {p['verein'] or '-'}{moved}")
             close()
             self.update_startlist_label()
             self.on_data_changed()
 
         btns = tk.Frame(dlg, bg=PANEL)
-        btns.grid(row=len(specs) + 1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        self._button(btns, "Speichern", save, GREEN).pack(side="left")
-        self._button(btns, "Später", close).pack(side="left", padx=(8, 0))
+        btns.grid(row=row_after + 1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self._button(btns, "Speichern", save, BLUE).pack(side="right")
+        self._button(btns, "Später", close).pack(side="right", padx=(0, 8))
         dlg.bind("<Return>", lambda e: save())
         dlg.bind("<Escape>", lambda e: close())
         dlg.protocol("WM_DELETE_WINDOW", close)
         self._center(dlg)
         fields["p1"].focus_set()
+
+    # ---------------- Notiz hinzufuegen mit Suche ---------------- #
+    @staticmethod
+    def fold(text):
+        """Fuer die Suche: Kleinschreibung, ohne Akzente, ue/oe/ae wie u/o/a."""
+        import unicodedata
+        t = unicodedata.normalize("NFKD", str(text).casefold())
+        t = "".join(ch for ch in t if not unicodedata.combining(ch))
+        return t.replace("ae", "a").replace("oe", "o").replace("ue", "u").replace("ß", "ss")
+
+    def search_participants(self, query, limit=300):
+        terms = [self.fold(t) for t in query.split()]
+        order = self.start_order + sorted(n for n in self.participants if n not in self.order_index)
+        hits = []
+        for nr in order:
+            p = self.participants.get(nr, {})
+            hay = self.fold(" ".join([display_name(p, self.settings["wettkampf"]), p.get("p1", ""), p.get("p2", ""),
+                                      p.get("verein", "")]))
+            ok = True
+            for t in terms:
+                if t.isdigit():
+                    if not str(nr).startswith(t) and t not in hay:
+                        ok = False
+                        break
+                elif t not in hay:
+                    ok = False
+                    break
+            if ok:
+                hits.append(nr)
+                if len(hits) >= limit:
+                    break
+        return hits
+
+    def open_note_search(self):
+        if self.note_win is not None and self.note_win.winfo_exists():
+            self.note_win.lift()
+            self.note_win.focus_force()
+            return
+        win = self._toplevel("Notiz hinzufügen")
+        self.note_win = win
+        win.geometry(f"{int(760 * self.ui_scale)}x{int(560 * self.ui_scale)}")
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(2, weight=1)
+        top = tk.Frame(win, bg=PANEL)
+        top.grid(row=0, column=0, columnspan=2, sticky="ew")
+        top.columnconfigure(1, weight=1)
+        tk.Label(top, text="Suche", bg=PANEL, fg=TEXT, font=self.f_side_bold).grid(row=0, column=0, padx=(0, 8))
+        e_q = self._entry(top, width=30)
+        e_q.grid(row=0, column=1, sticky="ew")
+        tk.Label(top, text="Name, Verein oder Startnummer", bg=PANEL, fg=MUTED, font=self.f_side).grid(
+            row=1, column=1, sticky="w")
+        lbl_n = tk.Label(win, text="", bg=PANEL, fg=MUTED, font=self.f_side, anchor="w")
+        lbl_n.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        cols = [("mark", "", 30), ("nr", "Nr", 60), ("name", "Name", 230), ("verein", "Verein", 220), ("kat", "Kategorie", 110)]
+        tree = ttk.Treeview(win, columns=[c[0] for c in cols], show="headings", style="Dark.Treeview",
+                            selectmode="browse")
+        for key, label, width in cols:
+            tree.heading(key, text=label)
+            tree.column(key, width=width, anchor="w", stretch=key in ("name", "verein"))
+        tree.grid(row=2, column=0, sticky="nsew")
+        sb = tk.Scrollbar(win, orient="vertical", command=tree.yview)
+        sb.grid(row=2, column=1, sticky="ns")
+        tree.configure(yscrollcommand=sb.set)
+        lbl_sel = tk.Label(win, text="Teilnehmer in der Liste anklicken", bg=PANEL, fg=GOLD, font=self.f_side_bold,
+                           anchor="w")
+        lbl_sel.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 2))
+        txt = tk.Text(win, height=4, bg=INPUT_BG, fg=INPUT_FG, insertbackground=INPUT_FG, font=self.f_side,
+                      relief="flat", wrap="word", highlightthickness=1, highlightbackground=BORDER,
+                      highlightcolor=BLUE, state="disabled")
+        txt.grid(row=4, column=0, columnspan=2, sticky="ew")
+        lbl_ok = tk.Label(win, text="", bg=PANEL, fg=GREEN, font=self.f_side, anchor="w")
+        lbl_ok.grid(row=5, column=0, sticky="w", pady=(6, 0))
+        btns = tk.Frame(win, bg=PANEL)
+        btns.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        state = {"nr": None}
+        mode = self.settings["wettkampf"]
+
+        def fill(_e=None):
+            q = e_q.get().strip()
+            hits = self.search_participants(q)
+            new_nr = None
+            if q.isdigit() and int(q) not in self.participants and int(q) > 0 and self.range_category(int(q)):
+                new_nr = int(q)
+            tree.delete(*tree.get_children())
+            for nr in hits:
+                p = self.participants.get(nr, {})
+                cat = self.category_of(nr)
+                tree.insert("", "end", iid=str(nr), values=("✎" if p.get("notiz") else "", nr, display_name(p, mode),
+                                                            p.get("verein", ""), cat["name"] if cat else ""))
+            if new_nr is not None:
+                tree.insert("", "end", iid=f"new{new_nr}", values=("", new_nr, "neu anlegen", "", ""))
+            total = len(hits)
+            lbl_n.configure(text=f"{total} Treffer" + (" (es werden höchstens 300 angezeigt)" if total >= 300 else ""))
+
+        def select(_e=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            iid = sel[0]
+            if iid.startswith("new"):
+                nr = int(iid[3:])
+                if nr not in self.participants:
+                    self.ensure_participant(nr, after=self.current_nr if self.start_order else None, prompt=False)
+                fill()
+                if str(nr) in tree.get_children():
+                    tree.selection_set(str(nr))
+                    tree.see(str(nr))
+                return
+            nr = int(iid)
+            state["nr"] = nr
+            p = self.participants.get(nr, {})
+            lbl_sel.configure(text=f"Notiz für {self.order_label(nr)}" + (f", {p['verein']}" if p.get("verein") else ""))
+            txt.configure(state="normal")
+            txt.delete("1.0", "end")
+            txt.insert("1.0", p.get("notiz", ""))
+            lbl_ok.configure(text="")
+
+        def save(_e=None):
+            nr = state["nr"]
+            if nr is None or nr not in self.participants:
+                lbl_ok.configure(text="Zuerst einen Teilnehmer wählen", fg=RED)
+                return "break"
+            note = " ".join(txt.get("1.0", "end").split())
+            self.participants[nr]["notiz"] = note
+            self.log(f"Notiz Nr {nr}: {note or '(gelöscht)'}")
+            if tree.exists(str(nr)):
+                tree.set(str(nr), "mark", "✎" if note else "")
+            lbl_ok.configure(text=f"Gespeichert: {self.order_label(nr)}" if note else f"Notiz gelöscht: Nr {nr}", fg=GREEN)
+            self.on_data_changed()
+            return "break"
+
+        def close(_e=None):
+            self.note_win = None
+            win.destroy()
+
+        def first_hit(_e=None):
+            kids = tree.get_children()
+            if kids:
+                tree.selection_set(kids[0])
+                tree.focus(kids[0])
+                tree.focus_set()
+                select()
+            return "break"
+
+        e_q.bind("<KeyRelease>", lambda e: fill() if e.keysym not in ("Return", "Down", "Up", "Escape") else None)
+        e_q.bind("<Return>", first_hit)
+        e_q.bind("<Down>", first_hit)
+        tree.bind("<<TreeviewSelect>>", select)
+        tree.bind("<Return>", lambda e: (txt.focus_set(), "break")[1])
+        txt.bind("<Control-Return>", save)
+        self._button(btns, "Speichern", save, BLUE).pack(side="right")
+        self._button(btns, "Schliessen", close).pack(side="right", padx=(0, 8))
+        tk.Label(btns, text="Strg+Enter speichert", bg=PANEL, fg=MUTED, font=self.f_side).pack(side="left")
+        win.bind("<Escape>", close)
+        win.protocol("WM_DELETE_WINDOW", close)
+        fill()
+        self._center(win)
+        e_q.focus_set()
 
     # ================================================================== #
     # Kategorien-Editor
@@ -3645,11 +4335,11 @@ class LiveRankingApp:
 
         btns = tk.Frame(dlg, bg=PANEL)
         btns.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        self._button(btns, "Speichern", save, GREEN).pack(side="left")
+        self._button(btns, "Speichern", save, BLUE).pack(side="right")
+        self._button(btns, "Abbrechen", dlg.destroy).pack(side="right", padx=(0, 8))
         test = self._button(btns, "Verbindung testen (folgt)", None)
         test.configure(state="disabled")
-        test.pack(side="left", padx=(8, 0))
-        self._button(btns, "Abbrechen", dlg.destroy).pack(side="left", padx=(8, 0))
+        test.pack(side="left")
         self._center(dlg)
         dlg.grab_set()
 
@@ -3787,20 +4477,31 @@ class LiveRankingApp:
         if not self.web.running:
             messagebox.showinfo("Browser-Anzeige", "Browser-Anzeige ist nicht gestartet.")
             return
-        if qrcode is None:
-            messagebox.showinfo("QR-Code", "Modul 'qrcode' fehlt (pip install qrcode pypng).\n"
-                                           "Link stattdessen kopieren.")
+        try:
+            matrix = qr_matrix(self.web.url)
+        except ValueError as exc:
+            messagebox.showerror("QR-Code", str(exc))
             return
-        img = qrcode.make(self.web.url, image_factory=PyPNGImage, box_size=8, border=2)
-        buf = io.BytesIO()
-        img.save(buf)
+        n = len(matrix)
+        quiet = 4  # Ruhezone, noetig fuer zuverlaessiges Erkennen
+        box = max(4, int(360 * self.ui_scale) // (n + 2 * quiet))
+        side = (n + 2 * quiet) * box
         dlg = self._toplevel("QR-Code Browser-Anzeige")
-        photo = tk.PhotoImage(data=base64.b64encode(buf.getvalue()))
-        lbl = tk.Label(dlg, image=photo, bg=WHITE)
-        lbl.image = photo
-        lbl.pack()
-        tk.Label(dlg, text="Nur im selben WLAN / Netzwerk erreichbar", bg=PANEL, fg=MUTED,
-                 font=self.f_side).pack(pady=(8, 0))
+        cv = tk.Canvas(dlg, width=side, height=side, bg=WHITE, highlightthickness=0, bd=0)
+        cv.pack()
+        for y, row in enumerate(matrix):
+            x = 0
+            while x < n:  # zusammenhaengende dunkle Felder einer Zeile als ein Rechteck zeichnen
+                if row[x]:
+                    start = x
+                    while x < n and row[x]:
+                        x += 1
+                    cv.create_rectangle((quiet + start) * box, (quiet + y) * box, (quiet + x) * box,
+                                        (quiet + y + 1) * box, fill="#000000", width=0)
+                else:
+                    x += 1
+        tk.Label(dlg, text=f"Nur im selben WLAN / Netzwerk erreichbar\n{self.web.url.split('?')[0]}",
+                 bg=PANEL, fg=MUTED, font=self.f_side, justify="center").pack(pady=(8, 0))
         self._center(dlg)
 
     def new_web_key(self):
@@ -3921,8 +4622,8 @@ class LiveRankingApp:
         btns.grid(row=3, column=0, columnspan=5, sticky="ew", pady=(16, 0))
         btns.columnconfigure(0, weight=1)
         btns.columnconfigure(1, weight=1)
-        self._button(btns, "Speichern", save, GREEN).grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self._button(btns, "Abbrechen", dlg.destroy).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self._button(btns, "Abbrechen", dlg.destroy).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self._button(btns, "Speichern", save, BLUE).grid(row=0, column=1, sticky="ew", padx=(4, 0))
         dlg.bind("<Return>", lambda e: save())
         dlg.bind("<Escape>", lambda e: dlg.destroy())
         self._center(dlg)
@@ -4130,8 +4831,8 @@ class LiveRankingApp:
 
         btns = tk.Frame(dlg, bg=PANEL)
         btns.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        self._button(btns, "Exportieren", do_export, GREEN).pack(side="left")
-        self._button(btns, "Abbrechen", dlg.destroy).pack(side="left", padx=(8, 0))
+        self._button(btns, "Exportieren", do_export, BLUE).pack(side="right")
+        self._button(btns, "Abbrechen", dlg.destroy).pack(side="right", padx=(0, 8))
         self._center(dlg)
         dlg.grab_set()
 
@@ -4255,8 +4956,7 @@ class LiveRankingApp:
         os.replace(tmp, path)
 
     def report_missing_modules(self):
-        mods = (("pyserial", serial is not None, "Verbindung zum CP 545"),
-                ("qrcode / pypng", qrcode is not None, "QR-Code der Browser-Anzeige"))
+        mods = (("pyserial", serial is not None, "Verbindung zum CP 545"),)
         frozen = getattr(sys, "frozen", False)
         try:
             stamp = time.strftime("%d.%m.%Y %H:%M", time.localtime(
@@ -4267,7 +4967,7 @@ class LiveRankingApp:
                               [mod for mod, mo in (("xlrd", xlrd), ("openpyxl", openpyxl)) if mo is not None]) or "keine"
         self.log(f"Version {APP_VERSION}, {'gebaut' if frozen else 'Skript vom'} {stamp}, "
                  f"Python {sys.version.split()[0]}, Module: {available}. "
-                 "Excel-Startlisten und Excel-Export funktionieren auch ohne Zusatzmodule.", tag="ok")
+                 "Excel-Startlisten, Excel-Export und QR-Code funktionieren auch ohne Zusatzmodule.", tag="ok")
         missing = [(mod, use) for mod, ok, use in mods if not ok]
         for mod, use in missing:
             self.log(f"Modul {mod} fehlt: {use} nicht verfügbar. build.bat neu ausführen.", tag="warn")
