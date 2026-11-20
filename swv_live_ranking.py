@@ -69,7 +69,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.2"
 DEFAULT_BAUD = 9600
 TOP_N = 5
 BLINK_SECONDS = 30
@@ -1258,7 +1258,7 @@ def derive_category_ranges(order, parts):
     die exakte kleinste und groesste Nummer."""
     groups = {}
     for nr in order:
-        cat = parts[nr]["kategorie"].strip()
+        cat = (parts.get(nr) or {}).get("kategorie", "").strip()  # Testnummern ohne Teilnehmerdaten
         if cat:
             groups.setdefault(cat, []).append(nr)
     ranges, warnings = {}, []
@@ -2300,6 +2300,7 @@ class LiveRankingApp:
         self.cp_prec = 2
         self.cp_next_start = None   # Nummer, die der CP als naechsten Start vergibt
         self.finish_override = None
+        self.cp_finish_want = None  # Zielnummer, die im CP vorgeladen ist
         self.cp_cmds = []
         self.cp_inflight = None
         self.cp_hold_until = 0.0
@@ -2313,6 +2314,7 @@ class LiveRankingApp:
         self.dnf = set()
         self._eth_tick_job = None
         self._course_menu = None
+        self._next_seen = False
         self._row_tpl = ("5. Nr. 888", "8:88.88s", "")
 
         self.online = OnlineClient(self.settings["online"])
@@ -3105,6 +3107,7 @@ class LiveRankingApp:
         self.cards, self.participant_dialogs, self._placed = [], {}, []
         self.upload_win = self.note_win = None
         self._note_visible = False
+        self._next_seen = False
         self.prev_top = {}
         self.root.configure(bg=BG)
         set_titlebar(self.root)
@@ -3991,13 +3994,20 @@ class LiveRankingApp:
                     if first and self.eth_mode() and self.cp is not None and self.cp_next_start == nr:
                         head += "   ✓ im CP"
                     seg.append((head + "\n", ("nr", row) + (("next",) if first else ())))
-                    info = "  ·  ".join(x for x in (p.get("verein", ""), cat["name"] if cat else "") if x)
+                    info = "  ·  ".join(x for x in (p.get("verein", ""), cat["name"] if cat else
+                                                    ("Test" if self.is_test(nr) else "")) if x)
                     seg.append((f"{info}\n", ("sub", row)))
                     notes = "  ·  ".join(x for x in (p.get("notiz", ""), p.get("bemerkung", "")) if x)
                     if notes and show.get("notizen"):
                         seg.append((f"{notes}\n", ("note", row)))
+            at_bottom = self.txt_next.yview()[1] >= 0.98
+            top = self.txt_next.yview()[0]
             if self._set_text(self.txt_next, seg):
-                self.txt_next.see("end")
+                if at_bottom or not self._next_seen:
+                    self.txt_next.see("end")
+                else:
+                    self.txt_next.yview_moveto(top)
+                self._next_seen = True
         if self.eth_mode():
             self.update_course_panel()
         if show.get("ticker"):
@@ -4074,10 +4084,8 @@ class LiveRankingApp:
         if before not in self.order_index:
             return f"Nr {before} ist nicht mehr in der Startliste"
         known = nr in self.participants
-        if not known and self.range_category(nr) is None:
-            return (f"Nr {nr} liegt in keinem Kategorienbereich (Testnummer). Für einen Teilnehmer zuerst den "
-                    "Bereich einer Kategorie anpassen.")
-        if not known:
+        test = not known and self.range_category(nr) is None
+        if not known and not test:
             cat = self.range_category(nr)
             self.participants[nr] = {
                 "nr": nr, "p1": "", "p2": "", "kategorie": cat["name"], "verein": "", "vnr": "", "staver": "",
@@ -4088,40 +4096,52 @@ class LiveRankingApp:
         self.start_order = order
         self.rebuild_order_index()
         what = "verschoben" if moved else "eingefügt"
-        self.log(f"Nr {nr} vor Nr {before} {what}", tag="ok")
+        self.log(f"{'Testnummer' if test else 'Nr'} {nr} vor Nr {before} {what}", tag="test" if test else "ok")
         self.update_startlist_label()
         self.on_data_changed()
         self.cp_sync_next("Startliste")
-        if not known:
+        if not known and not test:
             self.add_ticker(f"Nr {nr} vor Nr {before} eingefügt", None)
             self.open_participant_dialog(nr, unknown=True)
         return None
 
     # ---------------- Auf Fahrstrecke ---------------- #
     def update_course_panel(self):
+        """Wie ein Fluss von oben nach unten: oben das zuletzt gestartete Boot, unten das Boot,
+        das als naechstes ins Ziel kommt, darunter der letzte Zieleinlauf."""
         if not hasattr(self, "txt_course"):
             return
         mode = self.settings["wettkampf"]
         seg = []
         if self.cp is None or not self.cp.connected:
-            seg.append(("Keine Verbindung zum CP (Ethernet)", "sub"))
+            seg.append(("Keine Verbindung zum CP (Ethernet)\n", "sub"))
         elif not self.course:
-            seg.append(("Kein Boot auf der Strecke", "sub"))
-        for i, (tod, nr, _key) in enumerate(self.course):
+            seg.append(("Kein Boot auf der Strecke\n", "sub"))
+        n = len(self.course)
+        for i, (tod, nr, _key) in reversed(list(enumerate(self.course))):
             p = self.participants.get(nr, {})
             cat = self.category_of(nr)
             tag = f"crs{nr}"
             seg.append((f"Nr {nr}   {self.running_text(tod)}   {display_name(p, mode) or '-'}\n", ("nr", tag)))
             info = [x for x in (p.get("verein", ""), cat["name"] if cat else ("Test" if self.is_test(nr) else ""))
                     if x]
-            seg.append(("  ·  ".join(info) + ("\n" if i == 0 and len(self.course) > 1 else "\n"), ("sub", tag)))
-            if i == 0 and len(self.course) > 1:
+            seg.append(("  ·  ".join(info) + "\n", ("sub", tag)))
+            if i == 0 and n > 1:
                 seg.append(("▸ als nächstes im Ziel" + ("  (überholt)" if self.finish_override == nr else "") + "\n",
                             ("next", tag)))
         rec = self.cp_recs.get(self.last_finish_key) if self.last_finish_key else None
         if rec and rec["status"] == "ok" and rec["nr"] in self.results:
+            seg.append(("\n", "sub"))
             seg.append((f"Zuletzt im Ziel: Nr {rec['nr']}  {self.results[rec['nr']]['str']}s", "time"))
-        self._set_text(self.txt_course, seg)
+        shape = (tuple(c[1] for c in self.course), self.last_finish_key)
+        at_bottom = self.txt_course.yview()[1] >= 0.98
+        top = self.txt_course.yview()[0]
+        if self._set_text(self.txt_course, seg):
+            if at_bottom or shape != getattr(self, "_course_shape", None):
+                self.txt_course.see("end")  # unten bleiben; von Hand hochgescrollt bleibt es oben
+            else:
+                self.txt_course.yview_moveto(top)
+            self._course_shape = shape
 
     def on_course_click(self, event):
         nr = self._tag_nr(self.txt_course, event, "crs")
@@ -4154,15 +4174,6 @@ class LiveRankingApp:
         finally:
             menu.grab_release()
         return "break"
-
-    def reassign_last_finish(self, nr):
-        key = self.last_finish_key
-        rec = self.cp_recs.get(key) if key else None
-        if not rec:
-            return
-        old = rec["nr"]
-        self.log(f"Zielzeit (Seq {key[2]}) von Nr {old} zu Nr {nr} umbuchen", tag="warn")
-        self.cp_change_number(key, old, nr)
 
     def open_renumber_dialog(self, nr):
         key = self.course_key(nr)
@@ -4784,64 +4795,88 @@ class LiveRankingApp:
         self.cp_write_param("026", CH_START, want, "nächster Start", done)
 
     def cp_set_next_finish(self, nr):
+        """Ueberholen: nr kommt als naechstes ins Ziel. Der CP bekommt die Zielnummer mit #WP 026 04."""
+        self.finish_override = nr
+        self.log(f"Überholen: Nr {nr} kommt als nächstes ins Ziel", tag="ok")
+        self.add_ticker(f"Nr {nr} hat überholt und kommt als nächstes ins Ziel", None)
+        self.course_changed()
+
+    def cp_sync_finish(self):
+        """Dafuer sorgen, dass der CP den naechsten Zielimpuls dem Boot zuordnet, das die App erwartet.
+        Noetig nach Ueberholen und wenn ein ausgeschiedenes Boot im CP noch auf der Strecke ist."""
+        if not self.eth_mode() or self.cp is None or not self.cp.connected or not self.course:
+            return
+        _tod, _nr, key = self.course[0]
+        want = self.cp_recs[key]
+        if want.get("cp_done"):
+            return
+        alive = self.cp_alive()
+        if not alive:
+            return
+        cp_next = next((k for k in alive if self.cp_recs[k]["cp_nr"] == self.cp_finish_want), alive[0])
+        if self.cp_recs[cp_next]["cp_nr"] == want["cp_nr"]:
+            return
+        if getattr(self, "_cp_finish_pending", None) == want["cp_nr"]:
+            return
+        self._cp_finish_pending = want["cp_nr"]
+        target = want["cp_nr"]
+
         def done(ok):
+            self._cp_finish_pending = None
             if ok:
-                self.finish_override = nr
-                self.log(f"Überholen: Nr {nr} kommt als nächstes ins Ziel", tag="ok")
-                self.add_ticker(f"Nr {nr} hat überholt und kommt als nächstes ins Ziel", None)
-                self.course_changed()
-        self.cp_write_param("026", CH_FINISH, nr, "nächstes Ziel", done)
+                self.cp_finish_want = target
+            self.root.after(50, self.cp_sync_finish)
+
+        self.cp_write_param("026", CH_FINISH, target, "nächstes Ziel", done)
+
+    def cp_alive(self):
+        """Startzeiten, die der CP noch auf der Strecke sieht, in Startreihenfolge."""
+        keys = [k for k, r in self.cp_recs.items() if k[0] == self.cp_run and k[1] == CH_START
+                and r["status"] == "ok" and r["cp_nr"] > 0 and not r.get("cp_done")]
+        return sorted(keys, key=lambda k: self.cp_recs[k]["tod"])
 
     def cp_cancel_start(self, nr):
+        """Ausgeschieden. Der CP 545 kennt #WC 013 nicht: die App fuehrt das selbst."""
         key = self.course_key(nr)
         if key is None:
             return
         if not messagebox.askyesno("Ausgeschieden", f"{self.order_label(nr)} als ausgeschieden markieren?\n"
-                                                    "Die Startzeit wird am CP storniert, das Boot verlässt die "
-                                                    "Fahrstrecke."):
+                                                    "Das Boot verlässt die Fahrstrecke. Am CP bei Bedarf mit "
+                                                    "Nr + R + 0 nachtragen."):
             return
+        self.mark_dnf(nr, key, local=True)
 
-        def ok(_info):
-            rec = self.cp_recs.get(key)
-            if rec and rec["status"] == "ok":
-                self.mark_dnf(nr, key)
-
-        def fail(reason):
-            self.log(f"CP: Nr {nr} nicht storniert ({reason})", tag="error")
-            messagebox.showerror("Ausgeschieden", f"Der CP hat die Stornierung von Nr {nr} nicht bestätigt "
-                                                  f"({reason}).\nAm CP mit Nr + R + 0 stornieren.")
-
-        self.cp_query(f"#WC 013 {key[1]:02d} {key[2]:04d}    C", "ack", on_ok=ok, on_fail=fail)
-
-    def mark_dnf(self, nr, key):
+    def mark_dnf(self, nr, key, local=False):
         rec = self.cp_recs.get(key)
         if rec:
-            rec["status"] = "cancelled"
+            rec["dnf"] = True
         self.dnf.add(nr)
         if self.finish_override == nr:
             self.finish_override = None
-        self.log(f"Nr {nr} ausgeschieden (Startzeit storniert)", tag="warn")
-        self.add_ticker(f"Nr {nr}{(' ' + self.who_text(nr)) if self.who_text(nr) else ''} ausgeschieden", "warn")
+        who = self.who_text(nr)
+        self.log(f"Nr {nr} ausgeschieden" + (" (nur in der App, am CP mit Nr + R + 0 nachtragen)" if local
+                                              else " (Startzeit am CP storniert)"), tag="warn")
+        self.add_ticker(f"Nr {nr}{(' ' + who) if who else ''} ausgeschieden", "warn")
         self.course_changed()
 
     def cp_change_number(self, key, old, new):
-        if key is None or self.cp is None:
+        """Nummer auf der Strecke aendern (nur in der App, der CP kennt #WC 013 nicht)."""
+        rec = self.cp_recs.get(key) if key else None
+        if rec is None or rec["nr"] != old:
             return
-        def ok(_info):
-            rec = self.cp_recs.get(key)
-            if rec and rec["nr"] == old:  # CP hat (noch) kein T- / T* gemeldet
-                self.root.after(1200, lambda: self._apply_renumber(key, old, new))
-
-        def fail(reason):
-            self.log(f"CP: Nummer {old} -> {new} nicht geändert ({reason})", tag="error")
-            messagebox.showerror("Nummer ändern", f"Der CP hat die Änderung nicht bestätigt ({reason}).")
-
-        self.cp_query(f"#WC 013 {key[1]:02d} {key[2]:04d} {new:04d}", "ack", on_ok=ok, on_fail=fail)
-
-    def _apply_renumber(self, key, old, new):
-        rec = self.cp_recs.get(key)
-        if rec and rec["nr"] == old:
-            self.on_cp_time({"type": "T*", "nr": new, "seq": key[2], "ch": key[1], "tod": rec["tod"]}, local=True)
+        rec["nr"] = new
+        self.dnf.discard(new)
+        # last_start_nr bleibt: die Startreihenfolge laeuft ab der vorgesehenen Nummer weiter
+        if self.finish_override == old:
+            self.finish_override = new
+        self.log(f"Nummer auf der Strecke: Nr {new} statt Nr {old} (nur in der App, der CP führt weiter "
+                 f"Nr {rec['cp_nr']})", tag="warn")
+        self.add_ticker(f"Nummer korrigiert: Nr {new} statt Nr {old} auf der Fahrstrecke", None)
+        if self.start_order and new not in self.participants and not self.is_test(new):
+            self.ensure_participant(new, after=old if old in self.order_index else None, prompt=True)
+        self.on_data_changed()
+        self.course_changed()
+        self.cp_sync_next("Nummer geändert")
 
     # ---------------- Daten vom CP ---------------- #
     def add_cp_offset(self, cp_tod):
@@ -4869,7 +4904,7 @@ class LiveRankingApp:
             self.on_cp_result(info)
         elif info["kind"] == "open":
             self.cp_run = info["run"]
-            self.finish_override = None
+            self.finish_override = self.cp_finish_want = None
             self.log(f"CP: Lauf {info['run']} geöffnet ({info['mode'] or '?'})", tag="ok")
             if info["mode"] and "NET" not in info["mode"].upper() and "START" not in info["mode"].upper():
                 self.log(f"CP-Modus {info['mode']}: erwartet wird NET TIME (Start Eingang 1, Ziel Eingang 4)",
@@ -4880,109 +4915,160 @@ class LiveRankingApp:
             self.log(f"CP: Lauf {info['run']} geschlossen", tag="warn")
             self.course_changed()
 
-    def on_cp_time(self, t, local=False):
-        typ, ch, seq, nr = t["type"], t["ch"], t["seq"], t["nr"]
+    def on_cp_time(self, t):
+        """Zeitmeldung des CP. Jede Startzeit fuehrt zwei Nummern: 'cp_nr' wie der CP sie kennt und
+        'nr' wie sie in Wirklichkeit ist (Korrekturen in der App)."""
+        typ, ch, seq, cpn = t["type"], t["ch"], t["seq"], t["nr"]
         key = (self.cp_run, ch, seq)
         rec = self.cp_recs.get(key)
-        where = "Start" if ch == CH_START else ("Ziel" if ch == CH_FINISH else f"Eingang {ch}")
         if typ in ("TN", "T+", "T=", "TI"):
-            if rec and rec["nr"] == nr and abs(rec["tod"] - t["tod"]) < 0.001 and rec["status"] == "ok":
+            if rec and rec["cp_nr"] == cpn and abs(rec["tod"] - t["tod"]) < 0.001:
                 return  # bereits bekannt (z.B. nach Neuverbindung)
-            self.cp_recs[key] = {"nr": nr, "tod": t["tod"], "status": "ok"}
-            if typ == "TN" and not local:
+            if typ == "TN":
                 self.add_cp_offset(t["tod"])
-            if nr <= 0:
-                self.log(f"CP: {where}zeit ohne Nummer (Seq {seq})", tag="warn")
+            if cpn <= 0:
+                self.cp_recs[key] = {"nr": 0, "cp_nr": 0, "tod": t["tod"], "status": "ok"}
+                self.log(f"CP: Zeit ohne Nummer (Eingang {ch}, Seq {seq})", tag="warn")
             elif ch == CH_START:
-                prev = self.last_start_nr
-                self.last_start_nr = nr
-                self.dnf.discard(nr)
-                self.cp_next_start = nr + 1
-                self.log(f"START Nr {nr} ({fmt_tod(t['tod'])})", tag="ok" if not self.is_test(nr) else "test")
-                self.on_new_starter(prev, nr)
-                self.cp_sync_next("Start")
+                self.on_cp_start(key, cpn, t["tod"])
             elif ch == CH_FINISH:
-                self.last_finish_key = key
-                if self.finish_override == nr:
-                    self.finish_override = None
-                self.root.after(900, lambda k=key: self.finish_without_rr(k))
-        elif typ == "T-":
-            if rec:
-                rec["status"] = "unassigned"
+                self.on_cp_finish(key, cpn, t["tod"])
             else:
-                self.cp_recs[key] = {"nr": nr, "tod": t["tod"], "status": "unassigned"}
+                self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": t["tod"], "status": "ok"}
+        elif typ in ("T-", "TC"):
+            # Korrektur an der Tastatur des CP: Zeit ohne Nummer bzw. storniert
+            if rec is None:
+                rec = self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": t["tod"], "status": "ok"}
+            rec["status"] = "cancelled" if typ == "TC" else "unassigned"
             if ch == CH_FINISH:
-                self.revert_cp_result(key)
-        elif typ == "T*":
-            old = rec["nr"] if rec else None
-            self.cp_recs[key] = {"nr": nr, "tod": t["tod"], "status": "ok"}
-            if old is not None and old != nr:
-                self.log(f"CP: {where}zeit (Seq {seq}) von Nr {old} zu Nr {nr}", tag="warn")
-            if ch == CH_START and nr > 0:
-                # last_start_nr bleibt: die Startreihenfolge laeuft ab der vorgesehenen Nummer weiter
-                if self.start_order and nr not in self.participants and not self.is_test(nr):
-                    self.ensure_participant(nr, after=old if old in self.order_index else None, prompt=True)
-                self.add_ticker(f"Nummer korrigiert: Nr {nr} statt Nr {old} auf der Fahrstrecke", None)
-            elif ch == CH_FINISH and nr > 0:
-                self.revert_cp_result(key)
-                self.last_finish_key = key
-                self.root.after(900, lambda k=key: self.finish_without_rr(k))
-        elif typ == "TC":
-            if rec:
-                rec["status"] = "cancelled"
-            else:
-                self.cp_recs[key] = {"nr": nr, "tod": t["tod"], "status": "cancelled"}
-            if ch == CH_START and nr > 0 and nr not in self.dnf:
-                self.mark_dnf(nr, key)
+                self.undo_finish(key)
+            elif ch == CH_START and typ == "TC" and rec["nr"] > 0 and not rec.get("dnf"):
+                self.mark_dnf(rec["nr"], key)
                 return
+        elif typ == "T*":
             if ch == CH_FINISH:
-                self.revert_cp_result(key)
+                if rec is not None:
+                    self.undo_finish(key)
+                self.cp_recs.pop(key, None)
+                self.on_cp_finish(key, cpn, t["tod"])
+            elif ch == CH_START:
+                old = rec["nr"] if rec else None
+                if rec is None:
+                    rec = self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": t["tod"], "status": "ok"}
+                if rec["nr"] == rec["cp_nr"]:
+                    rec["nr"] = cpn  # keine eigene Korrektur in der App: CP gilt
+                rec["cp_nr"], rec["status"] = cpn, "ok"
+                if old is not None and old != rec["nr"]:
+                    self.log(f"CP: Startzeit (Seq {seq}) von Nr {old} zu Nr {rec['nr']}", tag="warn")
+                    self.add_ticker(f"Nummer korrigiert: Nr {rec['nr']} statt Nr {old} auf der Fahrstrecke", None)
+                    if self.start_order and rec["nr"] not in self.participants and not self.is_test(rec["nr"]):
+                        self.ensure_participant(rec["nr"], after=old if old in self.order_index else None,
+                                                prompt=True)
+            else:
+                self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": t["tod"], "status": "ok"}
         self.course_changed()
 
-    def start_rec_for(self, nr, before_tod):
-        best = None
-        for (run, ch, _seq), r in self.cp_recs.items():
-            if run == self.cp_run and ch == CH_START and r["nr"] == nr and r["status"] == "ok" \
-                    and r["tod"] <= before_tod and (best is None or r["tod"] > best["tod"]):
-                best = r
-        return best
+    def on_cp_start(self, key, cpn, tod):
+        self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": tod, "status": "ok"}
+        prev = self.last_start_nr
+        self.last_start_nr = cpn
+        self.dnf.discard(cpn)
+        self.cp_next_start = cpn + 1
+        self.log(f"START Nr {cpn} ({fmt_tod(tod)})", tag="test" if self.is_test(cpn) else "ok")
+        self.on_new_starter(prev, cpn)
+        self.cp_sync_next("Start")
+
+    def on_cp_finish(self, key, cpn, tod):
+        """Zielzeit: der CP hat sie der Nummer cpn zugeordnet, also seiner aeltesten offenen Startzeit
+        mit dieser Nummer. In Wirklichkeit gehoert sie zur Nummer, die in der App bei dieser Startzeit steht."""
+        start_key = next((k for k in self.cp_alive() if self.cp_recs[k]["cp_nr"] == cpn
+                          and self.cp_recs[k]["tod"] <= tod), None)
+        self.cp_finish_want = None  # der CP verbraucht die vorgeladene Zielnummer mit jedem Zieleinlauf
+        if start_key is None:
+            self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": tod, "status": "ok", "start": None}
+            self.last_finish_key = key
+            self.log(f"CP: Zielzeit Nr {cpn} ohne offene Startzeit", tag="warn")
+            return
+        st = self.cp_recs[start_key]
+        st["cp_done"] = True
+        if st.get("dnf"):
+            self.cp_recs[key] = {"nr": st["nr"], "cp_nr": cpn, "tod": tod, "status": "ignored", "start": start_key}
+            self.log(f"Zielimpuls für ausgeschiedene Nr {st['nr']} nicht gewertet", tag="warn")
+            return
+        nr = st["nr"]
+        self.cp_recs[key] = {"nr": nr, "cp_nr": cpn, "tod": tod, "status": "ok", "start": start_key,
+                             "proxy": st.get("proxy", False)}
+        st["done"] = key
+        self.last_finish_key = key
+        if self.finish_override == nr:
+            self.finish_override = None
+        if nr != cpn:
+            self.log(f"ZIEL CP-Nr {cpn} gehört zu Nr {nr}", tag="warn")
+        # Fahrzeit sofort selbst rechnen; ein passendes RR vom CP bestaetigt sie danach nur
+        self.store_cp_result(nr, trunc_secs(tod - st["tod"], min(self.cp_prec, 2)), key)
 
     def on_cp_result(self, info):
-        nr = info["nr"]
-        key = None
-        for k, r in self.cp_recs.items():
-            if k[0] == self.cp_run and k[1] == CH_FINISH and r["nr"] == nr and r["status"] == "ok":
-                if key is None or r["tod"] > self.cp_recs[key]["tod"]:
-                    key = k
+        """RR vom CP: Rang und Fahrzeit fuer die CP-Nummer. Gilt nur, wenn die App nichts umgebucht hat."""
+        cpn = info["nr"]
+        key = max((k for k, r in self.cp_recs.items() if k[0] == self.cp_run and k[1] == CH_FINISH
+                   and r["cp_nr"] == cpn and r["status"] == "ok"), key=lambda k: self.cp_recs[k]["tod"],
+                  default=None)
+        if key is None:
+            return
+        rec = self.cp_recs[key]
+        if rec.get("proxy"):
+            return  # Startzeit wurde in der App umgebucht: eigene Rechnung gilt
         secs = trunc_secs(info["secs"], min(self.cp_prec, 2))
-        self.store_cp_result(nr, secs, key)
+        res = self.results.get(rec["nr"])
+        if res and res.get("cp") == list(key) and abs(res["secs"] - secs) > 0.011:
+            self.log(f"CP meldet für Nr {rec['nr']} {fmt_secs(secs, 2)}s, App rechnete {res['str']}s: "
+                     "Wert des CP übernommen", tag="warn")
+            res["secs"], res["str"] = secs, fmt_secs(secs, 2)
+            self.on_data_changed()
 
     def store_cp_result(self, nr, secs, key):
         res = self.results.get(nr)
-        tstr = fmt_secs(secs, 2)
         if res and key is not None and res.get("cp") == list(key):
             return  # schon erfasst
-        if res and res["str"] == tstr and time.time() - res["ts"] < 10:
-            return
-        self.register_final(nr, secs, tstr, source="CP 545 LAN")
+        self.register_final(nr, secs, fmt_secs(secs, 2), source="CP 545 LAN")
         if nr in self.results:
             self.results[nr]["cp"] = list(key) if key else None
             self.save_autosave()
         self.ziel_nr = nr
-        self.course_changed()
 
-    def finish_without_rr(self, key):
-        """Zielzeit ohne RR vom CP (z.B. nach Umbuchung): Fahrzeit selbst berechnen."""
+    def undo_finish(self, key):
+        """Zielzeit zuruecknehmen: Resultat weg, Boot wieder auf der Strecke."""
         rec = self.cp_recs.get(key)
-        if not rec or rec["status"] != "ok" or rec["nr"] <= 0:
+        if rec and rec.get("start") in self.cp_recs:
+            st = self.cp_recs[rec["start"]]
+            if st.get("done") == key:
+                st["done"] = None
+            st["cp_done"] = False
+        self.revert_cp_result(key)
+
+    def reassign_last_finish(self, nr):
+        """Letzte Zielzeit gehoert in Wirklichkeit Nr nr (unbemerkt ueberholt). Nur in der App:
+        die beiden Startzeiten tauschen ihre CP-Nummern, damit spaetere Meldungen richtig ankommen."""
+        fkey = self.last_finish_key
+        frec = self.cp_recs.get(fkey) if fkey else None
+        new_key = self.course_key(nr)
+        if not frec or frec["status"] != "ok" or new_key is None or not frec.get("start"):
             return
-        if any(r.get("cp") == list(key) for r in self.results.values()):
-            return
-        start = self.start_rec_for(rec["nr"], rec["tod"])
-        if start is None:
-            self.log(f"CP: Zielzeit Nr {rec['nr']} ohne Startzeit", tag="warn")
-            return
-        self.store_cp_result(rec["nr"], trunc_secs(rec["tod"] - start["tod"], min(self.cp_prec, 2)), key)
+        old_key = frec["start"]
+        a, b = self.cp_recs[old_key], self.cp_recs[new_key]
+        old = a["nr"]
+        self.revert_cp_result(fkey)
+        a["done"], b["done"] = None, fkey
+        # der CP sieht a als angekommen und b als unterwegs: CP-Nummern tauschen
+        a["cp_nr"], b["cp_nr"] = b["cp_nr"], a["cp_nr"]
+        a["cp_done"], b["cp_done"] = False, True
+        a["proxy"] = b["proxy"] = True
+        frec.update({"nr": nr, "start": new_key, "proxy": True})
+        self.log(f"Zielzeit umgebucht: Nr {nr} statt Nr {old} (nur in der App)", tag="warn")
+        self.add_ticker(f"Zielzeit korrigiert: Nr {nr} war im Ziel, Nr {old} wieder auf der Strecke", "warn")
+        self.store_cp_result(nr, trunc_secs(frec["tod"] - b["tod"], min(self.cp_prec, 2)), fkey)
+        self.on_data_changed()
+        self.course_changed()
 
     def revert_cp_result(self, key):
         for nr, r in list(self.results.items()):
@@ -4996,27 +5082,17 @@ class LiveRankingApp:
                     del self.results[nr]
                 if self.ziel_nr == nr and nr not in self.results:
                     self.ziel_nr = None
-                self.log(f"Zielzeit Nr {nr} ({r['str']}s) zurückgenommen, Zeit wurde umgebucht", tag="warn")
-                self.add_ticker(f"Zielzeit Nr {nr} zurückgenommen ({r['str']}s), Nr {nr} wieder auf der Strecke",
-                                "warn")
+                self.log(f"Zielzeit Nr {nr} ({r['str']}s) zurückgenommen", tag="warn")
                 self.on_data_changed()
                 return nr
         return None
 
     # ---------------- Fahrstrecke ---------------- #
     def compute_course(self):
-        starts, finishes = {}, {}
-        for (run, ch, _seq), r in self.cp_recs.items():
-            if run != self.cp_run or r["status"] != "ok" or r["nr"] <= 0:
-                continue
-            if ch == CH_START:
-                if r["nr"] not in starts or r["tod"] > starts[r["nr"]][0]:
-                    starts[r["nr"]] = (r["tod"], (run, ch, _seq))
-            elif ch == CH_FINISH:
-                finishes[r["nr"]] = max(finishes.get(r["nr"], -1), r["tod"])
-        course = [(tod, nr, key) for nr, (tod, key) in starts.items()
-                  if finishes.get(nr, -1) < tod and nr not in self.dnf]
-        course.sort()
+        """Boote auf der Strecke in erwarteter Zielreihenfolge: [(startzeit, nr, key)]."""
+        course = sorted((r["tod"], r["nr"], k) for k, r in self.cp_recs.items()
+                        if k[0] == self.cp_run and k[1] == CH_START and r["status"] == "ok" and r["nr"] > 0
+                        and not r.get("dnf") and not r.get("done"))
         if self.finish_override is not None:
             first = [c for c in course if c[1] == self.finish_override]
             if first:
@@ -5032,6 +5108,7 @@ class LiveRankingApp:
         self.course = self.compute_course()
         self.update_eth_live()
         self.update_panels()
+        self.cp_sync_finish()
 
     def update_eth_live(self):
         if not self.eth_mode():

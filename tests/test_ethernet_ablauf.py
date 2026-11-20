@@ -41,7 +41,7 @@ print("results", {k: v["str"] for k, v in app.results.items()}, "course", [c[1] 
 sim.finish(); pump(1.2)
 print("results", {k: v["str"] for k, v in app.results.items()}, "course", [c[1] for c in app.course])
 # Einfuegen vor 104 im Panel -> 900? Testnummer abgelehnt; 150 neu
-print("insert err:", app.insert_number("960", 104))
+print("testnummer:", app.insert_number("960", 104))
 print("insert:", app.insert_number("150", 104), app.start_order)
 pump(1); print("sim next after insert", sim.next[1], "| next panel bottom:", app.txt_next.get("end-3l", "end").strip())
 tops = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)]

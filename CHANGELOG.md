@@ -1,5 +1,12 @@
 # Änderungen
 
+## v1.6.2 (20.11.2026) Korrekturen in der App
+- Der CP 545 kennt `#WC 013` nicht (Antwort AK R): Nummer ändern, Ausgeschieden und Zielzeit umbuchen führt die App selbst. Jede Startzeit führt die Nummer des CP und die richtige Nummer, spätere Meldungen des CP werden umgebucht
+- Ausgeschiedene Boote bleiben im CP auf der Strecke: die App lädt mit `#WP 026 04` das richtige nächste Ziel vor
+- Fahrzeit rechnet die App sofort aus Start- und Zielzeit, das RR des CP bestätigt sie
+- Testnummern lassen sich in die Startreihenfolge einfügen (Vermerk «Test»)
+- «Auf Fahrstrecke» als Fluss: oben zuletzt gestartet, unten das nächste Boot im Ziel, darunter der letzte Zieleinlauf
+
 ## v1.6.1 (20.11.2026) Korrekturen
 - RS232: Abbruch wird erkannt, wenn während eines Laufs länger als 5 s keine Laufzeit kommt (Kabel am CP oder RJ11 ausgesteckt, USB-Adapter bleibt am PC). Status rot, Ticker und Log, automatisch zurück auf «verbunden», sobald wieder Daten kommen
 - RS232: ohne Boot auf der Strecke zeigt die Kopfzeile das Alter der letzten Daten

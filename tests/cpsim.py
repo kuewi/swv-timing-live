@@ -2,7 +2,8 @@
 import socket, threading, time
 
 class CPSim:
-    def __init__(self, scan_port=17000, data_port=23500, readback=True):
+    def __init__(self, scan_port=17000, data_port=23500, readback=True, wc013=False):
+        self.wc013 = wc013  # echter CP 545: #WC 013 wird mit AK R abgelehnt
         self.clients = []
         self.next = {1: 1, 4: None}
         self.seq = {1: 0, 4: 0}
@@ -64,6 +65,12 @@ class CPSim:
             self.send("AK C", c); return
         if p[:2] == ["#WP", "026"]:
             ch = int(p[2]); self.next[ch] = int(p[3]); self.send("AK C", c); return
+        if p[:2] == ["#WC", "013"] and not self.wc013:
+            self.send("AK R", c); return
+        if p[:1] == ["#RT"]:
+            seq, ch = int(p[1]), int(p[2]); r = self.recs.get((ch, seq))
+            if r: self.send(f"AN {r[0]:4d} {seq:4d} M{ch} {self.ts(r[1])}  9820", c)
+            self.send("AK C", c); return
         if p[:2] == ["#WC", "013"]:
             ch, seq = int(p[2]), int(p[3]); new = t[len("#WC 013 01 0000 "):]
             r = self.recs.get((ch, seq))
