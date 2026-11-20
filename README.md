@@ -21,8 +21,8 @@ beim Beenden wieder auf automatische Adresse (DHCP). Der CP hat ab 192.168.1.50.
 - Python 3.9 oder neuer, `pip install pyserial`
 - Start: `python swv_live_ranking.py`
 - .exe bauen: `build.bat` (PyInstaller, eine Datei, ohne Konsole)
-- Ein Tag `v*` baut die .exe auch auf GitHub und hängt sie an das Release
-  (`.github/workflows/build.yml`).
+- Jeder Push auf `main` baut die .exe auf GitHub (Actions). Ist `APP_VERSION` neu, entstehen
+  automatisch Tag und Release mit der .exe (`.github/workflows/build.yml`).
 
 ## Ablage
 
