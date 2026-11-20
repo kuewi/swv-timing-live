@@ -1,5 +1,9 @@
 # Änderungen
 
+## v1.8.1 (20.11.2026)
+- USB am CP 545 bestätigt (COM-Port, 9600 Bd, Prüfsumme CS16 stimmt)
+- Puffer des CP beim Verbinden: der CP schickt zuerst alle Zeilen seit dem letzten Abholen (auch alte Läufe). Beim ersten Verbinden werden diese nicht als neue Impulse gewertet, nur Lauf und Sequenzen übernommen. Nach einem Unterbruch in derselben Sitzung werden die verpassten Zeiten nachgetragen. Gilt auch für Ethernet
+
 ## v1.8.0 (20.11.2026)
 - Verbindungsart «USB»: CP 545 direkt per USB-Kabel (virtueller COM-Port), gesteuert wie über Ethernet. Rahmen nach THCOM08 für RS232 mit TAB und Prüfsumme, Zeilen mit falscher Prüfsumme werden verworfen und per `#RT` nachgeholt. Optional ACK nach jeder Zeile (Flow Ctrl). Findet den Port nach dem Ausstecken wieder, auch mit neuer COM-Nummer
 - Überholen per Ziehen: ein Boot unter «Auf Fahrstrecke» auf ein anderes ziehen, es übernimmt dessen Platz in der erwarteten Zielreihenfolge. Die Reihenfolge bleibt im Autosave, neu gestartete Boote kommen hinten dazu

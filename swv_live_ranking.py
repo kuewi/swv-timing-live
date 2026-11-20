@@ -69,7 +69,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.8.1"
 DEFAULT_BAUD = 9600
 TOP_N = 5
 BLINK_SECONDS = 30
@@ -2323,7 +2323,8 @@ class SimCP:
 
     def __init__(self, port=0, rs232=False):
         self.rs232 = rs232        # Rahmen wie am RS232/USB-Anschluss: [Daten] TAB CS16
-        self.lock = threading.Lock()
+        self.pending = []         # wie der CP: ohne Verbindung puffern, beim Verbinden zuerst senden
+        self.lock = threading.RLock()
         self.clients = []
         self.next = {CH_START: 1, CH_FINISH: None}
         self.seq = {CH_START: 0, CH_FINISH: 0}
@@ -2357,6 +2358,10 @@ class SimCP:
                 c, _a = self.sock.accept()
             except OSError:
                 return
+            with self.lock:
+                pending, self.pending = self.pending, []
+            for line in pending:
+                self.send(line, c)
             self.clients.append(c)
             threading.Thread(target=self._serve, args=(c,), daemon=True).start()
 
@@ -2364,6 +2369,10 @@ class SimCP:
         if c is None and self.drop_next and not line.startswith(("AK", "&P", "SN", "!T")):
             self.drop_next = False
             return  # simuliert eine verlorene Zeile
+        if c is None and not self.clients:
+            with self.lock:
+                self.pending.append(line)
+            return
         data = line.encode("latin-1")
         if self.rs232:
             data += b"\t" + thcom_cs16(data).encode("ascii")
@@ -2471,14 +2480,18 @@ class SimCP:
     def replay_line(self, line):
         self.send(line)
 
-    def close(self):
-        self.alive = False
+    def drop_clients(self):
         for c in list(self.clients):
             try:
                 c.shutdown(socket.SHUT_RDWR)
                 c.close()
             except OSError:
                 pass
+        self.clients.clear()
+
+    def close(self):
+        self.alive = False
+        self.drop_clients()
         try:
             self.sock.close()
         except OSError:
@@ -2866,6 +2879,9 @@ class LiveRankingApp:
         self.status = {}            # nr -> "DNS" | "DNF" | "DSQ"
         self.cp_lastseq = {}        # (geraet, lauf, eingang) -> letzte Seq
         self.cp_download = None     # Zeiten waehrend #DL
+        self.cp_backlog = None      # alte Zeilen aus dem Puffer des CP direkt nach dem Verbinden
+        self.cp_backlog_t = 0.0
+        self.cp_backlog_again = False
         self.backup_seen = {}
         self.cp_b = None            # Reserve-CP
         self._quiet = False
@@ -5549,7 +5565,8 @@ class LiveRankingApp:
             self.handle_eth_line(payload)
         elif kind == "eth_bad":
             self.cp_last_rx = time.time()
-            self.log(f"CP: Zeile mit falscher Prüfsumme verworfen: {payload.strip()}", tag="warn")
+            self.log(f"CP: Zeile mit falscher Prüfsumme verworfen: {payload.strip()}",
+                     tag="test" if self.cp_backlog is not None else "warn")
         elif kind == "eth_connected":
             self.on_cp_connected(payload)
         elif kind == "eth_open_error":
@@ -5641,6 +5658,9 @@ class LiveRankingApp:
             how = f"USB, {self.cp.baud} Bd" if self.cp.link == "usb" else f"Ethernet, Port {self.cp.port}"
             self.log(f"Verbunden mit CP {ip} ({how})", tag="ok")
         self.cp_cmds, self.cp_inflight = [], None
+        # Der CP schickt zuerst alles, was er seit dem letzten Abholen gepuffert hat, erst dann die Antwort
+        # auf #SN. Diese Zeilen werden gesammelt und nicht als neue Impulse behandelt.
+        self.cp_backlog, self.cp_backlog_t, self.cp_backlog_again = [], time.time(), again
         self.cp_query("#SN", "serial")
         self.cp_query("#RP 003", ("param", "003"), on_ok=self._on_run)
         self.cp_query(f"#RP 026 {CH_START:02d}", ("param", "026", CH_START), on_ok=self._on_next_read,
@@ -5964,6 +5984,16 @@ class LiveRankingApp:
         if info is None:
             return
         self.raw_log(dev, raw)
+        if dev == "A" and self.cp_backlog is not None:
+            if info["kind"] == "serial":
+                self.finish_backlog()
+            elif info["kind"] in ("time", "result", "open", "close") and not info.get("answer"):
+                now = time.time()
+                self.cp_backlog.append(info)
+                self.cp_backlog_t = now
+                if self.cp_inflight is not None:  # CP ist noch am Senden: Befehl nicht als verloren werten
+                    self.cp_inflight["deadline"] = max(self.cp_inflight["deadline"], now + CMD_TIMEOUT)
+                return
         quiet = info["kind"] in ("ack", "param", "serial", "sync")
         self.log(("CP " if dev == "A" else "CP Reserve ") + text, focus=False, tag=None if not quiet else "test")
         if quiet:
@@ -6009,6 +6039,41 @@ class LiveRankingApp:
             self.finish_override = None
             self.log(f"CP: Lauf {info['run']} geschlossen", tag="warn")
             self.course_changed()
+
+    def finish_backlog(self):
+        """Gepufferte Zeilen des CP nach dem Verbinden auswerten. Nach einem Unterbruch in dieser Sitzung
+        werden die fehlenden Zeiten uebernommen, beim ersten Verbinden nur der Lauf und die Sequenzen."""
+        items, self.cp_backlog = self.cp_backlog, None
+        if not items:
+            return
+        run = self.cp_run
+        timed = []
+        for info in items:
+            if info["kind"] == "open":
+                run = info["run"]
+            elif info["kind"] == "time":
+                timed.append((run, info))
+        if run and run != self.cp_run:
+            self.cp_run = run
+            self.log(f"CP: Lauf {run} offen")
+        take, old = [], 0
+        for r, info in timed:
+            if r != run:
+                old += 1
+                continue
+            k = ("A", run, info["ch"])
+            if info["seq"] > self.cp_lastseq.get(k, 0):
+                self.cp_lastseq[k] = info["seq"]  # sonst holt #RT die alten Zeiten wieder
+            if self.cp_backlog_again:
+                take.append(info)
+            elif ("A", run, info["ch"], info["seq"]) not in self.cp_recs:
+                old += 1
+        if old:
+            self.log(f"CP: {old} ältere Zeiten aus dem Speicher des CP nicht übernommen (vor dem Verbinden). "
+                     f"Falls sie zum laufenden Wettkampf gehören: «Lauf vom CP laden».", tag="warn")
+        if take:
+            self.log(f"CP: {len(take)} Zeilen aus der Zeit ohne Verbindung werden ausgewertet", tag="ok")
+            self.process_download(take)
 
     def check_seq_gap(self, t, dev):
         """Fehlende Sequenznummern mit #RT beim CP nachholen (verlorene Zeilen)."""
@@ -6413,6 +6478,8 @@ class LiveRankingApp:
             return
         self.cp_timeout_check()
         now = time.time()
+        if self.cp_backlog is not None and now - self.cp_backlog_t > 3:
+            self.finish_backlog()
         if self.cp.connected:
             if now - self.cp_last_hb > HEARTBEAT_S and self.cp_inflight is None and not self.cp_cmds:
                 self.cp_last_hb = now

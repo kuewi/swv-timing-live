@@ -25,10 +25,20 @@ app.participants = {n: {"nr": n, "p1": f"V{n}", "p2": "", "kategorie": "AKTIVE",
 app.start_order = list(o); app.rebuild_order_index(); app.on_data_changed()
 
 sim = m.SimCP(rs232=True)
+# Puffer des CP wie in Stefans Test: alte Zeiten aus einem anderen Lauf und dem aktuellen Lauf
+day = int(m.local_abs() // 86400)
+sim.pending = [f"TN  300    8 M1 11:11:50.39000 {day:5d}", "RR    3  125          21.60000", "CL 05",
+               "OP 01  00  NET TIME", f"TN    1    1 M1 11:31:21.84000 {day:5d}",
+               f"TN    1    1 M4 11:34:09.69000 {day:5d}", "RR    1    1        2:47.85000",
+               f"TN  603    2 M1 11:53:59.49000 {day:5d}"]
+sim.seq = {1: 2, 4: 1}
 app.var_conn.set("usb"); app.on_conn_mode_change(); pump(0.2)
 check("USB-Rahmen sichtbar", app.frm_usb.winfo_ismapped() and not app.frm_eth.winfo_ismapped())
 app.cmb_usb.set(f"socket://127.0.0.1:{sim.port}")
 app.toggle_connection(); pump(2.5)
+check("alte Zeiten aus dem Puffer nicht übernommen", not app.cp_recs and not app.results and not app.course)
+check("Lauf und Sequenzen aus dem Puffer", app.cp_run == 1 and app.cp_lastseq.get(("A", 1, 1)) == 2)
+check("Hinweis im Log", any("ältere Zeiten" in l[0] for l in app.log_lines))
 check("über USB verbunden, 21 vorgeladen", app.cp and app.cp.connected and app.cp.link == "usb" and sim.next[1] == 21)
 check("Einstellung gespeichert", app.settings["conn"]["usb_port"].startswith("socket://"))
 for _ in range(4):
@@ -75,6 +85,14 @@ check("Klick ohne Ziehen: Menü", opened and "24" in opened[0])
 app.save_autosave()
 keys = {r["nr"]: r.get("order") for k, r in app.cp_recs.items() if k[2] == 1}
 check("Reihenfolge im Datensatz", keys[21] is not None)
+# Unterbruch: CP puffert, nach dem Wiederverbinden werden die Zeiten nachgetragen
+before = [c[1] for c in app.course]
+sim.drop_clients(); pump(0.3)
+sim.finish(); pump(0.2)             # Ziel 22 waehrend dem Unterbruch
+pump(3.5)
+check("wieder verbunden", app.cp.connected)
+pump(1.0)
+check("Zielzeit aus dem Unterbruch übernommen", 22 in app.results and [c[1] for c in app.course] == before[1:])
 # Trennen
 app.toggle_connection(); pump(1.0)
 check("getrennt", app.cp is None)
