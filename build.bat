@@ -28,8 +28,10 @@ if exist logo.png set DATA=%DATA% --add-data "logo.png;."
 set ICON=
 if exist swv_logo.ico set ICON=--icon swv_logo.ico
 
+python -m pip install --upgrade pillow
+python tools\make_version_file.py version_info.txt
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name SWV_LiveRanking ^
-    --hidden-import xlrd --hidden-import openpyxl ^
+    --version-file version_info.txt --hidden-import xlrd --hidden-import openpyxl --hidden-import PIL.ImageGrab ^
     %ICON% %DATA% swv_live_ranking.py
 if errorlevel 1 (
     echo.

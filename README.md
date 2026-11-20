@@ -29,14 +29,24 @@ den WebSocket `/ws` (`&stream=all` für alles in einer Nachricht). Übersicht un
 - Python 3.9 oder neuer, `pip install pyserial`
 - Start: `python swv_live_ranking.py`
 - .exe bauen: `build.bat` (PyInstaller, eine Datei, ohne Konsole)
-- Jeder Push auf `main` baut die .exe auf GitHub (Actions). Ist `APP_VERSION` neu, entstehen
-  automatisch Tag und Release mit der .exe (`.github/workflows/build.yml`).
+- Jeder Push auf `main` baut die .exe und den Installer auf GitHub (Actions). Ist `APP_VERSION` neu,
+  entstehen automatisch Tag und Release mit `SWV_LiveRanking_Setup_x.y.z.exe` und der .exe
+  (`.github/workflows/build.yml`, Installer: `installer/swv_live_ranking.iss`, Inno Setup).
+
+## Installation und Daten
+
+- Installer ausführen. Eine neue Version ersetzt die installierte.
+- Programm: `C:\Program Files\SWV Live-Ranking`
+- Daten: `Dokumente\SWV Live-Ranking` mit Einstellungen, Autosave, `logs` (Diagnose-Log),
+  `rohdaten` (jede Zeile vom CP), `fehlerberichte` und `pdf`. Bleibt bei Update und Deinstallation.
+- Fehler melden: Knopf oben in der Seitenleiste oder F12. Die ZIP-Datei aus `fehlerberichte` weiterleiten.
 
 ## Ablage
 
 | Ordner | Inhalt |
 | --- | --- |
 | `/` | App `swv_live_ranking.py`, `build.bat` |
+| `installer/` | Inno-Setup-Skript für den Installer |
 | `tests/` | CP-Simulator (`cpsim.py`) und Testabläufe für Ethernet |
 | `tools/` | Downloader und Rohdaten-Analyse für den CP 545 |
 | `prototypen/` | erste Speaker-Board-Versionen vor dem SWV Live-Ranking |

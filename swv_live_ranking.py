@@ -32,6 +32,8 @@ import hmac
 import io
 import ipaddress
 import json
+import logging
+import logging.handlers
 import os
 import queue
 import re
@@ -69,7 +71,8 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.9.0"
+APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
 BLINK_SECONDS = 30
@@ -167,6 +170,38 @@ class _Messages:
 
 messagebox = _Messages()
 
+
+class LoggedMenu(tk.Menu):
+    """Kontextmenue, das jede gewaehlte Aktion ins Diagnose-Log schreibt."""
+
+    def add_command(self, cnf=None, **kw):
+        cmd, label = kw.get("command"), kw.get("label", "")
+        if cmd is not None:
+            def run(c=cmd, lab=label):
+                DIAG.info(f"UI Menü: {lab}")
+                return c()
+            kw["command"] = run
+        return super().add_command(cnf or {}, **kw)
+
+
+def widget_desc(w):
+    """Kurzbeschreibung eines Widgets fuers Log: Klasse und sichtbarer Text."""
+    try:
+        if isinstance(w, str):
+            return w
+        text = ""
+        if hasattr(w, "_o"):
+            text = w._o.get("text", "")
+        else:
+            try:
+                text = w.cget("text")
+            except (tk.TclError, AttributeError):
+                text = ""
+        name = w.winfo_class()
+        return f"{name} «{str(text)[:40]}»" if text else f"{name} {str(w)[-40:]}"
+    except Exception:
+        return "?"
+
 DEFAULT_CATEGORIES = [
     {"name": "AKTIVE", "min": 1, "max": 199, "rekord": ""},
     {"name": "SENIOREN", "min": 300, "max": 399, "rekord": ""},
@@ -184,7 +219,7 @@ DEFAULT_SETTINGS = {
         "naechste": True, "statistik": False, "namen": True, "notizen": True,
     },
     "collapsed": {"zeitmessung": True, "wettkampf": False, "verbindung": False, "speaker": False, "daten": False,
-                  "kategorien": True, "online": True, "web": True},
+                  "kategorien": True, "online": True, "web": True, "startliste": False, "manuell": False},
     "event": {"name": "", "von": "", "bis": ""},
     "online": {
         "mode": "offline", "url": "", "comp_id": "", "token": "",
@@ -193,6 +228,7 @@ DEFAULT_SETTINGS = {
     "web": {"bind": "", "port": 8080, "key": ""},
     "export_dir": "",
     "theme": "dark",
+    "sidebar_pinned": True,
     "cats_auto": True,
     "timing": {"prell_start_ms": 300, "prell_finish_ms": 300, "min_run_s": 0, "lock_start": False,
                "lock_finish": False},
@@ -229,16 +265,123 @@ def resource_dirs():
     return [d for d in dirs if d]
 
 
-def data_dir():
+DATA_FOLDER_NAME = "SWV Live-Ranking"
+LOG_DIR = "logs"
+REPORT_DIR = "fehlerberichte"
+
+
+def documents_dir():
+    """Ordner «Dokumente» des Benutzers, auch wenn er auf OneDrive umgeleitet ist."""
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(260)
+            if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0 and buf.value:
+                return buf.value
+        except Exception:
+            pass
+    return os.path.join(os.path.expanduser("~"), "Documents")
+
+
+def legacy_data_dirs():
+    """Fruehere Ablageorte: neben der .exe und %APPDATA%\\SWV_LiveRanking."""
+    out = []
     if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
+        out.append(os.path.dirname(sys.executable))
+    out.append(os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "SWV_LiveRanking"))
+    return out
+
+
+def migrate_data(target):
+    """Beim ersten Start im neuen Datenordner: Einstellungen, Kategorien, Autosave, Rohdaten und PDFs
+    aus einem frueheren Ablageort kopieren (die alten Dateien bleiben liegen)."""
+    import shutil
+    if os.path.exists(os.path.join(target, SETTINGS_FILE)):
+        return None
+    for old in legacy_data_dirs():
+        if os.path.normcase(os.path.abspath(old)) == os.path.normcase(os.path.abspath(target)):
+            continue
+        if not os.path.exists(os.path.join(old, SETTINGS_FILE)):
+            continue
+        for name in (SETTINGS_FILE, CATEGORIES_FILE, AUTOSAVE_FILE):
+            src = os.path.join(old, name)
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(target, name))
+        for sub in (RAW_DIR, "pdf"):
+            src = os.path.join(old, sub)
+            if os.path.isdir(src):
+                shutil.copytree(src, os.path.join(target, sub), dirs_exist_ok=True)
+        return old
+    return None
+
+
+def data_dir():
+    """Installierte App: Dokumente\\SWV Live-Ranking. Beim Entwickeln: Ordner des Skripts."""
+    if getattr(sys, "frozen", False):
+        base = os.path.join(documents_dir(), DATA_FOLDER_NAME)
+        try:
+            os.makedirs(base, exist_ok=True)
+            return base
+        except OSError:
+            pass
+        base = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "SWV_LiveRanking")
+        os.makedirs(base, exist_ok=True)
+        return base
+    base = os.path.dirname(os.path.abspath(__file__))
     if os.access(base, os.W_OK):
         return base
     fallback = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "SWV_LiveRanking")
     os.makedirs(fallback, exist_ok=True)
     return fallback
+
+
+# --------------------------------------------------------------------------- #
+# Diagnose-Log (Datei, rotierend) fuer Fehlersuche
+# --------------------------------------------------------------------------- #
+DIAG = logging.getLogger("swv")
+DIAG.setLevel(logging.DEBUG)
+DIAG.propagate = False
+
+
+def setup_diag(folder):
+    """Rotierendes Log: 10 Dateien zu je 5 MB in <Datenordner>/logs."""
+    for h in list(DIAG.handlers):
+        DIAG.removeHandler(h)
+        h.close()
+    path = os.path.join(folder, LOG_DIR)
+    try:
+        os.makedirs(path, exist_ok=True)
+        h = logging.handlers.RotatingFileHandler(os.path.join(path, "swv_live_ranking.log"),
+                                                 maxBytes=5 * 1024 * 1024, backupCount=9, encoding="utf-8")
+    except OSError:
+        return None
+    h.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d %(levelname)-7s [%(threadName)s] %(message)s",
+                                     "%Y-%m-%d %H:%M:%S"))
+    DIAG.addHandler(h)
+    return path
+
+
+def is_secret_key(key):
+    return any(w in key.lower() for w in ("token", "key", "pass", "secret"))
+
+
+def flatten_settings(d, prefix=""):
+    for k, v in d.items():
+        name = f"{prefix}{k}"
+        if isinstance(v, dict):
+            yield from flatten_settings(v, name + ".")
+        else:
+            yield name, (json.dumps(v, ensure_ascii=False) if isinstance(v, list) else v)
+
+
+def redact_settings(d):
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            out[k] = redact_settings(v)
+        else:
+            out[k] = "***" if (is_secret_key(k) and v) else v
+    return out
 
 
 def deep_merge(defaults, data):
@@ -417,7 +560,8 @@ class RoundButton(tk.Canvas):
 class Switch(tk.Canvas):
     """Ein/Aus-Schalter wie in den iPhone-Einstellungen."""
 
-    def __init__(self, parent, command=None, scale=1.0, on=False):
+    def __init__(self, parent, command=None, scale=1.0, on=False, on_color=None):
+        self.on_color = on_color
         self.w, self.h = int(46 * scale), int(28 * scale)
         super().__init__(parent, width=self.w, height=self.h, bg=parent_bg(parent), highlightthickness=0, bd=0,
                          cursor="hand2")
@@ -433,7 +577,7 @@ class Switch(tk.Canvas):
     def _draw(self):
         self.delete("all")
         w, h = self.w, self.h
-        track = SWITCH_ON if self.on else SWITCH_OFF
+        track = (self.on_color or SWITCH_ON) if self.on else SWITCH_OFF
         round_rect(self, 0, 0, w, h, h / 2, fill=track, outline=track)
         m = 2
         d = h - 2 * m
@@ -2806,6 +2950,12 @@ class LiveRankingApp:
         self.q = queue.Queue()
         self.reader = None
         self.data_path = data_dir()
+        migrated = migrate_data(self.data_path) if getattr(sys, "frozen", False) else None
+        setup_diag(self.data_path)
+        DIAG.info("=" * 70)
+        DIAG.info(f"Start {APP_NAME} {APP_VERSION} | Python {sys.version.split()[0]} | {sys.platform} | "
+                  f"Daten {self.data_path}" + (f" | übernommen aus {migrated}" if migrated else ""))
+        self.install_error_hooks()
 
         self.settings = self.load_settings()
         apply_palette(self.settings["theme"])
@@ -2898,6 +3048,7 @@ class LiveRankingApp:
         self.setup_fonts()
         self.setup_styles()
         self.build_ui()
+        self.bind_ui_logging()
         self.refresh_ports()
         self.build_cards()
         self.apply_show_settings()
@@ -3084,6 +3235,7 @@ class LiveRankingApp:
         return (body, stat) if status else body
 
     def _toplevel(self, title, parent=None):
+        DIAG.info(f"UI Fenster: {title}")
         dlg = tk.Toplevel(parent or self.root)
         dlg.title(title)
         dlg.configure(bg=PANEL, padx=18, pady=14)
@@ -3120,7 +3272,205 @@ class LiveRankingApp:
         """Umbruchbreite fuer Text in schmalen Fenstern."""
         return self.side_w - int(70 * self.ui_scale)
 
-    def message_dialog(self, kind, title, message, parent=None, default=None, **_kw):
+    # ================================================================== #
+    # Diagnose: Programmfehler, Bedienung, Fehlerberichte
+    # ================================================================== #
+    def install_error_hooks(self):
+        import traceback
+        self._pending_errors = []
+
+        def report(where, exc_type, exc, tb):
+            DIAG.error(f"Programmfehler ({where}): {exc_type.__name__}: {exc}", exc_info=(exc_type, exc, tb))
+            traceback.print_exception(exc_type, exc, tb)
+            self._pending_errors.append(f"{exc_type.__name__}: {exc}")
+
+        sys.excepthook = lambda t, e, tb: report("Hauptprogramm", t, e, tb)
+        threading.excepthook = lambda a: report(f"Thread {a.thread.name if a.thread else '?'}", a.exc_type,
+                                                a.exc_value, a.exc_traceback)
+        self.root.report_callback_exception = lambda t, e, tb: report("Oberfläche", t, e, tb)
+        self._last_error_note = 0.0
+
+    def show_pending_errors(self):
+        if not self._pending_errors or time.time() - self._last_error_note < 10:
+            return
+        errs, self._pending_errors = self._pending_errors, []
+        self._last_error_note = time.time()
+        more = f" (und {len(errs) - 1} weitere)" if len(errs) > 1 else ""
+        self.log(f"Programmfehler: {errs[0]}{more}. Details im Diagnose-Log. Bitte «Fehler melden» (F12).",
+                 tag="error")
+
+    def bind_ui_logging(self):
+        def click(e):
+            DIAG.debug(f"UI Klick {widget_desc(e.widget)}")
+
+        def key(e):
+            if e.keysym in ("Return", "Escape", "Delete", "Tab") or e.keysym.startswith("F"):
+                DIAG.debug(f"UI Taste {e.keysym} in {widget_desc(e.widget)}")
+
+        self.root.bind_all("<ButtonRelease-1>", click, add="+")
+        self.root.bind_all("<ButtonRelease-3>", click, add="+")
+        self.root.bind_all("<KeyPress>", key, add="+")
+        self.root.bind_all("<F12>", lambda e: self.open_report_dialog(), add="+")
+
+    def grab_screen(self):
+        """Bildschirmfoto des App-Fensters als PNG-Bytes, falls Pillow vorhanden."""
+        try:
+            from PIL import ImageGrab
+            self.root.update_idletasks()
+            x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
+            w, h = self.root.winfo_width(), self.root.winfo_height()
+            img = ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True)
+            buf = io.BytesIO()
+            img.save(buf, "PNG")
+            return buf.getvalue()
+        except Exception as exc:
+            DIAG.info(f"Bildschirmfoto nicht möglich: {exc}")
+            return None
+
+    def report_dir(self):
+        path = os.path.join(self.data_path, REPORT_DIR)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def open_report_dialog(self):
+        if getattr(self, "_report_open", False):
+            return
+        marked = time.time()
+        rid = time.strftime("%Y%m%d-%H%M%S", time.localtime(marked)) + "-" + secrets.token_hex(2)
+        DIAG.warning(f"===== FEHLERMELDUNG {rid}: Zeitpunkt markiert =====")
+        shot = self.grab_screen()
+        self._report_open = True
+        dlg = self._toplevel("Fehler melden")
+        dlg.columnconfigure(0, weight=1)
+        stamp = time.strftime("%H:%M:%S", time.localtime(marked))
+        tk.Label(dlg, text=f"Zeitpunkt {stamp} ist markiert. Was ist passiert? Was hast du erwartet?",
+                 bg=PANEL, fg=TEXT, font=self.f_side, justify="left", anchor="w",
+                 wraplength=self.narrow_wrap()).grid(row=0, column=0, sticky="w")
+        txt = tk.Text(dlg, height=8, width=48, bg=PANEL2, fg=TEXT, insertbackground=TEXT, font=self.f_side,
+                      relief="flat", wrap="word", highlightthickness=1, highlightbackground=BORDER, padx=8, pady=6)
+        txt.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+
+        def close():
+            self._report_open = False
+            dlg.destroy()
+
+        def ok(_e=None):
+            desc = txt.get("1.0", "end").strip()
+            path = self.make_report(rid, marked, desc, shot)
+            close()
+            if path:
+                self.log(f"Fehlerbericht gespeichert: {path}", tag="ok")
+                self.open_folder(path)
+            return "break"
+
+        btns = tk.Frame(dlg, bg=PANEL)
+        btns.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self._button(btns, "Bericht speichern", ok, BLUE).pack(side="right")
+        self._button(btns, "Abbrechen", close).pack(side="right", padx=(0, 8))
+        dlg.protocol("WM_DELETE_WINDOW", close)
+        dlg.bind("<Escape>", lambda e: close())
+        dlg.bind("<Control-Return>", ok)
+        self._place(dlg, narrow=True)
+        dlg.focus_force()
+        txt.focus_set()
+        return dlg
+
+    def session_dump(self):
+        """Gesamter Zustand der Sitzung (ohne Geheimnisse) fuer Fehlerberichte."""
+        data = self.autosave_data()
+        data.update({
+            "app": APP_NAME, "app_version": APP_VERSION, "erstellt": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "settings": redact_settings(self.settings),
+            "categories": self.categories,
+            "course": [[t, nr, list(k)] for t, nr, k in self.course],
+            "finish_override": self.finish_override,
+            "cp_lastseq": [[list(k), v] for k, v in self.cp_lastseq.items()],
+            "connected": bool(self.cp is not None and self.cp.connected),
+            "conn_mode": self.settings["conn"]["mode"],
+            "ticker": list(self.ticker)[:200],
+            "log": [line.rstrip("\n") for line, _t, _f in self.log_lines[-3000:]],
+        })
+        return data
+
+    def make_report(self, rid, marked, desc, shot=None):
+        import zipfile
+        folder = self.report_dir()
+        path = os.path.join(folder, f"fehlerbericht_{rid}.zip")
+        manifest = {
+            "format": "swv-fehlerbericht/1", "id": rid, "app": APP_NAME, "version": APP_VERSION,
+            "markiert": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(marked)),
+            "erstellt": time.strftime("%Y-%m-%dT%H:%M:%S"), "beschreibung": desc,
+            "system": {"platform": sys.platform, "python": sys.version.split()[0],
+                       "frozen": bool(getattr(sys, "frozen", False))},
+            "wettkampf": self.event_label() if hasattr(self, "event_label") else "",
+            "hochgeladen": False,
+        }
+        DIAG.warning(f"===== FEHLERMELDUNG {rid}: {' '.join(desc.split())[:500]} =====")
+        for h in DIAG.handlers:
+            h.flush()
+        try:
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+                z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+                z.writestr("beschreibung.txt", f"Zeitpunkt: {manifest['markiert']}\nVersion: {APP_VERSION}\n\n{desc}\n")
+                z.writestr("session.json", json.dumps(self.session_dump(), ensure_ascii=False, default=str))
+                if shot:
+                    z.writestr("bildschirm.png", shot)
+                logdir = os.path.join(self.data_path, LOG_DIR)
+                if os.path.isdir(logdir):
+                    for name in sorted(os.listdir(logdir)):
+                        fp = os.path.join(logdir, name)
+                        if name.startswith("swv_live_ranking.log") and time.time() - os.path.getmtime(fp) < 12 * 3600:
+                            z.write(fp, f"logs/{name}")
+                rawdir = os.path.join(self.data_path, RAW_DIR)
+                if os.path.isdir(rawdir):
+                    for name in sorted(os.listdir(rawdir))[-2:]:
+                        z.write(os.path.join(rawdir, name), f"rohdaten/{name}")
+                ap = os.path.join(self.data_path, AUTOSAVE_FILE)
+                if os.path.exists(ap):
+                    z.write(ap, AUTOSAVE_FILE)
+        except OSError as exc:
+            self.log(f"Fehlerbericht nicht gespeichert: {exc}", tag="error")
+            return None
+        self.queue_report(rid, path)
+        return path
+
+    def queue_report(self, rid, path):
+        """Liste der Berichte, die noch nicht ins Onlinetool hochgeladen sind (Upload folgt spaeter)."""
+        qp = os.path.join(self.report_dir(), "offen.json")
+        try:
+            with open(qp, encoding="utf-8") as fh:
+                items = json.load(fh)
+        except (OSError, ValueError):
+            items = []
+        items.append({"id": rid, "datei": os.path.basename(path), "erstellt": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        try:
+            with open(qp, "w", encoding="utf-8") as fh:
+                json.dump(items, fh, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    def open_folder(self, path=None):
+        """Datenordner (oder den Ordner einer Datei, Datei markiert) im Explorer zeigen."""
+        target = path or self.data_path
+        DIAG.info(f"Ordner öffnen: {target}")
+        if not IS_WINDOWS:
+            return
+        try:
+            if path and os.path.isfile(path):
+                subprocess.Popen(["explorer.exe", "/select,", os.path.normpath(path)])
+            else:
+                subprocess.Popen(["explorer.exe", os.path.normpath(target)])
+        except OSError as exc:
+            self.log(f"Ordner nicht geöffnet: {exc}", tag="warn")
+
+    def message_dialog(self, kind, title, message, parent=None, default=None, **kw):
+        DIAG.info(f"UI Meldung ({kind}) {title}: {' '.join(str(message).split())}")
+        result = self._message_dialog(kind, title, message, parent=parent, default=default, **kw)
+        if kind == "ask":
+            DIAG.info(f"UI Antwort {title}: {'Ja' if result else 'Nein'}")
+        return result
+
+    def _message_dialog(self, kind, title, message, parent=None, default=None, **_kw):
         """Meldung (info, warning, error) oder Ja/Nein-Frage. Enter waehlt die markierte Taste, Escape bricht ab."""
         if self.dialog_hook is not None:
             return self.dialog_hook(kind, title, message, default)
@@ -3242,10 +3592,17 @@ class LiveRankingApp:
         self.root.columnconfigure(1, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        # Seitenleiste (scrollbar)
+        # Seitenleiste (scrollbar), angepinnt oder versenkt (faehrt am linken Rand heraus)
         outer = tk.Frame(self.root, bg=BG, width=self.side_w)
         outer.grid(row=0, column=0, sticky="ns")
         outer.grid_propagate(False)
+        self.side_outer = outer
+        self.side_strip = tk.Frame(self.root, bg=PANEL2, width=int(12 * self.ui_scale), cursor="hand2")
+        tk.Label(self.side_strip, text="›", bg=PANEL2, fg=MUTED, font=self.f_side_head).place(
+            relx=0.5, rely=0.5, anchor="center")
+        self.side_strip.bind("<Enter>", lambda e: self.side_show())
+        self.side_strip.bind("<Button-1>", lambda e: self.side_show())
+        self._side_out = False
         outer.rowconfigure(0, weight=1)
         outer.columnconfigure(0, weight=1)
         canvas = tk.Canvas(outer, bg=BG, highlightthickness=0, bd=0)
@@ -3301,8 +3658,9 @@ class LiveRankingApp:
         status.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         status.columnconfigure(0, weight=1, uniform="status")
         status.columnconfigure(1, weight=1, uniform="status")
-        self.live_labels = self._status_box(status, 0, BLUE, "LAUFEND: -")
-        self.ziel_labels = self._status_box(status, 1, GREEN, "ZIEL: -")
+        self.banner_locks = {}
+        self.live_labels = self._status_box(status, 0, BLUE, "LAUFEND: -", lock=("lock_start", "Start sperren"))
+        self.ziel_labels = self._status_box(status, 1, GREEN, "ZIEL: -", lock=("lock_finish", "Ziel sperren"))
         self.lbl_live = self.live_labels[0]
         self.lbl_ziel = self.ziel_labels[0]
 
@@ -3356,15 +3714,93 @@ class LiveRankingApp:
         self.txt_ticker.tag_configure("newest", font=self.f_ticker_bold)
 
         # Seitenleiste erst jetzt, weil sie auf Kartenbereich und Panels verweist
+        pin = tk.Frame(side, bg=BG)
+        pin.pack(fill="x", padx=10, pady=(8, 0))
+        self.btn_pin = self._button(pin, "", self.toggle_sidebar_pin)
+        self.btn_pin.pack(side="right")
+        self._button(pin, "Fehler melden (F12)", self.open_report_dialog, DARK_RED).pack(side="left")
         self.build_sidebar(side)
+        self.apply_sidebar_mode()
 
-    def _status_box(self, parent, col, color, text):
+    # ---------------- Seitenleiste versenken ---------------- #
+    def toggle_sidebar_pin(self):
+        self.settings["sidebar_pinned"] = not self.settings["sidebar_pinned"]
+        self.save_settings()
+        self.log("Seitenleiste " + ("angepinnt" if self.settings["sidebar_pinned"] else
+                                    "versenkt: fährt am linken Rand heraus"), tag="ok")
+        self.apply_sidebar_mode()
+
+    def apply_sidebar_mode(self):
+        pinned = self.settings["sidebar_pinned"]
+        self.btn_pin.configure(text="Leiste versenken ⇤" if pinned else "Leiste anpinnen ⇥")
+        self._side_out = False
+        self.side_outer.place_forget()
+        if pinned:
+            self.side_strip.grid_remove()
+            self.side_outer.grid(row=0, column=0, sticky="ns")
+        else:
+            self.side_outer.grid_remove()
+            self.side_strip.grid(row=0, column=0, sticky="ns")
+            if not getattr(self, "_side_watching", False):
+                self._side_watching = True
+                self.root.after(200, self._side_watch)
+
+    def side_show(self):
+        if self.settings["sidebar_pinned"] or self._side_out:
+            return
+        self._side_out = True
+        self.side_outer.place(x=0, y=0, relheight=1.0, width=self.side_w)
+        self.side_outer.lift()
+
+    def side_hide(self):
+        if not self._side_out:
+            return
+        self._side_out = False
+        self.side_outer.place_forget()
+
+    def _side_watch(self):
+        """Versenkte Seitenleiste: zeigen, wenn die Maus an den linken Rand kommt, verstecken, wenn sie
+        die Leiste verlaesst. Offene Auswahllisten, Menues und Dialoge halten sie offen."""
+        if self.settings["sidebar_pinned"]:
+            self._side_watching = False
+            return
+        try:
+            px, py = self.root.winfo_pointerxy()
+            x = px - self.root.winfo_rootx()
+            y = py - self.root.winfo_rooty()
+            inside_root = 0 <= y <= self.root.winfo_height() and x <= self.root.winfo_width()
+            if not self._side_out:
+                if inside_root and 0 <= x <= int(14 * self.ui_scale):
+                    self.side_show()
+            else:
+                w = self.root.winfo_containing(px, py)
+                foreign = w is not None and w.winfo_toplevel() is not self.root
+                busy = self.root.grab_current() is not None or foreign
+                if not busy and (x > self.side_w + int(24 * self.ui_scale) or not inside_root or x < -40):
+                    self.side_hide()
+        except tk.TclError:
+            pass
+        self.root.after(150, self._side_watch)
+
+    def _status_box(self, parent, col, color, text, lock=None):
         panel = RoundedPanel(parent, fill=color, radius=int(16 * self.ui_scale), fit_height=True)
         panel.grid(row=0, column=col, sticky="nsew", padx=(6, 3) if col == 0 else (3, 6))
         box = panel.inner
         box.configure(padx=int(18 * self.ui_scale), pady=int(8 * self.ui_scale))
-        big = tk.Label(box, text=text, bg=color, fg=WHITE, font=self.f_status, anchor="w", width=1)
-        big.pack(fill="x")
+        top = tk.Frame(box, bg=color)
+        top.pack(fill="x")
+        if lock:
+            key, label = lock
+            ctl = tk.Frame(top, bg=color)
+            sw = Switch(ctl, command=lambda k=key: self.toggle_lock(k), scale=self.ui_scale * 0.8,
+                        on=self.settings["timing"][key], on_color=ORANGE)
+            sw.pack(side="right")
+            tk.Label(ctl, text=label, bg=color, fg=WHITE, font=self.f_status_sub).pack(side="right", padx=(0, 6))
+            self.banner_locks[key] = (ctl, sw)
+            if self.eth_mode():
+                ctl.pack(side="right", padx=(8, 0))
+        big = tk.Label(top, text=text, bg=color, fg=WHITE, font=self.f_status, anchor="w", width=1)
+        big.pack(side="left", fill="x", expand=True)
         sub1 = tk.Label(box, text="", bg=color, fg=WHITE, font=self.f_status_name, anchor="w", width=1)
         sub1.pack(fill="x")
         sub2 = tk.Label(box, text="", bg=color, fg=WHITE, font=self.f_status_sub, anchor="w", width=1)
@@ -3547,7 +3983,7 @@ class LiveRankingApp:
             row=6, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         # Startliste
-        b = self._section(side, "Startliste")
+        b = self._section(side, "Startliste", "startliste")
         b.columnconfigure(0, weight=1)
         b.columnconfigure(1, weight=1)
         self.lbl_startlist = self._label(b, "Keine Startliste geladen", fg=MUTED, wraplength=wrap, justify="left")
@@ -3570,7 +4006,7 @@ class LiveRankingApp:
             row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         # Manuelle Zeiterfassung
-        b = self._section(side, "Manuelle Zeiterfassung")
+        b = self._section(side, "Manuelle Zeiterfassung", "manuell")
         b.columnconfigure(1, weight=1)
         self._label(b, "Startnummer").grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.e_manual_nr = self._entry(b, width=8)
@@ -3689,10 +4125,14 @@ class LiveRankingApp:
             row=1, column=0, sticky="ew", pady=(6, 0))
         self.btn_pdf = self._button(b, "PDF und Drucken ▾", self.open_pdf_menu, GREEN)
         self.btn_pdf.grid(row=2, column=0, sticky="ew", pady=(6, 0))
-        self._button(b, "Resultate zurücksetzen", self.reset_results, DARK_RED).grid(
+        self._button(b, "Datenordner öffnen", lambda: self.open_folder()).grid(
             row=3, column=0, sticky="ew", pady=(6, 0))
+        self._button(b, "Resultate zurücksetzen", self.reset_results, DARK_RED).grid(
+            row=4, column=0, sticky="ew", pady=(6, 0))
         self.lbl_count = self._label(b, "0 Resultate erfasst", fg=MUTED)
-        self.lbl_count.grid(row=4, column=0, sticky="w", pady=(4, 0))
+        self.lbl_count.grid(row=5, column=0, sticky="w", pady=(4, 0))
+        self._label(b, f"Daten, Logs und Fehlerberichte: {self.data_path}", fg=MUTED, wraplength=wrap,
+                    justify="left").grid(row=6, column=0, sticky="w", pady=(4, 0))
 
         # Log
         logbox = RoundedPanel(side, fill=PANEL, radius=int(12 * self.ui_scale), fit_height=True)
@@ -3757,9 +4197,9 @@ class LiveRankingApp:
         ts = self.settings["timing"]
         ts[key] = not ts[key]
         self.save_settings()
-        sw = self.timing_switches.get(key)
-        if sw is not None and sw.on != ts[key]:
-            sw.set(ts[key])
+        for sw in (self.timing_switches.get(key), (getattr(self, "banner_locks", {}).get(key) or (None, None))[1]):
+            if sw is not None:
+                sw.set(ts[key])
         what = "Start" if key == "lock_start" else "Ziel"
         self.log(f"{what} {'gesperrt: Impulse werden ohne Nummer gespeichert' if ts[key] else 'freigegeben'}",
                  tag="warn" if ts[key] else "ok")
@@ -4522,6 +4962,9 @@ class LiveRankingApp:
         who = self.who_text(nr)
         who_txt = f" {who}" if who else ""
         disp = f"{self.disp_time(nr)}s"
+        if self.status.get(nr) in ("DSQ", "DNF"):
+            self.add_ticker(f"Nr {nr}{who_txt} im Ziel: {disp} (disqualifiziert, nicht klassiert)", "warn")
+            return
         if not cat:
             self.add_ticker(f"Nr {nr}{who_txt} im Ziel: {disp} (ohne Kategorie)", "warn")
             return
@@ -4805,6 +5248,13 @@ class LiveRankingApp:
             self.participants[nr] = {
                 "nr": nr, "p1": "", "p2": "", "kategorie": cat["name"], "verein": "", "vnr": "", "staver": "",
                 "fg": "", "bemerkung": "", "notiz": "", "strafpunkte": 0, "unknown": True}
+        was_dns = self.status.get(nr) == "DNS"
+        if was_dns:
+            self.status.pop(nr, None)
+            self._rank_cache = None
+            self.log(f"Nr {nr}: Status DNS aufgehoben, wieder in der Startreihenfolge", tag="ok")
+            self.add_ticker(f"Nr {nr}{(' ' + self.who_text(nr)) if self.who_text(nr) else ''} startet doch", None)
+            self.save_autosave()
         order = [n for n in self.start_order if n != nr]
         order.insert(order.index(before), nr)
         moved = nr in self.order_index
@@ -4845,6 +5295,8 @@ class LiveRankingApp:
             cat = self.category_of(nr)
             tag = f"crs{nr}"
             seg.append((f"Nr {nr}   {self.running_text(tod)}   {display_name(p, mode) or '-'}\n", ("nr", tag)))
+            if self.status.get(nr) == "DSQ":
+                seg.append(("DSQ, fährt noch ins Ziel (nicht klassiert)\n", ("warn", tag)))
             info = [x for x in (p.get("verein", ""), cat["name"] if cat else ("Test" if self.is_test(nr) else ""))
                     if x]
             seg.append(("  ·  ".join(info) + "\n", ("sub", tag)))
@@ -4883,7 +5335,7 @@ class LiveRankingApp:
                 self._course_menu.destroy()
             except tk.TclError:
                 pass
-        self._course_menu = tk.Menu(self.root, tearoff=0, bg=PANEL2, fg=TEXT, activebackground=BLUE,
+        self._course_menu = LoggedMenu(self.root, tearoff=0, bg=PANEL2, fg=TEXT, activebackground=BLUE,
                                     activeforeground=WHITE, font=self.f_side, bd=0, relief="flat")
         return self._course_menu
 
@@ -5030,7 +5482,14 @@ class LiveRankingApp:
                              command=lambda: self.reassign_last_finish(nr))
         menu.add_command(label="Nummer ändern ...", command=lambda: self.open_renumber_dialog(nr))
         menu.add_command(label="Ausgeschieden (DNF)", command=lambda: self.cp_cancel_start(nr, "DNF"))
-        menu.add_command(label="Disqualifiziert (DSQ)", command=lambda: self.cp_cancel_start(nr, "DSQ"))
+        if self.status.get(nr) == "DSQ":
+            menu.add_command(label="DSQ aufheben", command=lambda: self.set_status(nr, None))
+            menu.add_command(label="DSQ, Boot ist schon draussen", command=lambda: self.cp_cancel_start(nr, "DSQ"))
+        else:
+            menu.add_command(label="Disqualifiziert, fährt weiter ins Ziel (DSQ)",
+                             command=lambda: self.cp_cancel_start(nr, "DSQ", running=True))
+            menu.add_command(label="Disqualifiziert, ist schon draussen (DSQ)",
+                             command=lambda: self.cp_cancel_start(nr, "DSQ"))
         self._popup(menu, event)
         return "break"
 
@@ -5109,6 +5568,14 @@ class LiveRankingApp:
         menu.add_separator()
         menu.add_command(label="Nummer darunter einfügen ...", command=lambda: self.open_insert_dialog(nr))
         menu.add_command(label="Nicht gestartet (DNS)", command=lambda: self.set_status(nr, "DNS"))
+        absent = [n for n in self.start_order if self.status.get(n) == "DNS"]
+        if absent:
+            sub = LoggedMenu(menu, tearoff=0, bg=PANEL2, fg=TEXT, activebackground=BLUE, activeforeground=WHITE,
+                          font=self.f_side, bd=0, relief="flat")
+            for n in absent:
+                sub.add_command(label=self.order_label(n), command=lambda n=n: self.insert_number(str(n), nr))
+            menu.add_separator()
+            menu.add_cascade(label="Abwesende (DNS) darunter wieder einfügen", menu=sub)
         self._popup(menu, event)
         return "break"
 
@@ -5193,6 +5660,8 @@ class LiveRankingApp:
     # Serielle Daten
     # ================================================================== #
     def poll_queue(self):
+        if self._pending_errors:
+            self.show_pending_errors()
         try:
             while True:
                 kind, payload, reader = self.q.get_nowait()
@@ -5296,7 +5765,17 @@ class LiveRankingApp:
     def usb_mode(self):
         return self.settings["conn"]["mode"] == "usb"
 
+    def update_banner_locks(self):
+        for key, (ctl, sw) in getattr(self, "banner_locks", {}).items():
+            sw.set(self.settings["timing"][key])
+            if self.eth_mode():
+                if not ctl.winfo_manager():
+                    ctl.pack(side="right", padx=(8, 0))
+            else:
+                ctl.pack_forget()
+
     def show_conn_frames(self):
+        self.update_banner_locks()
         want = {"ethernet": self.frm_eth, "usb": self.frm_usb}.get(self.settings["conn"]["mode"], self.frm_rs)
         for f in (self.frm_rs, self.frm_eth, self.frm_usb):
             if f is not want:
@@ -5721,6 +6200,7 @@ class LiveRankingApp:
         cmd = self.cp_cmds.pop(0)
         cmd["deadline"] = time.time() + CMD_TIMEOUT
         self.cp_inflight = cmd
+        DIAG.debug(f"CP A> {cmd['text']}")
         self.cp.send(cmd["text"])
         self.log(f"→ CP {cmd['text']}", focus=False, tag="ok")
 
@@ -5831,6 +6311,7 @@ class LiveRankingApp:
             if ok:
                 self.cp_next_start = want
                 if self.cp_b is not None and self.cp_b.connected:
+                    DIAG.debug(f"CP B> #WP 026 {CH_START:02d} {want:04d}")
                     self.cp_b.send(f"#WP 026 {CH_START:02d} {want:04d}")  # Reserve gleich nummerieren
                 self.update_panels()
             # Startliste hat sich inzwischen geaendert: nochmals abgleichen
@@ -5891,28 +6372,36 @@ class LiveRankingApp:
         self.cp_write_param("026", CH_FINISH, target, "nächstes Ziel", done)
 
     # ---------------- Status DNS / DNF / DSQ ---------------- #
-    def set_status(self, nr, code, reason=""):
-        """code: 'DNS', 'DNF', 'DSQ' oder None (aufheben)."""
+    def set_status(self, nr, code, reason="", keep_on_course=False):
+        """code: 'DNS', 'DNF', 'DSQ' oder None (aufheben). keep_on_course: DSQ-Boot faehrt weiter ins Ziel
+        und nimmt dort seinen Zielimpuls, wird aber nicht klassiert."""
         old = self.status.get(nr)
-        if code == old:
+        key = self.course_key(nr)
+        if code == old and not (key and code == "DSQ"):
             return
         if code:
             self.status[nr] = code
         else:
             self.status.pop(nr, None)
         if code in ("DNF", "DSQ"):
-            key = self.course_key(nr)
             if key:
-                self.cp_recs[key]["dnf"] = True
+                if code == "DSQ" and keep_on_course:
+                    self.cp_recs[key]["dsq_run"] = True
+                else:
+                    self.cp_recs[key]["dnf"] = True
+                    self.cp_recs[key].pop("dsq_run", None)
         elif code is None:
             for _k, r in self.run_recs(CH_START):
                 if r["nr"] == nr:
                     r["dnf"] = False
-        if self.finish_override == nr and code:
+                    r.pop("dsq_run", None)
+        if self.finish_override == nr and code and not keep_on_course:
             self.finish_override = None
         who = self.who_text(nr)
         label = {"DNS": "nicht gestartet", "DNF": "ausgeschieden", "DSQ": "disqualifiziert"}
         if code:
+            if keep_on_course:
+                reason = (reason + " " if reason else "") + "(fährt weiter, Zielimpuls gehört diesem Boot)"
             self.log(f"Nr {nr} {label[code]} ({code}){(' ' + reason) if reason else ''}", tag="warn")
             self.add_ticker(f"Nr {nr}{(' ' + who) if who else ''} {label[code]}", "warn")
         else:
@@ -5923,16 +6412,20 @@ class LiveRankingApp:
         self.course_changed()
         self.cp_sync_next("Status")
 
-    def cp_cancel_start(self, nr, code="DNF"):
+    def cp_cancel_start(self, nr, code="DNF", running=False):
         if self.course_key(nr) is None:
             return
         what = "ausgeschieden" if code == "DNF" else "disqualifiziert"
-        if not messagebox.askyesno(what.capitalize(), f"{self.order_label(nr)} als {what} markieren?\n"
-                                                      "Das Boot verlässt die Fahrstrecke."
-                                                      + (" Am CP bei Bedarf mit Nr + R + 0 nachtragen."
-                                                         if code == "DNF" else "")):
+        if running:
+            text = (f"{self.order_label(nr)} als disqualifiziert markieren?\nDas Boot fährt weiter: der nächste "
+                    "Zielimpuls gehört ihm, die Zeit wird nicht klassiert.")
+        else:
+            text = (f"{self.order_label(nr)} als {what} markieren?\nDas Boot verlässt die Fahrstrecke sofort. "
+                    "Am CP läuft die Zeit weiter: dort mit Nr + R + 0" + ("." if code == "DSQ" else "")
+                    + " abbrechen.")
+        if not messagebox.askyesno(what.capitalize(), text):
             return
-        self.set_status(nr, code, "(nur in der App)" if code == "DNF" else "")
+        self.set_status(nr, code, "(nur in der App)" if not running else "", keep_on_course=running)
 
     def mark_dnf(self, nr, key, local=False):
         self.set_status(nr, "DNF", "(nur in der App)" if local else "(Startzeit am CP storniert)")
@@ -5981,6 +6474,7 @@ class LiveRankingApp:
             self.cp_last_rx = time.time()
         text = strip_frame(raw)
         info = parse_thcom(raw)
+        DIAG.debug(f"CP {dev}< {raw.strip()}")
         if info is None:
             return
         self.raw_log(dev, raw)
@@ -6233,6 +6727,9 @@ class LiveRankingApp:
         self.cp_sync_next("Start")
 
     def on_finish_impulse(self, key, cpn, abs_t):
+        DIAG.info(f"Zielimpuls {key} CP-Nr {cpn} {fmt_tod(abs_t % 86400)} | erwartet: "
+                  f"{[c[1] for c in self.course]} | Vorrang {self.finish_override} | "
+                  f"Sperre {self.settings['timing']['lock_finish']}")
         rec = self.cp_recs[key] = {"nr": 0, "cp_nr": cpn, "abs": abs_t, "status": "nobody"}
         # Sicht des CP nachfuehren (Papierstreifen): seine offene Startzeit mit dieser Nummer ist fertig
         cp_start = next((k for k in self.cp_alive() if self.cp_recs[k]["cp_nr"] == cpn
@@ -6708,10 +7205,15 @@ class LiveRankingApp:
             return None
         self.log(f"PDF gespeichert: {path}", tag="ok")
         if IS_WINDOWS:
+            # Ueber den Explorer oeffnen: dann ruft ein signiertes Programm den PDF-Reader auf und dieser
+            # zeigt keine Sicherheitswarnung wegen der unsignierten App. Gedruckt wird im Reader (Ctrl+P).
             try:
-                os.startfile(path, "print" if print_it else "open")
+                subprocess.Popen(["explorer.exe", os.path.normpath(path)])
             except OSError as exc:
                 messagebox.showwarning("PDF", f"Gespeichert unter\n{path}\n\nÖffnen nicht möglich: {exc}")
+            else:
+                if print_it:
+                    self.log("PDF geöffnet: im PDF-Reader mit Ctrl+P drucken", tag="ok")
         return path
 
     def open_pdf_menu(self, event=None):
@@ -6720,7 +7222,8 @@ class LiveRankingApp:
             menu.add_command(label=f"{what} als PDF", command=lambda w=what: self.make_pdf(w))
         menu.add_separator()
         for what in ("Rangliste", "Startliste"):
-            menu.add_command(label=f"{what} drucken", command=lambda w=what: self.make_pdf(w, print_it=True))
+            menu.add_command(label=f"{what} drucken (öffnet PDF, Ctrl+P)",
+                             command=lambda w=what: self.make_pdf(w, print_it=True))
         w = self.btn_pdf
         x, y = w.winfo_rootx(), w.winfo_rooty() + w.winfo_height()
         try:
@@ -6928,6 +7431,7 @@ class LiveRankingApp:
     def log(self, text, focus=True, tag=None):
         """focus=False: nur im Tab 'Alle' (Rohdaten). Sonst in beiden Tabs."""
         line = f"{time.strftime('%H:%M:%S')}  {text}\n"
+        DIAG.log(logging.WARNING if tag in ("warn", "error") else logging.INFO, f"LOG[{tag or '-'}] {text}")
         self.log_lines.append((line, tag, focus))
         del self.log_lines[:-LOG_MAX_LINES * 2]
         self._log_insert(line, tag, focus)
@@ -7662,6 +8166,13 @@ class LiveRankingApp:
         return settings
 
     def save_settings(self):
+        flat = dict(flatten_settings(self.settings))
+        old = getattr(self, "_settings_flat", None)
+        if old is not None:
+            changed = [f"{k}={'***' if is_secret_key(k) else v!r}" for k, v in flat.items() if old.get(k) != v]
+            if changed:
+                DIAG.info("Einstellung: " + ", ".join(changed)[:2000])
+        self._settings_flat = flat
         try:
             with open(os.path.join(self.data_path, SETTINGS_FILE), "w", encoding="utf-8") as fh:
                 json.dump(self.settings, fh, ensure_ascii=False, indent=2)
@@ -8438,7 +8949,17 @@ class LiveRankingApp:
     # Persistenz
     # ================================================================== #
     def save_autosave(self):
-        data = {
+        data = self.autosave_data()
+        try:
+            tmp = os.path.join(self.data_path, AUTOSAVE_FILE + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False)
+            os.replace(tmp, os.path.join(self.data_path, AUTOSAVE_FILE))
+        except OSError as exc:
+            self.log(f"Autosave fehlgeschlagen: {exc}", tag="error")
+
+    def autosave_data(self):
+        return {
             "version": 2,
             "results": {str(k): v for k, v in self.results.items()},
             "startlist": {"order": self.start_order, "source": self.startlist_source,
@@ -8449,13 +8970,6 @@ class LiveRankingApp:
                    "recs": [[list(k), {f: (list(v) if isinstance(v, tuple) else v) for f, v in r.items()}]
                             for k, r in self.cp_recs.items()]},
         }
-        try:
-            tmp = os.path.join(self.data_path, AUTOSAVE_FILE + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, ensure_ascii=False)
-            os.replace(tmp, os.path.join(self.data_path, AUTOSAVE_FILE))
-        except OSError as exc:
-            self.log(f"Autosave fehlgeschlagen: {exc}", tag="error")
 
     def load_autosave(self):
         path = os.path.join(self.data_path, AUTOSAVE_FILE)

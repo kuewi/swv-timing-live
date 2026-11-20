@@ -1,5 +1,16 @@
 # Änderungen
 
+## v1.9.0 (20.11.2026)
+- Installer `SWV_LiveRanking_Setup_x.y.z.exe`: Programm in «Programme», Startmenü, optional Desktop, Eintrag unter «Apps» mit Version und Deinstallation. Eine neue Version ersetzt die installierte, ältere Versionen nur nach Rückfrage. Versionsinfo in den Dateieigenschaften der .exe
+- Datenordner `Dokumente\SWV Live-Ranking` (Einstellungen, Autosave, `logs`, `rohdaten`, `fehlerberichte`, `pdf`), bleibt bei Update und Deinstallation. Daten vom bisherigen Ort werden beim ersten Start übernommen. Knopf «Datenordner öffnen»
+- Diagnose-Log (10 × 5 MB): Bedienung, Meldungen und Antworten, jede Zeile vom und zum CP, Zuordnungsentscheide, geänderte Einstellungen, Programmfehler mit Traceback. Programmfehler erscheinen zusätzlich in der App
+- «Fehler melden» (Knopf oben in der Seitenleiste, Taste F12): Zeitpunkt wird sofort markiert, Beschreibung eingeben, ZIP mit Beschreibung, Session-Dump, Logs, Rohdaten, Autosave und Bildschirmfoto. Liste der Berichte für den späteren Upload ins Onlinetool
+- DNS rückgängig: Nummer wieder einfügen hebt DNS auf, Rechtsklick in «Als nächstes» zeigt die Abwesenden zum Einfügen
+- DSQ auf der Strecke: «fährt weiter ins Ziel» behält das Boot in der Zielreihenfolge, sein Zielimpuls wird ihm zugeordnet, nicht klassiert. «ist schon draussen» wie bisher
+- Schalter «Start sperren» und «Ziel sperren» direkt in den Bannern «Laufend» und «Ziel» (Ethernet und USB)
+- Seitenleiste versenkbar: fährt am linken Rand heraus und wieder weg, oder angepinnt. «Startliste» und «Manuelle Zeiterfassung» zuklappbar
+- PDF über den Explorer öffnen, damit der PDF-Reader nicht wegen der unsignierten App warnt. Drucken im Reader mit Ctrl+P
+
 ## v1.8.1 (20.11.2026)
 - USB am CP 545 bestätigt (COM-Port, 9600 Bd, Prüfsumme CS16 stimmt)
 - Puffer des CP beim Verbinden: der CP schickt zuerst alle Zeilen seit dem letzten Abholen (auch alte Läufe). Beim ersten Verbinden werden diese nicht als neue Impulse gewertet, nur Lauf und Sequenzen übernommen. Nach einem Unterbruch in derselben Sitzung werden die verpassten Zeiten nachgetragen. Gilt auch für Ethernet

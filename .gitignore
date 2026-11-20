@@ -15,3 +15,10 @@ wettkampf_zeiten_log.txt
 *.xls
 *.xlsx
 *.csv
+
+# Von der App geschriebene Ordner
+logs/
+fehlerberichte/
+rohdaten/
+pdf/
+version_info.txt
