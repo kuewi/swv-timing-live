@@ -1,9 +1,9 @@
 import os, sys, shutil, time, tkinter as tk
 os.environ["SWV_CP_HOSTS"] = "127.0.0.1"; os.environ["SWV_CP_PORTS"] = "17000,23500"
-sys.path.insert(0, "/home/claude/swv"); sys.path.insert(0, "/home/claude/test")
+HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, os.path.dirname(HERE)); sys.path.insert(0, HERE)
 import swv_live_ranking as m
 from cpsim import CPSim
-D = "/tmp/swv_eth"; shutil.rmtree(D, ignore_errors=True); os.makedirs(D); m.data_dir = lambda: D
+import tempfile; D = os.path.join(tempfile.gettempdir(), "swv_test"); shutil.rmtree(D, ignore_errors=True); os.makedirs(D); m.data_dir = lambda: D
 answers = []
 sim = CPSim()
 root = tk.Tk(); root.geometry("1920x1080+0+0")
