@@ -9,7 +9,13 @@ Optional        : xlrd (Startliste .xls), openpyxl (Startliste .xlsx, Export .xl
                   qrcode + pypng (QR-Code fuer Browser-Anzeige)
 Build (.exe)    : build.bat  (PyInstaller --onefile --windowed)
 
-Protokoll (ASCII, STX ... LF):
+Verbindung zum CP 545:
+  RS232   Anzeigetafel-Ausgang HL970/HL980, nur auswerten (siehe unten)
+  Ethernet THCOM08 ueber TCP (Port 13500): Zeiten TN/T-/T*/TC, Resultate RR, Steuerung mit
+           #WP 026 (naechste Start-/Zielnummer) und #WC 013 (Zeit umbuchen oder stornieren).
+           Die Netzwerkkarte wird auf 192.168.1.55/24 gestellt und beim Beenden auf DHCP zurueck.
+
+Protokoll RS232 (ASCII, STX ... LF):
   \x0223  Nr  22\n     Startnummer (wird nach jeder Zeit wiederholt)
   \x0213 4:32   \n     Laufzeit (ganze Sekunden)  -> nur Live-Anzeige
   \x0213 4:33.00\n     Zielzeit (mit Dezimalpunkt) -> Ranking
@@ -32,6 +38,7 @@ import re
 import secrets
 import socket
 import string
+import subprocess
 import sys
 import threading
 import time
@@ -39,7 +46,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
+from tkinter import messagebox as _tkmsg
 
 try:
     import serial
@@ -61,7 +69,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "2026-11-20"
+APP_VERSION = "2026-11-20 Ethernet"
 DEFAULT_BAUD = 9600
 TOP_N = 5
 BLINK_SECONDS = 30
@@ -73,28 +81,91 @@ LOG_MAX_LINES = 300
 TICKER_MAX = 60
 NEXT_COUNT = 3
 
-# Apple Dark Mode. Flaechen mit weisser Schrift leicht abgedunkelt (Kontrast >= 4.6:1 fuer Sonnenlicht).
-BG = "#000000"            # systemBackground
-PANEL = "#1c1c1e"         # secondarySystemBackground
-PANEL2 = "#2c2c2e"        # tertiarySystemBackground / Eingabefelder
-BUTTON = "#3a3a3c"        # graue Knoepfe
-BORDER = "#38383a"        # separator
-TEXT = "#ffffff"
-MUTED = "#98989d"         # secondaryLabel
-BLUE = "#0872dd"          # systemBlue, abgedunkelt fuer weisse Schrift
-ACCENT = "#0a84ff"        # systemBlue fuer Text und Linien auf dunklem Grund
-GREEN = "#1e8538"         # systemGreen, abgedunkelt fuer weisse Schrift
-GREEN_TEXT = "#30d158"    # systemGreen fuer Text auf dunklem Grund
-GOLD = "#ffd60a"          # systemYellow
+# Farben im Apple-Stil. Dunkel: Flaechen mit weisser Schrift leicht abgedunkelt (Kontrast >= 4.6:1).
+# Hell: Textfarben abgedunkelt, damit sie auf weissem Grund mindestens 4.5:1 erreichen.
+# WHITE ist immer weiss (Schrift auf farbigen Balken und Knoepfen), TEXT ist die normale Schriftfarbe.
 WHITE = "#ffffff"
-RED = "#ff453a"           # systemRed
-ORANGE = "#ff9f0a"        # systemOrange
-LIGHT_YELLOW = "#fff3c4"
-DARK_RED = "#d63930"      # systemRed, abgedunkelt fuer weisse Schrift
-INPUT_BG = PANEL2
-INPUT_FG = TEXT
-LIST_BG = "#f2f2f7"       # Aufklappliste der Auswahlfelder: dunkle Schrift auf hellem Grund
-LIST_FG = "#000000"
+PALETTES = {
+    "dark": {
+        "BG": "#000000", "PANEL": "#1c1c1e", "PANEL2": "#2c2c2e", "BUTTON": "#3a3a3c", "BUTTON_FG": "#ffffff",
+        "BORDER": "#38383a", "TEXT": "#ffffff", "MUTED": "#98989d", "BLUE": "#0872dd", "ACCENT": "#0a84ff",
+        "GREEN": "#1e8538", "GREEN_TEXT": "#30d158", "GOLD": "#ffd60a", "RED": "#ff453a", "ORANGE": "#ff9f0a",
+        "LIGHT_YELLOW": "#fff3c4", "DARK_RED": "#d63930", "LIST_BG": "#f2f2f7", "LIST_FG": "#000000",
+        "SEG_BG": "#2c2c2e", "SEG_ACTIVE": "#636366", "SEG_TEXT": "#c7c7cc", "SEG_TEXT_ACTIVE": "#ffffff",
+        "SWITCH_OFF": "#39393d", "SWITCH_ON": "#30d158", "DISABLED_FG": "#6e6e73", "LOG_TEST": "#64748b",
+        "CHECK_SEL": "#0872dd", "CHECK_SEL_FG": "#ffffff", "CAPTION": 0x00000000, "CAPTION_TEXT": 0x00FFFFFF,
+    },
+    "light": {
+        "BG": "#f2f2f7", "PANEL": "#ffffff", "PANEL2": "#eeeef0", "BUTTON": "#e5e5ea", "BUTTON_FG": "#000000",
+        "BORDER": "#d1d1d6", "TEXT": "#000000", "MUTED": "#5c5c60", "BLUE": "#0872dd", "ACCENT": "#0062c4",
+        "GREEN": "#1e8538", "GREEN_TEXT": "#18752f", "GOLD": "#8a5d00", "RED": "#c9001a", "ORANGE": "#b34a00",
+        "LIGHT_YELLOW": "#fff3c4", "DARK_RED": "#d63930", "LIST_BG": "#ffffff", "LIST_FG": "#000000",
+        "SEG_BG": "#e3e3e8", "SEG_ACTIVE": "#ffffff", "SEG_TEXT": "#3a3a3c", "SEG_TEXT_ACTIVE": "#000000",
+        "SWITCH_OFF": "#d1d1d6", "SWITCH_ON": "#28a745", "DISABLED_FG": "#8e8e93", "LOG_TEST": "#6b7280",
+        "CHECK_SEL": "#bcd8ff", "CHECK_SEL_FG": "#000000", "CAPTION": None, "CAPTION_TEXT": None,
+    },
+}
+THEME = "dark"
+
+
+def apply_palette(name):
+    """Farbsatz setzen. Die Oberflaeche muss danach neu aufgebaut werden."""
+    global THEME, INPUT_BG, INPUT_FG
+    THEME = name if name in PALETTES else "dark"
+    globals().update(PALETTES[THEME])
+    INPUT_BG, INPUT_FG = PANEL2, TEXT
+
+
+apply_palette("dark")
+
+
+def set_titlebar(win):
+    """Windows 10/11: Titelleiste passend zum Farbsatz (dunkel: schwarz mit weisser Schrift)."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        win.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+        dwm = ctypes.windll.dwmapi
+        dark = ctypes.c_int(1 if THEME == "dark" else 0)
+        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (Win10 2004+ / aeltere Win10)
+            if dwm.DwmSetWindowAttribute(wintypes.HWND(hwnd), attr, ctypes.byref(dark), ctypes.sizeof(dark)) == 0:
+                break
+        for attr, val in ((35, CAPTION), (36, CAPTION_TEXT), (34, CAPTION)):  # Win11: Farbe Titel / Schrift / Rand
+            v = ctypes.c_uint(0xFFFFFFFF if val is None else val)
+            dwm.DwmSetWindowAttribute(wintypes.HWND(hwnd), attr, ctypes.byref(v), ctypes.sizeof(v))
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)  # Rahmen neu zeichnen
+    except Exception:
+        pass
+
+
+class _Messages:
+    """Ersetzt tkinter.messagebox: eigene Meldungsfenster im Farbsatz der App, links ueber der Seitenleiste."""
+    app = None
+
+    def _call(self, kind, title, message, **kw):
+        if self.app is None:
+            fn = {"info": _tkmsg.showinfo, "warning": _tkmsg.showwarning, "error": _tkmsg.showerror,
+                  "ask": _tkmsg.askyesno}[kind]
+            return fn(title, message, **kw)
+        return self.app.message_dialog(kind, title, message, **kw)
+
+    def showinfo(self, title, message, **kw):
+        return self._call("info", title, message, **kw)
+
+    def showwarning(self, title, message, **kw):
+        return self._call("warning", title, message, **kw)
+
+    def showerror(self, title, message, **kw):
+        return self._call("error", title, message, **kw)
+
+    def askyesno(self, title, message, **kw):
+        return bool(self._call("ask", title, message, **kw))
+
+
+messagebox = _Messages()
 
 DEFAULT_CATEGORIES = [
     {"name": "AKTIVE", "min": 1, "max": 199, "rekord": ""},
@@ -121,6 +192,9 @@ DEFAULT_SETTINGS = {
     },
     "web": {"bind": "", "port": 8080, "key": ""},
     "export_dir": "",
+    "theme": "dark",
+    "conn": {"mode": "rs232", "cp_ip": "", "adapter": ""},
+    "net_restore": {"pending": False, "adapter": ""},
 }
 
 SHOW_LABELS = [
@@ -253,7 +327,8 @@ class RoundButton(tk.Canvas):
 
     def __init__(self, parent, text="", command=None, bg=None, fg=None, font=None, radius=9, padx=14, pady=7,
                  activebackground=None, **_ignored):
-        self._o = {"text": text, "command": command, "bg": bg or BUTTON, "fg": fg or WHITE, "state": "normal",
+        self._o = {"text": text, "command": command, "bg": bg or BUTTON,
+                   "fg": fg or (BUTTON_FG if (bg or BUTTON) == BUTTON else WHITE), "state": "normal",
                    "activebackground": activebackground, "font": font}
         self._hover = self._down = False
         self.radius, self.padx, self.pady = radius, padx, pady
@@ -280,9 +355,10 @@ class RoundButton(tk.Canvas):
             return
         bg = self._o["bg"]
         if self._o["state"] == "disabled":
-            fill, fg = mix(bg, BG, 0.55), "#6e6e73"
+            fill, fg = mix(bg, BG, 0.55), DISABLED_FG
         else:
-            fill = mix(bg, WHITE, 0.18) if self._down else (mix(bg, WHITE, 0.09) if self._hover else bg)
+            tone = "#000000" if THEME == "light" and bg == BUTTON else WHITE
+            fill = mix(bg, tone, 0.18) if self._down else (mix(bg, tone, 0.09) if self._hover else bg)
             fg = self._o["fg"]
         round_rect(self, 0, 0, w, h, self.radius, fill=fill, outline=fill)
         self.create_text(w / 2, h / 2, text=self._o["text"], fill=fg, font=self._font())
@@ -353,7 +429,7 @@ class Switch(tk.Canvas):
     def _draw(self):
         self.delete("all")
         w, h = self.w, self.h
-        track = "#30d158" if self.on else "#39393d"
+        track = SWITCH_ON if self.on else SWITCH_OFF
         round_rect(self, 0, 0, w, h, h / 2, fill=track, outline=track)
         m = 2
         d = h - 2 * m
@@ -387,15 +463,16 @@ class Segmented(tk.Canvas):
         w, h = self.winfo_width(), self.winfo_height()
         if w < 4:
             return
-        round_rect(self, 0, 0, w, h, 9, fill="#2c2c2e", outline="#2c2c2e")
+        round_rect(self, 0, 0, w, h, 9, fill=SEG_BG, outline=SEG_BG)
         seg = w / len(self.options)
         for i, (value, label) in enumerate(self.options):
             x1, x2 = i * seg, (i + 1) * seg
             active = self.var.get() == value
             if active:
-                round_rect(self, x1 + self.pad, self.pad, x2 - self.pad, h - self.pad, 7, fill="#636366",
-                           outline="#636366")
-            self.create_text((x1 + x2) / 2, h / 2, text=label, fill=WHITE if active else "#c7c7cc", font=self.font)
+                round_rect(self, x1 + self.pad, self.pad, x2 - self.pad, h - self.pad, 7, fill=SEG_ACTIVE,
+                           outline=SEG_ACTIVE)
+            self.create_text((x1 + x2) / 2, h / 2, text=label, fill=SEG_TEXT_ACTIVE if active else SEG_TEXT,
+                             font=self.font)
 
 
 # --------------------------------------------------------------------------- #
@@ -454,6 +531,12 @@ def fmt_secs(secs, decimals=2):
     if m:
         return f"{m}:{s:0{3 + decimals}.{decimals}f}"
     return f"{s:.{decimals}f}"
+
+
+def fmt_tod(tod):
+    h, rest = divmod(tod, 3600)
+    m, sec = divmod(rest, 60)
+    return f"{int(h):02d}:{int(m):02d}:{sec:05.2f}"
 
 
 def fmt_gap(secs):
@@ -1163,28 +1246,52 @@ def display_name(p, mode):
     return (" / " if mode == "paar" else " ").join(names)
 
 
+TEST_RANGE = (951, 999)
+
+
 def derive_category_ranges(order, parts):
+    """Nummernbereiche pro Kategorie aus der Startliste: ([(kat, von, bis, anzahl)], [warnungen]).
+    Bereich von der vollen Hundert unter der kleinsten bis ..99 ueber der groessten Nummer
+    (Senioren 200-244 -> 200-299, 300-480 -> 300-499). Ab 900 endet der Bereich bei 950,
+    951-999 bleiben fuer Testnummern frei. Ueberschneiden sich zwei Bereiche, gelten fuer beide
+    die exakte kleinste und groesste Nummer."""
     groups = {}
     for nr in order:
         cat = parts[nr]["kategorie"].strip()
         if cat:
             groups.setdefault(cat, []).append(nr)
-    ranges = {}
+    ranges, warnings = {}, []
     for cat, nrs in groups.items():
-        blocks = {n // 100 for n in nrs}
-        if len(blocks) == 1:
-            b = blocks.pop()
-            ranges[cat] = [max(1, b * 100), b * 100 + 99]
-        else:
-            ranges[cat] = [min(nrs), max(nrs)]
+        lo, hi = min(nrs), max(nrs)
+        r_lo, r_hi = max(1, lo // 100 * 100), hi // 100 * 100 + 99
+        if r_hi >= 900:
+            r_hi = TEST_RANGE[0] - 1
+        r_lo = min(r_lo, r_hi)
+        ranges[cat] = [r_lo, r_hi]
+        high = sorted(n for n in nrs if n >= TEST_RANGE[0])
+        if high:
+            warnings.append(f"{cat}: Nr {', '.join(map(str, high[:8]))}{' ...' if len(high) > 8 else ''} liegt im "
+                            f"Testbereich {TEST_RANGE[0]}-{TEST_RANGE[1]}. Die Kategorie endet bei {r_hi}, "
+                            "die Startliste ordnet diese Nummern trotzdem richtig zu.")
     names = list(ranges)
+    exact = set()
     for i, a in enumerate(names):
         for b in names[i + 1:]:
             ra, rb = ranges[a], ranges[b]
             if ra[0] <= rb[1] and rb[0] <= ra[1]:
-                ranges[a] = [min(groups[a]), max(groups[a])]
-                ranges[b] = [min(groups[b]), max(groups[b])]
-    return [(cat, ranges[cat][0], ranges[cat][1], len(groups[cat])) for cat in names]
+                exact |= {a, b}
+    for cat in exact:
+        ranges[cat] = [min(groups[cat]), max(groups[cat])]
+    if exact:
+        warnings.append("Bereiche überschneiden sich, deshalb exakte Grenzen für: " + ", ".join(sorted(exact)))
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                ra, rb = ranges[a], ranges[b]
+                if ra[0] <= rb[1] and rb[0] <= ra[1]:
+                    warnings.append(f"{a} ({ra[0]}-{ra[1]}) und {b} ({rb[0]}-{rb[1]}) überschneiden sich "
+                                    "auch mit exakten Grenzen. Startnummern sind gemischt, die Startliste "
+                                    "ordnet die Teilnehmer trotzdem richtig zu.")
+    return [(cat, ranges[cat][0], ranges[cat][1], len(groups[cat])) for cat in names], warnings
 
 
 # --------------------------------------------------------------------------- #
@@ -1533,6 +1640,9 @@ aside{width:320px}h2{margin:0 0 8px;font-size:15px;font-weight:600;color:#98989d
 .pen{color:#ff9f0a;font-size:15px}.who{color:#98989d;font-size:14px;margin:0 0 6px}.empty{color:#98989d;font-size:18px}
 footer{padding:6px 14px 12px;font-size:12px;color:#98989d}footer.err{color:#ff453a}
 @media(max-width:700px){header{grid-template-columns:1fr}#wrap{flex-direction:column}aside{width:auto}}
+body.light{background:#f2f2f7;color:#000}body.light .card,body.light aside{background:#fff}
+body.light h2,body.light .who,body.light .empty,body.light footer{color:#5c5c60}
+body.light .row.first{color:#8a5d00}body.light .pen{color:#b34a00}body.light footer.err{color:#c9001a}
 """
 
 WEB_JS = r"""
@@ -1542,6 +1652,7 @@ WEB_JS = r"""
   function clear(n){while(n.firstChild)n.removeChild(n.firstChild);}
   function lines(box,arr){clear(box);(arr||[]).forEach(function(t,i){if(t)box.appendChild(el('div',i===0?'big':'sub',t));});}
   function render(d){
+    document.body.className=d.theme==='light'?'light':'';
     lines(document.getElementById('live'),d.live);lines(document.getElementById('ziel'),d.ziel);
     var cats=document.getElementById('cats');clear(cats);
     d.cats.forEach(function(c){
@@ -1726,6 +1837,336 @@ def find_port(device, identity):
 
 
 # --------------------------------------------------------------------------- #
+# Ethernet: TAG Heuer Protokoll THCOM08 (CP 540 / CP 545)
+# --------------------------------------------------------------------------- #
+PC_IP = "192.168.1.55"
+PC_MASK = "255.255.255.0"
+CP_NET = "192.168.1."
+CP_FIRST, CP_LAST = 50, 59
+CP_SCAN_PORT = 7000       # bis 4 Verbindungen, fuer die Suche (#SN)
+CP_DATA_PORT = 13500      # 1 Verbindung, Daten bleiben bei Abbruch gepuffert
+CH_START, CH_FINISH = 1, 4  # Net Time: Start Eingang 1, Ziel Eingang 4
+CMD_TIMEOUT = 1.6
+HEARTBEAT_S = 15
+HEARTBEAT_LOST_S = 30
+
+_RE_TIME = re.compile(r"^(T[N\-\*\+=C]|TI)\s+(\d+)\s+(\d+)\s+(M?)(\d+)\s+(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)\s*(\d*)")
+_RE_RR = re.compile(r"^(RR|GR)\s+(\d+)\s+(\d+)\s+([\d:.]+)\s*$")
+_RE_OP = re.compile(r"^OP\s+(\d+)\s+(T?)\s*(\d+)\s*(.*)$")
+_RE_CL = re.compile(r"^CL\s+(\d+)")
+_RE_AK = re.compile(r"^AK\s*([CFR])")
+_RE_PAR = re.compile(r"^&P\s*(\d{3})\s*(.*)$")
+_RE_SN = re.compile(r"^SN\s+(\d+)\s+(\S+)\s*(\S*)")
+_RE_SYN = re.compile(r"^!T\s+(\d{1,2}):(\d{2}):(\d{2})")
+
+
+def strip_frame(raw):
+    """THCOM08-Rahmen: STX entfernen, CR/LF und eine angehaengte Pruefsumme (TAB + 4 Hex) abschneiden."""
+    t = raw.replace("\x02", "").rstrip("\r\n")
+    if "\t" in t:
+        t = t.split("\t", 1)[0]
+    return t.strip()
+
+
+def parse_thcom(raw):
+    """Eine Zeile des CP 545 (Ethernet) -> dict mit 'kind' oder None."""
+    t = strip_frame(raw)
+    if not t:
+        return None
+    m = _RE_TIME.match(t)
+    if m:
+        h, mi, sec = int(m.group(6)), int(m.group(7)), float(m.group(8))
+        return {"kind": "time", "type": m.group(1), "nr": int(m.group(2)), "seq": int(m.group(3)),
+                "manual": bool(m.group(4)), "ch": int(m.group(5)), "tod": h * 3600 + mi * 60 + sec,
+                "day": int(m.group(9)) if m.group(9) else None, "text": t}
+    m = _RE_RR.match(t)
+    if m:
+        secs = parse_time(m.group(4))
+        if secs is None:
+            return None
+        return {"kind": "result", "type": m.group(1), "rank": int(m.group(2)), "nr": int(m.group(3)), "secs": secs}
+    m = _RE_AK.match(t)
+    if m:
+        return {"kind": "ack", "code": m.group(1)}
+    m = _RE_PAR.match(t)
+    if m:
+        return {"kind": "param", "id": m.group(1), "values": m.group(2).split()}
+    m = _RE_OP.match(t)
+    if m:
+        return {"kind": "open", "run": int(m.group(1)), "mode": m.group(4).strip()}
+    m = _RE_CL.match(t)
+    if m:
+        return {"kind": "close", "run": int(m.group(1))}
+    m = _RE_SN.match(t)
+    if m:
+        return {"kind": "serial", "serial": m.group(1), "type": m.group(2), "version": m.group(3)}
+    m = _RE_SYN.match(t)
+    if m:
+        return {"kind": "sync", "tod": int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))}
+    return {"kind": "other", "text": t}
+
+
+def trunc_secs(value, digits):
+    """Wie der CP 545: auf die eingestellte Praezision abschneiden, nicht runden."""
+    f = 10 ** max(0, digits)
+    return int(value * f + 1e-6) / f
+
+
+def local_tod():
+    lt = time.localtime()
+    return lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec + (time.time() % 1)
+
+
+def cp_hosts():
+    """Adressen fuer die CP-Suche. SWV_CP_HOSTS (z.B. '127.0.0.1') nur fuer Tests."""
+    env = os.environ.get("SWV_CP_HOSTS", "").strip()
+    if env:
+        return [h.strip() for h in env.split(",") if h.strip()]
+    return [f"{CP_NET}{i}" for i in range(CP_FIRST, CP_LAST + 1)]
+
+
+def cp_ports():
+    env = os.environ.get("SWV_CP_PORTS", "").strip()
+    if env:
+        a, b = env.split(",")
+        return int(a), int(b)
+    return CP_SCAN_PORT, CP_DATA_PORT
+
+
+def probe_cp(host, port, timeout=0.6):
+    """Ein CP auf host? Antwort auf #SN als Text, sonst None."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sk:
+            sk.settimeout(1.2)
+            sk.sendall(b"#SN\r\n")
+            buf, end = b"", time.time() + 1.5
+            while time.time() < end:
+                try:
+                    chunk = sk.recv(512)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                for line in buf.split(b"\n"):
+                    info = parse_thcom(line.decode("latin-1", "replace"))
+                    if info and info["kind"] == "serial":
+                        return f"{info['type']} Nr {info['serial']}" + (f" {info['version']}" if info["version"] else "")
+            return "CP (ohne Kennung)" if buf else "CP"
+    except OSError:
+        return None
+
+
+def scan_cps(hosts=None, port=None):
+    """[(ip, kennung)] aller erreichbaren CPs, parallel abgefragt."""
+    hosts = hosts or cp_hosts()
+    port = port or cp_ports()[0]
+    found, lock = [], threading.Lock()
+
+    def one(h):
+        info = probe_cp(h, port)
+        if info:
+            with lock:
+                found.append((h, info))
+
+    threads = [threading.Thread(target=one, args=(h,), daemon=True) for h in hosts]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(4)
+    return sorted(found, key=lambda x: tuple(int(p) if p.isdigit() else 0 for p in x[0].split(".")))
+
+
+class CPClient(threading.Thread):
+    """TCP-Verbindung zum CP 545 (THCOM08). Liest Zeilen, sendet Befehle, verbindet bei Abbruch neu."""
+
+    def __init__(self, host, port, out_queue):
+        super().__init__(daemon=True)
+        self.host, self.port, self.q = host, port, out_queue
+        self.stop_event = threading.Event()
+        self.reconnect_event = threading.Event()
+        self.out = queue.Queue()
+        self.connected = False
+
+    def send(self, text):
+        self.out.put((text.rstrip("\r\n") + "\r\n").encode("latin-1", "replace"))
+
+    def stop(self):
+        self.stop_event.set()
+
+    def force_reconnect(self):
+        self.reconnect_event.set()
+
+    def run(self):
+        first = True
+        while not self.stop_event.is_set():
+            try:
+                sk = socket.create_connection((self.host, self.port), timeout=3)
+            except OSError as exc:
+                self.q.put(("eth_open_error" if first else "eth_retry", exc, self))
+                first = False
+                if self.stop_event.wait(2):
+                    break
+                continue
+            first = False
+            try:
+                sk.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            except OSError:
+                pass
+            sk.settimeout(0.15)
+            while not self.out.empty():  # alte Befehle nicht nachsenden
+                self.out.get_nowait()
+            self.connected = True
+            self.reconnect_event.clear()
+            self.q.put(("eth_connected", self.host, self))
+            buf = bytearray()
+            err = None
+            try:
+                while not self.stop_event.is_set() and not self.reconnect_event.is_set():
+                    while not self.out.empty():
+                        sk.sendall(self.out.get_nowait())
+                    try:
+                        chunk = sk.recv(4096)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        err = ConnectionError("Verbindung vom CP geschlossen")
+                        break
+                    buf.extend(chunk)
+                    while True:
+                        idx = buf.find(b"\n")
+                        if idx < 0:
+                            break
+                        line = bytes(buf[:idx]).decode("latin-1", errors="replace")
+                        del buf[: idx + 1]
+                        if line.strip():
+                            self.q.put(("eth_line", line, self))
+                    if len(buf) > 8192:
+                        buf.clear()
+            except OSError as exc:
+                err = exc
+            if self.reconnect_event.is_set() and err is None:
+                err = TimeoutError("keine Antwort vom CP")
+            self.connected = False
+            try:
+                if self.stop_event.is_set():
+                    sk.shutdown(socket.SHUT_RDWR)  # sauber trennen: CP leert seinen Puffer
+                sk.close()  # bei Abbruch nicht sauber trennen: CP behaelt ungelesene Daten
+            except OSError:
+                pass
+            if self.stop_event.is_set():
+                break
+            self.q.put(("eth_lost", err, self))
+            if self.stop_event.wait(2):
+                break
+        self.q.put(("eth_disconnected", self.host, self))
+
+
+# --------------------------------------------------------------------------- #
+# Windows-Netzwerk: Netzwerkkarte fuer den CP auf feste Adresse und zurueck auf DHCP
+# --------------------------------------------------------------------------- #
+IS_WINDOWS = sys.platform.startswith("win")
+_NO_WINDOW = 0x08000000
+
+
+def list_adapters():
+    """Kabelgebundene Netzwerkkarten: [{'name','desc','up','ips','dhcp'}]. Nur Windows."""
+    if not IS_WINDOWS:
+        return []
+    script = (
+        "$r=@(); foreach($a in Get-NetAdapter -Physical -ErrorAction SilentlyContinue){"
+        "$ip=@(Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue"
+        "|Select-Object -ExpandProperty IPAddress) -join ',';"
+        "$d=(Get-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).Dhcp;"
+        "$r+=[pscustomobject]@{Name=$a.Name;Desc=$a.InterfaceDescription;Status=[string]$a.Status;"
+        "Media=[string]$a.PhysicalMediaType;Ip=$ip;Dhcp=[string]$d}}; ConvertTo-Json -InputObject $r -Compress")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                             capture_output=True, text=True, timeout=25, creationflags=_NO_WINDOW).stdout
+        data = json.loads(out or "[]")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    res = []
+    for a in data:
+        media, desc, name = str(a.get("Media", "")), str(a.get("Desc", "")), str(a.get("Name", ""))
+        low = (media + " " + desc + " " + name).lower()
+        if "802.11" in low or "wireless" in low or "wi-fi" in low or "wlan" in low or "bluetooth" in low:
+            continue
+        res.append({"name": name, "desc": desc, "up": str(a.get("Status", "")).lower() == "up",
+                    "ips": [x for x in str(a.get("Ip", "")).split(",") if x],
+                    "dhcp": str(a.get("Dhcp", "")).lower() == "enabled"})
+    res.sort(key=lambda a: (not a["up"], a["name"].casefold()))
+    return res
+
+
+def run_elevated(commands, timeout=90):
+    """Befehle mit Administratorrechten ausfuehren (Windows fragt mit der Benutzerkontensteuerung).
+    -> (ok, text)"""
+    if not IS_WINDOWS:
+        return False, "nur unter Windows"
+    import ctypes
+    from ctypes import wintypes
+    line = " & ".join(commands)
+    try:
+        admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        admin = False
+    if admin:
+        try:
+            r = subprocess.run(f"cmd.exe /c {line}", capture_output=True, text=True, timeout=timeout,
+                               creationflags=_NO_WINDOW)
+            return r.returncode == 0, (r.stdout + r.stderr).strip()
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, str(exc)
+
+    class SEI(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("fMask", ctypes.c_ulong), ("hwnd", wintypes.HWND),
+                    ("lpVerb", wintypes.LPCWSTR), ("lpFile", wintypes.LPCWSTR), ("lpParameters", wintypes.LPCWSTR),
+                    ("lpDirectory", wintypes.LPCWSTR), ("nShow", ctypes.c_int), ("hInstApp", wintypes.HINSTANCE),
+                    ("lpIDList", ctypes.c_void_p), ("lpClass", wintypes.LPCWSTR), ("hkeyClass", wintypes.HKEY),
+                    ("dwHotKey", wintypes.DWORD), ("hIconOrMonitor", wintypes.HANDLE), ("hProcess", wintypes.HANDLE)]
+
+    sei = SEI()
+    sei.cbSize = ctypes.sizeof(SEI)
+    sei.fMask = 0x00000040  # SEE_MASK_NOCLOSEPROCESS
+    sei.lpVerb, sei.lpFile, sei.lpParameters, sei.nShow = "runas", "cmd.exe", f"/c {line}", 0
+    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)):
+        err = ctypes.GetLastError()
+        return False, "Berechtigung abgelehnt" if err == 1223 else f"Windows-Fehler {err}"
+    if not sei.hProcess:
+        return True, ""
+    ctypes.windll.kernel32.WaitForSingleObject(sei.hProcess, int(timeout * 1000))
+    code = wintypes.DWORD(1)
+    ctypes.windll.kernel32.GetExitCodeProcess(sei.hProcess, ctypes.byref(code))
+    ctypes.windll.kernel32.CloseHandle(sei.hProcess)
+    return code.value == 0, "" if code.value == 0 else f"netsh meldet Fehler {code.value}"
+
+
+def set_static_ip(adapter):
+    return run_elevated([f'netsh interface ipv4 set address name="{adapter}" static {PC_IP} {PC_MASK}'])
+
+
+def set_dhcp(adapter):
+    return run_elevated([f'netsh interface ipv4 set address name="{adapter}" source=dhcp',
+                         f'netsh interface ipv4 set dnsservers name="{adapter}" source=dhcp'])
+
+
+def address_ready(ip, timeout=12.0):
+    """Wartet, bis Windows die Adresse wirklich vergeben hat."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+                sk.bind((ip, 0))
+                return True
+        except OSError:
+            time.sleep(0.5)
+    return False
+
+
+# --------------------------------------------------------------------------- #
 # Serieller Lese-Thread
 # --------------------------------------------------------------------------- #
 class SerialReader(threading.Thread):
@@ -1790,6 +2231,11 @@ class LiveRankingApp:
         self.data_path = data_dir()
 
         self.settings = self.load_settings()
+        apply_palette(self.settings["theme"])
+        messagebox.app = self
+        self.dialog_hook = None   # Tests: Antworten fuer Meldungsfenster
+        self._placed = []
+        self.log_lines = []       # (zeile, tag, focus) fuer Neuaufbau der Oberflaeche
         self.categories = self.load_categories()
         self._cat_lookup = {}
         self.rebuild_cat_lookup()
@@ -1831,6 +2277,30 @@ class LiveRankingApp:
         self.reconnecting = False
         self._reconnect_job = None
         self.conn_target = {"port": "", "baud": DEFAULT_BAUD, "identity": None}
+        # Ethernet (THCOM08)
+        self.cp = None              # CPClient
+        self.eth_job = None         # laufende Vorbereitung (Netzwerk, Suche)
+        self.cp_found = []          # [(ip, kennung)]
+        self.adapters = []
+        self.cp_info = ""
+        self.cp_run = 0
+        self.cp_recs = {}           # (lauf, kanal, seq) -> {"nr", "tod", "status"}
+        self.cp_prec = 2
+        self.cp_next_start = None   # Nummer, die der CP als naechsten Start vergibt
+        self.finish_override = None
+        self.cp_cmds = []
+        self.cp_inflight = None
+        self.cp_hold_until = 0.0
+        self.cp_readback = True
+        self.cp_offsets = []        # (lokal, cp_minus_lokal)
+        self.cp_last_rx = 0.0
+        self.cp_last_hb = 0.0
+        self.last_start_nr = None
+        self.last_finish_key = None
+        self.course = []            # [(start_tod, nr, key)] in erwarteter Zielreihenfolge
+        self.dnf = set()
+        self._eth_tick_job = None
+        self._course_menu = None
         self._row_tpl = ("5. Nr. 888", "8:88.88s", "")
 
         self.online = OnlineClient(self.settings["online"])
@@ -1848,6 +2318,11 @@ class LiveRankingApp:
         self.update_ziel_info()
         self.update_window_title()
         self.report_missing_modules()
+        if self.eth_mode():
+            self.refresh_adapters()
+        elif self.settings["net_restore"].get("pending"):
+            # letzte Sitzung endete ohne Rueckstellen (Absturz, Strom weg): jetzt nachholen
+            self.root.after(1500, lambda: self.restore_network(background=True))
 
         self.root.after(POLL_INTERVAL_MS, self.poll_queue)
         self.root.after(BLINK_INTERVAL_MS, self.blink_tick)
@@ -1868,6 +2343,7 @@ class LiveRankingApp:
                 self.root.attributes("-zoomed", True)
             except tk.TclError:
                 self.root.geometry("1600x900")
+        self.root.after(30, lambda: set_titlebar(self.root))
         self.icon_img = None
         for name in ICON_FILES:
             for d in resource_dirs():
@@ -1931,8 +2407,8 @@ class LiveRankingApp:
         except tk.TclError:
             pass
         style.configure("Port.TCombobox", fieldbackground=INPUT_BG, background=BUTTON, foreground=INPUT_FG,
-                        arrowcolor=WHITE, padding=4, bordercolor=BORDER, lightcolor=INPUT_BG, darkcolor=INPUT_BG,
-                        insertcolor=WHITE)
+                        arrowcolor=TEXT, padding=4, bordercolor=BORDER, lightcolor=INPUT_BG, darkcolor=INPUT_BG,
+                        insertcolor=TEXT)
         style.map("Port.TCombobox",
                   fieldbackground=[("readonly", INPUT_BG), ("!disabled", INPUT_BG)],
                   foreground=[("readonly", INPUT_FG), ("!disabled", INPUT_FG)],
@@ -1948,7 +2424,8 @@ class LiveRankingApp:
     # ---------------- Widget-Helfer ---------------- #
     def _button(self, parent, text, cmd, color=None):
         color = BUTTON if color in (None, BORDER) else color
-        return RoundButton(parent, text=text, command=cmd, bg=color, fg=WHITE, font=self.f_side_bold,
+        return RoundButton(parent, text=text, command=cmd, bg=color, fg=BUTTON_FG if color == BUTTON else WHITE,
+                           font=self.f_side_bold,
                            radius=int(9 * self.ui_scale), padx=int(12 * self.ui_scale), pady=int(6 * self.ui_scale))
 
     def _entry(self, parent, width=10, **kw):
@@ -1956,20 +2433,21 @@ class LiveRankingApp:
                         relief="flat", font=self.f_side, highlightthickness=1, selectbackground=BLUE,
                         highlightbackground=BORDER, highlightcolor=ACCENT, **kw)
 
-    def _label(self, parent, text, bold=False, fg=TEXT, bg=PANEL, **kw):
-        return tk.Label(parent, text=text, bg=bg, fg=fg,
+    def _label(self, parent, text, bold=False, fg=None, bg=None, **kw):
+        return tk.Label(parent, text=text, bg=bg or PANEL, fg=fg or TEXT,
                         font=self.f_side_bold if bold else self.f_side, anchor="w", **kw)
 
     # Auswahl als Umschaltknoepfe: aktiv = blau. Eindeutig auf jedem System, unabhaengig vom Theme.
-    def _check(self, parent, text, var, bg=PANEL):
-        return tk.Checkbutton(parent, text=text, variable=var, indicatoron=False, bg=BUTTON, fg=WHITE,
-                              selectcolor=BLUE, activebackground=BLUE, activeforeground=WHITE,
+    def _check(self, parent, text, var, bg=None):
+        return tk.Checkbutton(parent, text=text, variable=var, indicatoron=False, bg=BUTTON, fg=BUTTON_FG,
+                              selectcolor=CHECK_SEL, activebackground=CHECK_SEL, activeforeground=CHECK_SEL_FG,
                               font=self.f_side, relief="flat", offrelief="flat", overrelief="flat",
                               bd=0, padx=10, pady=4, highlightthickness=0, cursor="hand2")
 
-    def _radio(self, parent, text, var, value, bg=PANEL, command=None):
+    def _radio(self, parent, text, var, value, bg=None, command=None):
         return tk.Radiobutton(parent, text=text, variable=var, value=value, indicatoron=False, bg=BUTTON,
-                              fg=WHITE, selectcolor=BLUE, activebackground=BLUE, activeforeground=WHITE,
+                              fg=BUTTON_FG, selectcolor=CHECK_SEL, activebackground=CHECK_SEL,
+                              activeforeground=CHECK_SEL_FG,
                               font=self.f_side, relief="flat", offrelief="flat", overrelief="flat",
                               bd=0, padx=10, pady=4, highlightthickness=0, cursor="hand2", command=command)
 
@@ -2012,47 +2490,115 @@ class LiveRankingApp:
         render()
         return (body, stat) if status else body
 
-    def _toplevel(self, title):
-        dlg = tk.Toplevel(self.root)
+    def _toplevel(self, title, parent=None):
+        dlg = tk.Toplevel(parent or self.root)
         dlg.title(title)
         dlg.configure(bg=PANEL, padx=18, pady=14)
         dlg.transient(self.root)
         if self.icon_img is not None:
             dlg.iconphoto(False, self.icon_img)
+        set_titlebar(dlg)
         return dlg
 
-    def _center(self, dlg):
+    def _place(self, dlg, narrow=False, height=None):
+        """Fenster links oben ueber die Seitenleiste legen, damit die Ranglisten frei bleiben.
+        narrow: so breit wie die Seitenleiste (Fenster waehrend des Rennens)."""
         dlg.update_idletasks()
-        x = self.root.winfo_rootx() + (self.root.winfo_width() - dlg.winfo_width()) // 2
-        y = self.root.winfo_rooty() + (self.root.winfo_height() - dlg.winfo_height()) // 3
-        dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
+        m = int(10 * self.ui_scale)
+        alive = [w for w in self._placed if w.winfo_exists() and w is not dlg and w.winfo_viewable()]
+        self._placed = alive + [dlg]
+        off = int(26 * self.ui_scale) * min(len(alive), 6)
+        x, y = self.root.winfo_rootx() + m + off, self.root.winfo_rooty() + m + off
+        max_h = max(200, self.root.winfo_height() - 2 * m - off)
+        if narrow:
+            w = self.side_w - 2 * m
+            h = min(max_h, height or dlg.winfo_reqheight())
+            dlg.geometry(f"{w}x{h}+{max(0, x)}+{max(0, y)}")
+        elif height:
+            dlg.geometry(f"{dlg.winfo_reqwidth()}x{min(max_h, height)}+{max(0, x)}+{max(0, y)}")
+        else:
+            dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
+        set_titlebar(dlg)
+
+    def _center(self, dlg):
+        self._place(dlg)
+
+    def narrow_wrap(self):
+        """Umbruchbreite fuer Text in schmalen Fenstern."""
+        return self.side_w - int(70 * self.ui_scale)
+
+    def message_dialog(self, kind, title, message, parent=None, default=None, **_kw):
+        """Meldung (info, warning, error) oder Ja/Nein-Frage. Enter waehlt die markierte Taste, Escape bricht ab."""
+        if self.dialog_hook is not None:
+            return self.dialog_hook(kind, title, message, default)
+        dlg = self._toplevel(title, parent if parent is not None and parent.winfo_exists() else None)
+        dlg.resizable(False, False)
+        result = {"ok": False}
+        icon, color = {"info": ("ⓘ", ACCENT), "warning": ("⚠", GOLD), "error": ("⚠", RED),
+                       "ask": ("?", ACCENT)}[kind]
+        row = tk.Frame(dlg, bg=PANEL)
+        row.pack(fill="x")
+        tk.Label(row, text=icon, bg=PANEL, fg=color, font=self.f_dialog).pack(side="left", padx=(0, 12), anchor="n")
+        tk.Label(row, text=message, bg=PANEL, fg=TEXT, font=self.f_side, justify="left", anchor="w",
+                 wraplength=self.narrow_wrap() - int(40 * self.ui_scale)).pack(side="left", fill="x")
+        btns = tk.Frame(dlg, bg=PANEL)
+        btns.pack(fill="x", pady=(16, 0))
+
+        def done(ok):
+            result["ok"] = ok
+            dlg.destroy()
+
+        if kind == "ask":
+            yes = self._button(btns, "Ja", lambda: done(True), BLUE if default == "yes" else None)
+            no = self._button(btns, "Nein", lambda: done(False), None if default == "yes" else BLUE)
+            no.pack(side="right")
+            yes.pack(side="right", padx=(0, 8))
+            first = yes if default == "yes" else no
+            dlg.bind("<Return>", lambda e: done(default == "yes"))
+        else:
+            first = self._button(btns, "OK", lambda: done(True), BLUE)
+            first.pack(side="right")
+            dlg.bind("<Return>", lambda e: done(True))
+        dlg.bind("<Escape>", lambda e: done(False))
+        dlg.protocol("WM_DELETE_WINDOW", lambda: done(False))
+        self._place(dlg, narrow=True)
+        dlg.grab_set()
+        dlg.lift()
+        dlg.focus_force()
+        first.focus_set()
+        self.root.wait_window(dlg)
+        return result["ok"]
 
     def confirm_danger(self, title, message, action_label):
         """Sichere Rückfrage: 'Abbrechen' ist vorausgewählt, Enter und Escape brechen ab."""
+        if self.dialog_hook is not None:
+            return self.dialog_hook("danger", title, message, "no")
         dlg = self._toplevel(title)
         dlg.resizable(False, False)
         result = {"ok": False}
         row = tk.Frame(dlg, bg=PANEL)
         row.pack(fill="x")
-        tk.Label(row, text="⚠", bg=PANEL, fg=GOLD, font=self.f_dialog).pack(side="left", padx=(0, 14), anchor="n")
+        tk.Label(row, text="⚠", bg=PANEL, fg=GOLD, font=self.f_dialog).pack(side="left", padx=(0, 12), anchor="n")
         tk.Label(row, text=message, bg=PANEL, fg=TEXT, font=self.f_side, justify="left", anchor="w",
-                 wraplength=int(460 * self.ui_scale)).pack(side="left", fill="x")
+                 wraplength=self.narrow_wrap() - int(40 * self.ui_scale)).pack(side="left", fill="x")
         btns = tk.Frame(dlg, bg=PANEL)
         btns.pack(fill="x", pady=(16, 0))
+        btns.columnconfigure(0, weight=1)
+        btns.columnconfigure(1, weight=1)
 
         def ok():
             result["ok"] = True
             dlg.destroy()
 
         cancel = self._button(btns, "Abbrechen", dlg.destroy, BLUE)
-        cancel.pack(side="right")
-        self._button(btns, action_label, ok, DARK_RED).pack(side="right", padx=(0, 8))
+        cancel.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self._button(btns, action_label, ok, DARK_RED).grid(row=0, column=0, sticky="ew", padx=(0, 4))
         cancel.bind("<Return>", lambda e: dlg.destroy())
-        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        dlg.bind("<Return>", lambda e: dlg.destroy())
         dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
         for w in (dlg, cancel):
             w.bind("<Escape>", lambda e: dlg.destroy())
-        self._center(dlg)
+        self._place(dlg, narrow=True)
         dlg.grab_set()
         dlg.lift()
         dlg.focus_force()
@@ -2067,10 +2613,10 @@ class LiveRankingApp:
             widget.configure(**changed)
 
     def _set_text(self, widget, segments):
-        """Text-Widget nur neu befuellen, wenn sich der Inhalt geaendert hat."""
+        """Text-Widget nur neu befuellen, wenn sich der Inhalt geaendert hat. -> True bei Aenderung"""
         key = repr(segments)
         if self._text_cache.get(str(widget)) == key:
-            return
+            return False
         self._text_cache[str(widget)] = key
         widget.configure(state="normal")
         widget.delete("1.0", "end")
@@ -2078,6 +2624,7 @@ class LiveRankingApp:
             tags = tag if isinstance(tag, tuple) else ((tag,) if tag else ())
             widget.insert("end", text, tags)
         widget.configure(state="disabled")
+        return True
 
     def _set_fit(self, label, text, font=None, width=None, **kw):
         """Text setzen und bei Platzmangel sauber mit '…' kuerzen (Volltext bleibt gespeichert)."""
@@ -2182,17 +2729,24 @@ class LiveRankingApp:
         self.right_panel = tk.Frame(content, bg=BG, width=400, height=240)
         self.right_panel.grid_propagate(False)
         self.right_panel.pack_propagate(False)
-        self.panel_next, self.txt_next = self._panel(self.right_panel, "Als nächstes am Start", NEXT_COUNT * 2 + 3)
+        self.panel_next, self.txt_next = self._panel(self.right_panel, "Als nächstes am Start", NEXT_COUNT * 2 + 3,
+                                                     scroll=True, hint="Doppelklick: Nummer darunter einfügen")
+        self.txt_next.bind("<Double-Button-1>", self.on_next_double)
+        self.txt_next.bind("<Button-1>", lambda e: "break")
+        self.panel_course, self.txt_course = self._panel(self.right_panel, "Auf Fahrstrecke", 8, scroll=True,
+                                                         hint="Klick auf ein Boot: Aktionen")
+        self.txt_course.bind("<Button-1>", self.on_course_click)
+        self.txt_course.tag_configure("next", foreground=GREEN_TEXT, font=self.f_panel_bold)
         self.panel_note, self.txt_note = self._panel(self.right_panel, "Notiz", 3)
         self.panel_note.set_outline(GOLD, 2)
-        self.txt_note.configure(font=self.f_ticker, fg=WHITE)
+        self.txt_note.configure(font=self.f_ticker, fg=TEXT)
         self.txt_note.tag_configure("nr", font=self.f_ticker_bold, foreground=GOLD, spacing1=0)
         self.txt_note.tag_configure("sub", font=self.f_ticker_time, foreground=MUTED)
         self._note_visible = False
         self.panel_ticker, self.txt_ticker = self._panel(self.right_panel, "Ereignis-Ticker", 6, fit=False)
         self.panel_stats, self.txt_stats = self._panel(self.right_panel, "Statistik", 9)
         # Ticker: groessere, kontrastreichere Schrift (Punkt 9)
-        self.txt_ticker.configure(font=self.f_ticker, fg=WHITE, spacing1=0, spacing3=0)
+        self.txt_ticker.configure(font=self.f_ticker, fg=TEXT, spacing1=0, spacing3=0)
         self.txt_ticker.tag_configure("time", font=self.f_ticker_time, foreground=MUTED)
         self.txt_ticker.tag_configure("ziel", foreground=GREEN_TEXT)
         self.txt_ticker.tag_configure("warn", foreground=GOLD)
@@ -2216,17 +2770,30 @@ class LiveRankingApp:
         sub2.pack(fill="x")
         return big, sub1, sub2
 
-    def _panel(self, parent, title, height, fit=True):
+    def _panel(self, parent, title, height, fit=True, scroll=False, hint=""):
         box = RoundedPanel(parent, fill=PANEL, radius=int(16 * self.ui_scale), pad=2, fit_height=fit)
         if not fit:
             box.configure(width=1, height=1)
         frm = box.inner
-        tk.Label(frm, text=title, bg=PANEL, fg=MUTED, font=self.f_panel_head, anchor="w").pack(
-            fill="x", padx=12, pady=(8, 2))
-        txt = tk.Text(frm, height=height, width=1, bg=PANEL, fg=TEXT, font=self.f_panel, relief="flat",
+        head = tk.Frame(frm, bg=PANEL)
+        head.pack(fill="x", padx=12, pady=(8, 2))
+        tk.Label(head, text=title, bg=PANEL, fg=MUTED, font=self.f_panel_head, anchor="w").pack(side="left")
+        if hint:
+            lh = tk.Label(frm, text=hint, bg=PANEL, fg=MUTED, font=self.f_ticker_time, anchor="w", justify="left")
+            lh.pack(fill="x", padx=12)
+            lh.bind("<Configure>", lambda e, w=lh: w.configure(wraplength=max(50, e.width - 4)))
+        holder = tk.Frame(frm, bg=PANEL)
+        holder.pack(fill="both", expand=True, pady=(0, 8))
+        txt = tk.Text(holder, height=height, width=1, bg=PANEL, fg=TEXT, font=self.f_panel, relief="flat",
                       wrap="word", state="disabled", highlightthickness=0, padx=12, pady=4, cursor="arrow", bd=0)
-        txt.pack(fill="both", expand=True, pady=(0, 8))
-        txt.tag_configure("nr", font=self.f_panel_bold, foreground=WHITE, spacing1=6)
+        if scroll:
+            sb = tk.Scrollbar(holder, orient="vertical", command=txt.yview, width=int(10 * self.ui_scale),
+                              bg=PANEL2, troughcolor=PANEL, activebackground=BUTTON, relief="flat", bd=0,
+                              highlightthickness=0, elementborderwidth=0)
+            txt.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y", padx=(0, 6))
+        txt.pack(side="left", fill="both", expand=True)
+        txt.tag_configure("nr", font=self.f_panel_bold, foreground=TEXT, spacing1=6)
         txt.tag_configure("sub", foreground=MUTED)
         txt.tag_configure("note", foreground=GOLD)
         txt.tag_configure("ziel", foreground=GREEN)
@@ -2257,26 +2824,56 @@ class LiveRankingApp:
         self.lbl_event_hint = self._label(b, "Datum als TT.MM.JJJJ, «bis» leer lassen bei einem Tag",
                                           fg=MUTED, wraplength=wrap, justify="left")
         self.lbl_event_hint.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        tk.Frame(b, bg=BORDER, height=1).grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        lbl_theme = tk.Label(b, text="Helles Design", bg=PANEL, fg=TEXT, font=self.f_side, anchor="w", cursor="hand2")
+        lbl_theme.grid(row=4, column=0, columnspan=3, sticky="w", pady=(int(5 * self.ui_scale), 0))
+        self.sw_theme = Switch(b, command=self.toggle_theme, scale=self.ui_scale, on=THEME == "light")
+        self.sw_theme.grid(row=4, column=3, sticky="e", pady=(int(5 * self.ui_scale), 0))
+        lbl_theme.bind("<Button-1>", lambda e: self.toggle_theme())
         for entry, key in ((self.e_event_name, "name"), (self.e_event_from, "von"), (self.e_event_to, "bis")):
             entry.insert(0, ev.get(key, ""))
             entry.bind("<KeyRelease>", lambda e: self.schedule_event_save())
             entry.bind("<FocusOut>", lambda e: self.save_event_fields(normalize=True))
             entry.bind("<Return>", lambda e: self.save_event_fields(normalize=True))
 
-        # Verbindung (Punkt 6: aufklappbar, Status immer in der Kopfzeile)
+        # Verbindung: RS232 (nur auswerten) oder Ethernet (CP aktiv steuern)
         b, self.lbl_conn_head = self._section(side, "Verbindung", "verbindung", status=True)
         b.columnconfigure(0, weight=1)
-        self._label(b, "COM-Port").grid(row=0, column=0, columnspan=2, sticky="w")
-        self.cmb_port = self._combo(b)
+        self.var_conn = tk.StringVar(value=self.settings["conn"]["mode"])
+        self.conn_seg = Segmented(b, (("rs232", "RS232 auswerten"), ("ethernet", "Ethernet steuern")),
+                                  self.var_conn, command=self.on_conn_mode_change, font=self.f_side_bold,
+                                  scale=self.ui_scale)
+        self.conn_seg.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        rs = self.frm_rs = tk.Frame(b, bg=PANEL)
+        rs.columnconfigure(0, weight=1)
+        self._label(rs, "COM-Port").grid(row=0, column=0, columnspan=2, sticky="w")
+        self.cmb_port = self._combo(rs)
         self.cmb_port.grid(row=1, column=0, sticky="ew", pady=(2, 6))
-        self._button(b, "⟳", self.refresh_ports).grid(row=1, column=1, sticky="e", padx=(6, 0), pady=(2, 6))
-        self._label(b, "Baudrate").grid(row=2, column=0, columnspan=2, sticky="w")
-        self.e_baud = self._entry(b, width=10)
-        self.e_baud.insert(0, str(DEFAULT_BAUD))
+        self._button(rs, "⟳", self.refresh_ports).grid(row=1, column=1, sticky="e", padx=(6, 0), pady=(2, 6))
+        self._label(rs, "Baudrate").grid(row=2, column=0, columnspan=2, sticky="w")
+        self.e_baud = self._entry(rs, width=10)
+        self.e_baud.insert(0, str(self.conn_target.get("baud") or DEFAULT_BAUD))
         self.e_baud.grid(row=3, column=0, sticky="w", pady=(2, 6))
-        self._label(b, "8N1", fg=MUTED).grid(row=3, column=1, sticky="e")
+        self._label(rs, "8N1", fg=MUTED).grid(row=3, column=1, sticky="e")
+        eth = self.frm_eth = tk.Frame(b, bg=PANEL)
+        eth.columnconfigure(0, weight=1)
+        self._label(eth, "Netzwerkkarte am PC").grid(row=0, column=0, columnspan=2, sticky="w")
+        self.cmb_adapter = self._combo(eth, state="readonly")
+        self.cmb_adapter.grid(row=1, column=0, sticky="ew", pady=(2, 6))
+        self._button(eth, "⟳", self.refresh_adapters).grid(row=1, column=1, sticky="e", padx=(6, 0), pady=(2, 6))
+        self._label(eth, "CP 545").grid(row=2, column=0, columnspan=2, sticky="w")
+        self.cmb_cp = self._combo(eth, state="readonly")
+        self.cmb_cp.grid(row=3, column=0, sticky="ew", pady=(2, 6))
+        self._button(eth, "Suchen", lambda: self.start_eth_job(connect=False)).grid(
+            row=3, column=1, sticky="e", padx=(6, 0), pady=(2, 6))
+        self.lbl_eth_hint = self._label(eth, f"PC erhält {PC_IP}, der CP hat ab {CP_NET}{CP_FIRST}. "
+                                             "Ethernet am CP einschalten (F › Einstellungen › Ethernet).",
+                                        fg=MUTED, wraplength=wrap, justify="left")
+        self.lbl_eth_hint.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 6))
         self.btn_connect = self._button(b, "Verbinden", self.toggle_connection, GREEN)
-        self.btn_connect.grid(row=4, column=0, columnspan=2, sticky="ew")
+        self.btn_connect.grid(row=2, column=0, sticky="ew")
+        self.show_conn_frames()
+        self.fill_eth_combos()
         self.set_conn_status("nicht verbunden", MUTED)
 
         # Startliste
@@ -2442,7 +3039,7 @@ class LiveRankingApp:
             txt.tag_configure("warn", foreground=GOLD)
             txt.tag_configure("error", foreground=RED)
             txt.tag_configure("ok", foreground=ACCENT)
-            txt.tag_configure("test", foreground="#64748b")
+            txt.tag_configure("test", foreground=LOG_TEST)
             self.log_tabs[key] = (btn, txt)
         self.show_log_tab("focus")
 
@@ -2454,7 +3051,54 @@ class LiveRankingApp:
         txt.see("end")
 
     def set_conn_status(self, text, color):
+        self._conn_status = (text, color)
         self._set(self.lbl_conn_head, text=text, fg=color)
+
+    # ---------------- Helles / dunkles Design ---------------- #
+    def toggle_theme(self):
+        new = "dark" if THEME == "light" else "light"
+        self.settings["theme"] = new
+        self.save_settings()
+        self.rebuild_ui(new)
+        self.log(f"Design: {'hell' if new == 'light' else 'dunkel'}")
+
+    def rebuild_ui(self, theme):
+        """Farbsatz wechseln und Oberflaeche neu aufbauen. Daten und Verbindungen laufen weiter."""
+        conn_text, conn_color = getattr(self, "_conn_status", ("nicht verbunden", None))
+        conn_key = {MUTED: "muted", GOLD: "gold", RED: "red", GREEN_TEXT: "green"}.get(conn_color, "muted")
+        port_sel = self.cmb_port.get() if hasattr(self, "cmb_port") else ""
+        apply_palette(theme)
+        for w in list(self.root.winfo_children()):
+            w.destroy()
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.root.unbind_all(seq)
+        self._text_cache, self._full_text = {}, {}
+        self.cards, self.participant_dialogs, self._placed = [], {}, []
+        self.upload_win = self.note_win = None
+        self._note_visible = False
+        self.prev_top = {}
+        self.root.configure(bg=BG)
+        set_titlebar(self.root)
+        self.setup_styles()
+        self.build_ui()
+        self.refresh_ports()
+        if port_sel:
+            self.cmb_port.set(port_sel)
+        self.build_cards()
+        self.apply_show_settings()
+        for line, tag, focus in self.log_lines[-LOG_MAX_LINES:]:
+            self._log_insert(line, tag, focus)
+        color = {"muted": MUTED, "gold": GOLD, "red": RED, "green": GREEN_TEXT}[conn_key]
+        self.restore_conn_ui(conn_text, color)
+        if self.web.running:
+            self.btn_web.configure(text="Browser-Anzeige stoppen", bg=DARK_RED)
+            self.set_web_url(f"Läuft: {self.web.url.split('?')[0]}\nSchlüssel im Link verborgen, mit «Link kopieren» "
+                             "oder «QR-Code» weitergeben.", GREEN_TEXT)
+        self.update_startlist_label()
+        self.update_live_info()
+        self.update_ziel_info()
+        self.update_panels()
+        self.update_window_title()
 
     # ---------------- Wettkampf (Punkt 13) ---------------- #
     def schedule_event_save(self):
@@ -2549,7 +3193,8 @@ class LiveRankingApp:
 
     def any_panel(self):
         show = self.settings["show"]
-        return any(show.get(k) for k in ("naechste", "ticker", "statistik")) or self._note_visible
+        return any(show.get(k) for k in ("naechste", "ticker", "statistik")) or self._note_visible \
+            or self.eth_mode()
 
     def note_segments(self):
         """Notiz der Nummer auf der Strecke, leer wenn nichts erfasst ist."""
@@ -2593,21 +3238,23 @@ class LiveRankingApp:
 
     def apply_show_settings(self):
         show = self.settings["show"]
-        for frame in (self.panel_next, self.panel_note, self.panel_ticker, self.panel_stats):
+        for frame in (self.panel_next, self.panel_course, self.panel_note, self.panel_ticker, self.panel_stats):
             frame.pack_forget()
         self._note_visible = False
         self.txt_stats.configure(height=len(self.categories) + 3)
+        vis = dict(show)
+        vis["course"] = self.eth_mode()
         if self.panel_orient == "right":
-            layout = ((self.panel_next, "naechste", "top", False), (self.panel_stats, "statistik", "bottom", False),
-                      (self.panel_ticker, "ticker", "top", True))
+            layout = ((self.panel_next, "naechste", "top", False), (self.panel_course, "course", "top", False),
+                      (self.panel_stats, "statistik", "bottom", False), (self.panel_ticker, "ticker", "top", True))
             for frame, key, side, expand in layout:
-                if show.get(key):
+                if vis.get(key):
                     frame.pack(side=side, fill="both" if expand else "x", expand=expand,
                                pady=(6, 0) if side == "bottom" else (0, 6))
         else:
-            for frame, key in ((self.panel_next, "naechste"), (self.panel_ticker, "ticker"),
-                               (self.panel_stats, "statistik")):
-                if show.get(key):
+            for frame, key in ((self.panel_next, "naechste"), (self.panel_course, "course"),
+                               (self.panel_ticker, "ticker"), (self.panel_stats, "statistik")):
+                if vis.get(key):
                     frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
         self.place_right_panel()
         for card in self.cards:
@@ -2649,9 +3296,9 @@ class LiveRankingApp:
             for k in range(TOP_N):
                 font = self.f_first if k == 0 else self.f_row
                 r_main, r_sub = 1 + 2 * k, 2 + 2 * k
-                l_txt = tk.Label(f, text="", font=font, bg=PANEL, fg=WHITE, anchor="w")
-                l_arr = tk.Label(f, text="", font=font, bg=PANEL, fg=WHITE)
-                l_time = tk.Label(f, text="", font=font, bg=PANEL, fg=WHITE, anchor="w")
+                l_txt = tk.Label(f, text="", font=font, bg=PANEL, fg=TEXT, anchor="w")
+                l_arr = tk.Label(f, text="", font=font, bg=PANEL, fg=TEXT)
+                l_time = tk.Label(f, text="", font=font, bg=PANEL, fg=TEXT, anchor="w")
                 l_pen = tk.Label(f, text="", font=self.f_pen, bg=PANEL, fg=ORANGE, anchor="w")
                 l_sub = tk.Label(f, text="", font=self.f_sub, bg=PANEL, fg=MUTED, anchor="w")
                 l_txt.grid(row=r_main, column=0, sticky="sw", padx=(14, 4))
@@ -2662,7 +3309,7 @@ class LiveRankingApp:
                 f.rowconfigure(r_main, weight=1)
                 f.rowconfigure(r_sub, weight=0)
                 rows_w.append({"txt": l_txt, "arrow": l_arr, "time": l_time, "pen": l_pen, "sub": l_sub,
-                               "nr": None, "rank": None, "color": WHITE, "sub_full": ""})
+                               "nr": None, "rank": None, "color": TEXT, "sub_full": ""})
             card = {"cat": cat, "frame": f, "box": box, "title": title, "rows": rows_w}
             title.bind("<ButtonPress-1>", lambda e, c=card: self.drag_start(c))
             title.bind("<B1-Motion>", self.drag_motion)
@@ -3044,7 +3691,7 @@ class LiveRankingApp:
                 pen_txt, sub_txt = "", ""
                 if k < len(ranked):
                     rank, nr, _ = ranked[k]
-                    color = GOLD if rank == 1 else WHITE
+                    color = GOLD if rank == 1 else TEXT
                     font = self.f_first if rank == 1 else self.f_row
                     txt, arrow, tstr = f"{rank}. Nr. {nr}", "➔", f"{self.disp_time(nr)}s"
                     pen = self.penalty(nr)
@@ -3052,7 +3699,7 @@ class LiveRankingApp:
                     sub_txt = self.who_text(nr)
                 else:
                     rank = nr = None
-                    color, font = WHITE, self.f_row
+                    color, font = TEXT, self.f_row
                     txt = arrow = tstr = ""
                     if k == 0 and not ranked:
                         color, txt = MUTED, "Noch keine Zeiten"
@@ -3280,10 +3927,11 @@ class LiveRankingApp:
     def next_starters(self, count=NEXT_COUNT):
         if not self.start_order:
             return []
-        idx = self.order_index.get(self.current_nr, -1)
+        idx = self.order_index.get(self.order_anchor(), -1)
+        on_course = {n for _t, n, _k in self.course} if self.eth_mode() else set()
         out = []
         for nr in self.start_order[idx + 1:]:
-            if nr not in self.results:
+            if nr not in self.results and nr not in on_course and nr not in self.dnf:
                 out.append(nr)
                 if len(out) >= count:
                     break
@@ -3300,19 +3948,28 @@ class LiveRankingApp:
             if not self.start_order:
                 seg.append(("Keine Startliste geladen", "sub"))
             else:
-                nxt = self.next_starters()
+                nxt = self.next_starters(count=80)
                 if not nxt:
                     seg.append(("Keine weiteren Starts in der Startliste", "sub"))
-                for i, nr in enumerate(nxt):
+                # naechste Nummer zuunterst, darueber die folgenden
+                for i, nr in reversed(list(enumerate(nxt))):
                     p = self.participants.get(nr, {})
                     cat = self.category_of(nr)
-                    seg.append((f"Nr {nr}  {display_name(p, mode) or '-'}\n", "nr"))
+                    row = f"row{nr}"
+                    first = i == 0
+                    head = f"Nr {nr}  {display_name(p, mode) or '-'}"
+                    if first and self.eth_mode() and self.cp is not None and self.cp_next_start == nr:
+                        head += "   ✓ im CP"
+                    seg.append((head + "\n", ("nr", row) + (("next",) if first else ())))
                     info = "  ·  ".join(x for x in (p.get("verein", ""), cat["name"] if cat else "") if x)
-                    seg.append((f"{info}\n", "sub"))
+                    seg.append((f"{info}\n", ("sub", row)))
                     notes = "  ·  ".join(x for x in (p.get("notiz", ""), p.get("bemerkung", "")) if x)
                     if notes and show.get("notizen"):
-                        seg.append((f"{notes}\n", "note"))
-            self._set_text(self.txt_next, seg)
+                        seg.append((f"{notes}\n", ("note", row)))
+            if self._set_text(self.txt_next, seg):
+                self.txt_next.see("end")
+        if self.eth_mode():
+            self.update_course_panel()
         if show.get("ticker"):
             seg = []
             if not self.ticker:
@@ -3324,6 +3981,202 @@ class LiveRankingApp:
             self._set_text(self.txt_ticker, seg)
         if show.get("statistik"):
             self._set_text(self.txt_stats, self.stats_segments())
+
+    # ---------------- Als naechstes: Nummer einfuegen ---------------- #
+    @staticmethod
+    def _tag_nr(widget, event, prefix):
+        idx = widget.index(f"@{event.x},{event.y}")
+        for tag in widget.tag_names(idx):
+            if tag.startswith(prefix) and tag[len(prefix):].isdigit():
+                return int(tag[len(prefix):])
+        return None
+
+    def on_next_double(self, event):
+        nr = self._tag_nr(self.txt_next, event, "row")
+        if nr is not None:
+            self.open_insert_dialog(nr)
+        return "break"
+
+    def open_insert_dialog(self, before):
+        """Neue Nummer unterhalb von 'before' einfuegen: sie startet direkt vor 'before'."""
+        dlg = self._toplevel("Nummer einfügen")
+        dlg.columnconfigure(0, weight=1)
+        tk.Label(dlg, text=f"Neue Nummer unterhalb von {self.order_label(before)} einfügen. Sie startet direkt "
+                           f"vor Nr {before}.", bg=PANEL, fg=TEXT, font=self.f_side, justify="left", anchor="w",
+                 wraplength=self.narrow_wrap()).grid(row=0, column=0, sticky="w")
+        self._label(dlg, "Startnummer").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        e = self._entry(dlg, width=8)
+        e.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+        msg = tk.Label(dlg, text="", bg=PANEL, fg=RED, font=self.f_side, justify="left", anchor="w",
+                       wraplength=self.narrow_wrap())
+        msg.grid(row=3, column=0, sticky="w", pady=(4, 0))
+
+        def ok(_e=None):
+            err = self.insert_number(e.get().strip(), before)
+            if err:
+                msg.configure(text=err)
+                e.focus_set()
+                return "break"
+            dlg.destroy()
+            return "break"
+
+        btns = tk.Frame(dlg, bg=PANEL)
+        btns.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        self._button(btns, "Einfügen", ok, BLUE).pack(side="right")
+        self._button(btns, "Abbrechen", dlg.destroy).pack(side="right", padx=(0, 8))
+        dlg.bind("<Return>", ok)
+        dlg.bind("<Escape>", lambda ev: dlg.destroy())
+        self._place(dlg, narrow=True)
+        dlg.focus_force()
+        e.focus_set()
+        return dlg
+
+    def insert_number(self, text, before):
+        """-> Fehlertext oder None. Bekannte Nummern werden verschoben, unbekannte neu angelegt."""
+        try:
+            nr = int(text)
+            if nr <= 0:
+                raise ValueError
+        except ValueError:
+            return "Gültige Startnummer eingeben"
+        if nr == before:
+            return "Nicht dieselbe Nummer"
+        if before not in self.order_index:
+            return f"Nr {before} ist nicht mehr in der Startliste"
+        known = nr in self.participants
+        if not known and self.range_category(nr) is None:
+            return (f"Nr {nr} liegt in keinem Kategorienbereich (Testnummer). Für einen Teilnehmer zuerst den "
+                    "Bereich einer Kategorie anpassen.")
+        if not known:
+            cat = self.range_category(nr)
+            self.participants[nr] = {
+                "nr": nr, "p1": "", "p2": "", "kategorie": cat["name"], "verein": "", "vnr": "", "staver": "",
+                "fg": "", "bemerkung": "", "notiz": "", "strafpunkte": 0, "unknown": True}
+        order = [n for n in self.start_order if n != nr]
+        order.insert(order.index(before), nr)
+        moved = nr in self.order_index
+        self.start_order = order
+        self.rebuild_order_index()
+        what = "verschoben" if moved else "eingefügt"
+        self.log(f"Nr {nr} vor Nr {before} {what}", tag="ok")
+        self.update_startlist_label()
+        self.on_data_changed()
+        self.cp_sync_next("Startliste")
+        if not known:
+            self.add_ticker(f"Nr {nr} vor Nr {before} eingefügt", None)
+            self.open_participant_dialog(nr, unknown=True)
+        return None
+
+    # ---------------- Auf Fahrstrecke ---------------- #
+    def update_course_panel(self):
+        if not hasattr(self, "txt_course"):
+            return
+        mode = self.settings["wettkampf"]
+        seg = []
+        if self.cp is None or not self.cp.connected:
+            seg.append(("Keine Verbindung zum CP (Ethernet)", "sub"))
+        elif not self.course:
+            seg.append(("Kein Boot auf der Strecke", "sub"))
+        for i, (tod, nr, _key) in enumerate(self.course):
+            p = self.participants.get(nr, {})
+            cat = self.category_of(nr)
+            tag = f"crs{nr}"
+            seg.append((f"Nr {nr}   {self.running_text(tod)}   {display_name(p, mode) or '-'}\n", ("nr", tag)))
+            info = [x for x in (p.get("verein", ""), cat["name"] if cat else ("Test" if self.is_test(nr) else ""))
+                    if x]
+            seg.append(("  ·  ".join(info) + ("\n" if i == 0 and len(self.course) > 1 else "\n"), ("sub", tag)))
+            if i == 0 and len(self.course) > 1:
+                seg.append(("▸ als nächstes im Ziel" + ("  (überholt)" if self.finish_override == nr else "") + "\n",
+                            ("next", tag)))
+        rec = self.cp_recs.get(self.last_finish_key) if self.last_finish_key else None
+        if rec and rec["status"] == "ok" and rec["nr"] in self.results:
+            seg.append((f"Zuletzt im Ziel: Nr {rec['nr']}  {self.results[rec['nr']]['str']}s", "time"))
+        self._set_text(self.txt_course, seg)
+
+    def on_course_click(self, event):
+        nr = self._tag_nr(self.txt_course, event, "crs")
+        if nr is None:
+            return "break"
+        key = self.course_key(nr)
+        if key is None:
+            return "break"
+        if self._course_menu is not None:
+            try:
+                self._course_menu.destroy()
+            except tk.TclError:
+                pass
+        menu = tk.Menu(self.root, tearoff=0, bg=PANEL2, fg=TEXT, activebackground=BLUE, activeforeground=WHITE,
+                       font=self.f_side, bd=0, relief="flat")
+        self._course_menu = menu
+        menu.add_command(label=f"{self.order_label(nr)}", state="disabled")
+        menu.add_separator()
+        first = self.course[0][1] if self.course else None
+        if nr != first:
+            menu.add_command(label="Kommt als nächstes ins Ziel (überholt)", command=lambda: self.cp_set_next_finish(nr))
+        lf = self.cp_recs.get(self.last_finish_key) if self.last_finish_key else None
+        if lf and lf["status"] == "ok" and lf["nr"] != nr and lf["nr"] > 0:
+            menu.add_command(label=f"Letzte Zielzeit gehört Nr {nr} (statt Nr {lf['nr']})",
+                             command=lambda: self.reassign_last_finish(nr))
+        menu.add_command(label="Nummer ändern ...", command=lambda: self.open_renumber_dialog(nr))
+        menu.add_command(label="Ausgeschieden", command=lambda: self.cp_cancel_start(nr))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    def reassign_last_finish(self, nr):
+        key = self.last_finish_key
+        rec = self.cp_recs.get(key) if key else None
+        if not rec:
+            return
+        old = rec["nr"]
+        self.log(f"Zielzeit (Seq {key[2]}) von Nr {old} zu Nr {nr} umbuchen", tag="warn")
+        self.cp_change_number(key, old, nr)
+
+    def open_renumber_dialog(self, nr):
+        key = self.course_key(nr)
+        if key is None:
+            return None
+        dlg = self._toplevel("Nummer ändern")
+        dlg.columnconfigure(0, weight=1)
+        tk.Label(dlg, text=f"{self.order_label(nr)} ist auf der Fahrstrecke. Richtige Startnummer:", bg=PANEL,
+                 fg=TEXT, font=self.f_side, justify="left", anchor="w", wraplength=self.narrow_wrap()).grid(
+            row=0, column=0, sticky="w")
+        e = self._entry(dlg, width=8)
+        e.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        msg = tk.Label(dlg, text="", bg=PANEL, fg=RED, font=self.f_side, justify="left", anchor="w",
+                       wraplength=self.narrow_wrap())
+        msg.grid(row=2, column=0, sticky="w", pady=(4, 0))
+
+        def ok(_e=None):
+            try:
+                new = int(e.get().strip())
+                if not 0 < new <= 9999:
+                    raise ValueError
+            except ValueError:
+                msg.configure(text="Gültige Startnummer eingeben")
+                return "break"
+            if new == nr:
+                dlg.destroy()
+                return "break"
+            if any(n == new for _t, n, _k in self.course):
+                msg.configure(text=f"Nr {new} ist bereits auf der Fahrstrecke")
+                return "break"
+            dlg.destroy()
+            self.cp_change_number(key, nr, new)
+            return "break"
+
+        btns = tk.Frame(dlg, bg=PANEL)
+        btns.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        self._button(btns, "Ändern", ok, BLUE).pack(side="right")
+        self._button(btns, "Abbrechen", dlg.destroy).pack(side="right", padx=(0, 8))
+        dlg.bind("<Return>", ok)
+        dlg.bind("<Escape>", lambda ev: dlg.destroy())
+        self._place(dlg, narrow=True)
+        dlg.focus_force()
+        e.focus_set()
+        return dlg
 
     def stats_segments(self):
         seg = []
@@ -3365,6 +4218,9 @@ class LiveRankingApp:
         try:
             while True:
                 kind, payload, reader = self.q.get_nowait()
+                if kind.startswith(("eth_", "net_")):
+                    self.handle_eth_event(kind, payload, reader)
+                    continue
                 if reader is not self.reader:
                     continue  # Nachzuegler einer frueheren Verbindung
                 if kind == "line":
@@ -3449,6 +4305,748 @@ class LiveRankingApp:
             self.last_club, self.last_block = club, block
         self.update_panels()
 
+    # ================================================================== #
+    # Verbindungsart RS232 / Ethernet
+    # ================================================================== #
+    def eth_mode(self):
+        return self.settings["conn"]["mode"] == "ethernet"
+
+    def show_conn_frames(self):
+        if self.eth_mode():
+            self.frm_rs.grid_remove()
+            self.frm_eth.grid(row=1, column=0, sticky="ew")
+        else:
+            self.frm_eth.grid_remove()
+            self.frm_rs.grid(row=1, column=0, sticky="ew")
+
+    def fill_eth_combos(self):
+        labels = [f"{a['name']}" + ("" if a["up"] else " (kein Kabel)") for a in self.adapters]
+        self.cmb_adapter["values"] = labels
+        want = self.settings["conn"]["adapter"]
+        idx = next((i for i, a in enumerate(self.adapters) if a["name"] == want), 0 if self.adapters else None)
+        if idx is not None:
+            self.cmb_adapter.current(idx)
+        elif not IS_WINDOWS:
+            self.cmb_adapter.set("(nur unter Windows)")
+        else:
+            self.cmb_adapter.set("")
+        cps = [f"{ip}  {info}" for ip, info in self.cp_found]
+        self.cmb_cp["values"] = cps
+        want = self.settings["conn"]["cp_ip"]
+        idx = next((i for i, (ip, _i) in enumerate(self.cp_found) if ip == want), 0 if self.cp_found else None)
+        if idx is not None:
+            self.cmb_cp.current(idx)
+        else:
+            self.cmb_cp.set(f"{want}  (zuletzt verwendet)" if want else "noch nicht gesucht")
+
+    def selected_adapter(self):
+        i = self.cmb_adapter.current()
+        return self.adapters[i]["name"] if 0 <= i < len(self.adapters) else ""
+
+    def selected_cp(self):
+        i = self.cmb_cp.current()
+        if 0 <= i < len(self.cp_found):
+            return self.cp_found[i][0]
+        return self.settings["conn"]["cp_ip"]
+
+    def refresh_adapters(self):
+        if not IS_WINDOWS:
+            self.fill_eth_combos()
+            return
+        self.set_conn_status("Netzwerkkarten werden gelesen ...", GOLD)
+        token = object()
+        self._adapter_token = token
+        threading.Thread(target=lambda: self.q.put(("net_adapters", list_adapters(), token)), daemon=True).start()
+
+    def is_connected(self):
+        if self.eth_mode():
+            return self.cp is not None and self.cp.connected
+        return self.reader is not None and self.reader.is_alive()
+
+    def restore_conn_ui(self, text, color):
+        """Nach dem Neuaufbau der Oberflaeche: Knopf und Status wieder wie vorher."""
+        busy = (self.cp is not None or self.eth_job is not None) if self.eth_mode() else \
+            (self.reader is not None and self.reader.is_alive())
+        if self.reconnecting:
+            self.btn_connect.configure(text="Warten abbrechen", bg=DARK_RED)
+        elif busy:
+            self.btn_connect.configure(text="Trennen" if self.cp is not None or self.reader else "Abbrechen",
+                                       bg=DARK_RED)
+        self.set_conn_status(text, color)
+
+    def on_conn_mode_change(self):
+        mode = self.var_conn.get()
+        if mode == self.settings["conn"]["mode"]:
+            return
+        self.disconnect_all()
+        self.settings["conn"]["mode"] = mode
+        self.save_settings()
+        self.show_conn_frames()
+        self.set_connected(False, "nicht verbunden")
+        if mode == "ethernet":
+            self.log("Verbindungsart Ethernet: CP 545 wird aktiv gesteuert (THCOM08)", tag="ok")
+            if not self.adapters:
+                self.refresh_adapters()
+        else:
+            self.log("Verbindungsart RS232: Fahrzeiten nur auswerten", tag="ok")
+            self.restore_network(background=True)
+        self.apply_show_settings()
+
+    def disconnect_all(self):
+        self.stop_reconnect()
+        if self.reader is not None:
+            self.reader.stop()
+            self.reader = None
+        self.eth_job = None
+        if self.cp is not None:
+            self.cp.stop()
+            self.cp = None
+        self.cp_cmds, self.cp_inflight = [], None
+        self.stop_eth_tick()
+
+    # ---------------- Netzwerkkarte ---------------- #
+    def restore_network(self, background=True, blocking=False):
+        """Netzwerkkarte wieder auf automatische Adresse (DHCP), falls die App sie umgestellt hat."""
+        nr = self.settings["net_restore"]
+        if not nr.get("pending") or not nr.get("adapter") or not IS_WINDOWS:
+            return True
+        adapter = nr["adapter"]
+        if blocking:
+            ok, msg = set_dhcp(adapter)
+            self.on_network_restored(ok, msg, adapter)
+            return ok
+        self.log(f"Netzwerkkarte «{adapter}» wird auf automatische Adresse zurückgestellt ...")
+        token = object()
+        threading.Thread(target=lambda: self.q.put(("net_restored", (*set_dhcp(adapter), adapter), token)),
+                         daemon=True).start()
+        return True
+
+    def on_network_restored(self, ok, msg, adapter):
+        if ok:
+            self.settings["net_restore"] = {"pending": False, "adapter": ""}
+            self.save_settings()
+            self.log(f"Netzwerkkarte «{adapter}» bezieht die Adresse wieder automatisch (DHCP)", tag="ok")
+        else:
+            self.log(f"Netzwerkkarte «{adapter}» nicht zurückgestellt: {msg}. Wird beim nächsten Start "
+                     "erneut versucht.", tag="warn")
+
+    # ---------------- Vorbereitung im Hintergrund ---------------- #
+    def start_eth_job(self, connect=True):
+        if self.eth_job is not None:
+            return
+        adapter = self.selected_adapter()
+        if adapter:
+            self.settings["conn"]["adapter"] = adapter
+            self.save_settings()
+        token = object()
+        self.eth_job, self.eth_job_connect = token, connect
+        want = self.selected_cp()
+        info = next((a for a in self.adapters if a["name"] == adapter), None)
+        if connect:
+            self.btn_connect.configure(text="Abbrechen", bg=DARK_RED)
+        threading.Thread(target=self._eth_job_run, args=(token, adapter, info, want, connect), daemon=True).start()
+
+    def _eth_job_run(self, token, adapter, info, want, connect):
+        put = lambda kind, payload: self.q.put((kind, payload, token))  # noqa: E731
+        hosts = cp_hosts()
+        if IS_WINDOWS and adapter and not os.environ.get("SWV_CP_HOSTS"):
+            ips = info["ips"] if info else []
+            if not any(ip.startswith(CP_NET) for ip in ips):
+                put("eth_status", (f"Netzwerkkarte «{adapter}» auf {PC_IP} stellen, Windows fragt nach "
+                                   "Berechtigung ...", "gold"))
+                put("net_pending", adapter)
+                ok, msg = set_static_ip(adapter)
+                if not ok:
+                    put("eth_fail", f"Netzwerkkarte nicht umgestellt: {msg}")
+                    return
+                put("eth_status", ("Warte auf Netzwerkadresse ...", "gold"))
+                if not address_ready(PC_IP):
+                    put("eth_fail", f"{PC_IP} ist nach 12 s noch nicht aktiv. Kabel zum CP prüfen.")
+                    return
+                put("eth_log", (f"Netzwerkkarte «{adapter}» hat {PC_IP} / {PC_MASK}", "ok"))
+        put("eth_status", (f"CP suchen ({hosts[0]} bis {hosts[-1]}) ..." if len(hosts) > 1 else "CP suchen ...",
+                           "gold"))
+        found = scan_cps(hosts)
+        if not found:
+            # zweiter Versuch: Windows braucht nach der Umstellung manchmal einige Sekunden
+            time.sleep(2)
+            found = scan_cps(hosts)
+        put("eth_found", found)
+        if not connect:
+            return
+        if not found:
+            put("eth_fail", "Kein CP gefunden. Ethernet am CP eingeschaltet (F › Einstellungen › Ethernet)? "
+                            "Kabel eingesteckt?")
+            return
+        ip = want if any(f[0] == want for f in found) else found[0][0]
+        put("eth_go", ip)
+
+    def handle_eth_event(self, kind, payload, token):
+        """Meldungen aus Hintergrund-Threads (Netzwerk, Suche, CP-Verbindung)."""
+        if kind == "net_adapters":
+            if token is getattr(self, "_adapter_token", None):
+                self.adapters = payload
+                self.fill_eth_combos()
+                if not self.is_connected() and self.eth_job is None:
+                    self.set_conn_status("nicht verbunden" if payload else "keine Netzwerkkarte gefunden",
+                                         MUTED if payload else GOLD)
+            return
+        if kind == "net_restored":
+            self.on_network_restored(*payload)
+            return
+        if kind.startswith("eth_") and kind in ("eth_status", "eth_fail", "eth_found", "eth_go", "eth_log") \
+                or kind == "net_pending":
+            if token is not self.eth_job:
+                return
+            if kind == "net_pending":
+                self.settings["net_restore"] = {"pending": True, "adapter": payload}
+                self.save_settings()
+            elif kind == "eth_status":
+                text, color = payload
+                self.set_conn_status(text, {"gold": GOLD, "red": RED}.get(color, MUTED))
+            elif kind == "eth_log":
+                self.log(payload[0], tag=payload[1])
+            elif kind == "eth_found":
+                self.cp_found = payload
+                self.fill_eth_combos()
+                if payload:
+                    self.log("CP gefunden: " + ", ".join(f"{ip} ({info})" for ip, info in payload), tag="ok")
+                if not self.eth_job_connect:
+                    self.eth_job = None
+                    if self.cp is None:
+                        self.set_conn_status(f"{len(payload)} CP gefunden" if payload else "kein CP gefunden",
+                                             MUTED if payload else GOLD)
+            elif kind == "eth_fail":
+                self.eth_job = None
+                self.set_connected(False, "Fehler beim Verbinden", RED)
+                self.log(payload, tag="error")
+                messagebox.showerror("Ethernet", payload)
+            elif kind == "eth_go":
+                self.eth_job = None
+                self.connect_cp(payload)
+            return
+        # Nachrichten der CP-Verbindung
+        if token is not self.cp:
+            return
+        if kind == "eth_line":
+            self.handle_eth_line(payload)
+        elif kind == "eth_connected":
+            self.on_cp_connected(payload)
+        elif kind == "eth_open_error":
+            self.log(f"CP {self.cp.host}: {payload}", tag="error")
+            self.set_conn_status(f"CP {self.cp.host} nicht erreichbar, neuer Versuch ...", RED)
+        elif kind == "eth_retry":
+            self.set_conn_status(f"CP {self.cp.host} getrennt, verbinde neu ...", RED)
+        elif kind == "eth_lost":
+            self.cp_inflight, self.cp_cmds = None, []
+            self.log(f"Verbindung zum CP {self.cp.host} unterbrochen: {payload}", tag="error")
+            self.add_ticker("Verbindung zum CP 545 unterbrochen, verbinde neu", "warn")
+            self.set_conn_status(f"CP {self.cp.host} getrennt, verbinde neu ...", RED)
+        elif kind == "eth_disconnected":
+            self.cp = None
+            self.stop_eth_tick()
+            self.set_connected(False, "nicht verbunden")
+            self.log(f"Verbindung zum CP {payload} getrennt", tag="warn")
+            self.apply_show_settings()
+
+    def connect_cp(self, ip):
+        self.settings["conn"]["cp_ip"] = ip
+        self.save_settings()
+        self.fill_eth_combos()
+        self.cp_reconnected = False
+        self.cp = CPClient(ip, cp_ports()[1], self.q)
+        self.cp.start()
+        self.set_conn_status(f"verbinde mit CP {ip} ...", GOLD)
+        self.btn_connect.configure(text="Trennen", bg=DARK_RED)
+
+    def on_cp_connected(self, ip):
+        again = self.cp_reconnected
+        self.cp_reconnected = True
+        self.cp_last_rx = self.cp_last_hb = time.time()
+        self.set_connected(True, f"CP {ip} verbunden")
+        if again:
+            self.log(f"CP {ip} wieder verbunden", tag="ok")
+            self.add_ticker("Verbindung zum CP 545 wieder hergestellt", "ziel")
+        else:
+            self.log(f"Verbunden mit CP {ip} (Ethernet, Port {self.cp.port})", tag="ok")
+        self.cp_cmds, self.cp_inflight = [], None
+        self.cp_query("#SN", "serial")
+        self.cp_query("#RP 003", ("param", "003"), on_ok=self._on_run)
+        self.cp_query(f"#RP 026 {CH_START:02d}", ("param", "026", CH_START), on_ok=self._on_next_read,
+                      on_fail=self._on_next_unread)
+        self.cp_query("#RP 001", ("param", "001"), on_ok=self._on_prec)
+        self.cp_query("#!T", "sync")
+        self.start_eth_tick()
+        self.apply_show_settings()
+
+    def _on_prec(self, info):
+        try:
+            self.cp_prec = max(0, min(5, int(info["values"][0])))
+        except (IndexError, ValueError):
+            pass
+
+    def _on_run(self, info):
+        try:
+            run = int(info["values"][0])
+        except (IndexError, ValueError):
+            return
+        if run and run != self.cp_run:
+            self.cp_run = run
+            self.log(f"CP: Lauf {run} offen")
+        elif not run:
+            self.log("CP: kein Lauf offen. Am CP einen Lauf öffnen (NET TIME).", tag="warn")
+
+    def _on_next_unread(self, reason):
+        if reason == "keine Antwort" and self.cp_readback:
+            self.cp_readback = False
+            self.log("CP: Zurücklesen wird nicht beantwortet, nur Bestätigung (AK) wird geprüft", tag="warn")
+        self.cp_next_start = None
+        self.cp_sync_next("Verbindung")
+
+    def _on_next_read(self, info):
+        try:
+            self.cp_next_start = int(info["values"][-1])
+        except (IndexError, ValueError):
+            return
+        self.cp_sync_next("Verbindung")
+
+    # ---------------- Befehle mit Bestaetigung ---------------- #
+    def cp_query(self, text, expect="ack", on_ok=None, on_fail=None, label=None, tries=1):
+        """Befehl einreihen. expect: 'ack' | 'serial' | 'sync' | ('param', id[, eingang])."""
+        if self.cp is None:
+            if on_fail:
+                on_fail("keine Verbindung")
+            return
+        self.cp_cmds.append({"text": text, "expect": expect, "on_ok": on_ok, "on_fail": on_fail,
+                             "label": label or text, "tries": tries})
+        self.cp_pump()
+
+    def cp_pump(self):
+        if self.cp_inflight is not None or not self.cp_cmds or self.cp is None or not self.cp.connected:
+            return
+        if time.time() < self.cp_hold_until:
+            self.root.after(int((self.cp_hold_until - time.time()) * 1000) + 5, self.cp_pump)
+            return
+        cmd = self.cp_cmds.pop(0)
+        cmd["deadline"] = time.time() + CMD_TIMEOUT
+        self.cp_inflight = cmd
+        self.cp.send(cmd["text"])
+        self.log(f"→ CP {cmd['text']}", focus=False, tag="ok")
+
+    def cp_resolve(self, ok, info=None, reason=""):
+        cmd, self.cp_inflight = self.cp_inflight, None
+        if cmd["expect"] != "ack":
+            self.cp_hold_until = time.time() + 0.3  # nachfolgendes AK der Abfrage abwarten
+        if ok and cmd["on_ok"]:
+            cmd["on_ok"](info)
+        elif not ok and cmd["on_fail"]:
+            cmd["on_fail"](reason)
+        self.cp_pump()
+
+    def cp_check_reply(self, info):
+        cmd = self.cp_inflight
+        if cmd is None:
+            return
+        exp = cmd["expect"]
+        if info["kind"] == "ack":
+            if exp == "ack":
+                self.cp_resolve(info["code"] == "C", info, {"F": "vom CP abgelehnt",
+                                                            "R": "vom CP nicht unterstützt"}.get(info["code"], ""))
+            elif info["code"] in "FR":
+                self.cp_resolve(False, info, "vom CP abgelehnt" if info["code"] == "F" else "nicht unterstützt")
+            return
+        if exp == "serial" and info["kind"] == "serial":
+            self.cp_info = f"{info['type']} Nr {info['serial']} {info['version']}".strip()
+            self.log(f"CP: {self.cp_info}", tag="ok")
+            self.cp_resolve(True, info)
+        elif exp == "sync" and info["kind"] == "sync":
+            self.add_cp_offset(info["tod"])
+            self.cp_resolve(True, info)
+        elif isinstance(exp, tuple) and info["kind"] == "param" and info["id"] == exp[1]:
+            if len(exp) > 2:
+                try:
+                    if int(info["values"][0]) != exp[2]:
+                        return
+                except (IndexError, ValueError):
+                    return
+            self.cp_resolve(True, info)
+
+    def cp_timeout_check(self):
+        cmd = self.cp_inflight
+        if cmd is None or time.time() < cmd["deadline"]:
+            return
+        self.cp_resolve(False, None, "keine Antwort")
+
+    def cp_write_param(self, param, inp, nr, label, on_done=None, attempt=1):
+        """#WP schreiben, mit #RP zuruecklesen, bis 3 Versuche. on_done(ok)."""
+        text = f"#WP {param} {inp:02d} {nr:04d}"
+
+        def failed(reason):
+            if attempt < 3:
+                self.log(f"CP: {label} Nr {nr} nicht bestätigt ({reason}), neuer Versuch", tag="warn")
+                self.root.after(300, lambda: self.cp_write_param(param, inp, nr, label, on_done, attempt + 1))
+            else:
+                self.log(f"CP: {label} Nr {nr} nach 3 Versuchen nicht gesetzt ({reason})", tag="error")
+                self.add_ticker(f"CP: {label} Nr {nr} nicht gesetzt, am CP prüfen", "warn")
+                if on_done:
+                    on_done(False)
+
+        def read_ok(info):
+            try:
+                got = int(info["values"][-1])
+            except (IndexError, ValueError):
+                got = None
+            if got == nr:
+                self.log(f"CP: {label} Nr {nr} gesetzt und zurückgelesen", tag="ok")
+                if on_done:
+                    on_done(True)
+            else:
+                failed(f"CP meldet {got}")
+
+        def read_fail(reason):
+            if reason == "keine Antwort" and self.cp_readback:
+                self.cp_readback = False
+                self.log("CP: Zurücklesen wird nicht beantwortet, nur Bestätigung (AK) wird geprüft", tag="warn")
+            self.log(f"CP: {label} Nr {nr} gesetzt (bestätigt)", tag="ok")
+            if on_done:
+                on_done(True)
+
+        def ak_ok(_info):
+            if self.cp_readback:
+                self.cp_query(f"#RP {param} {inp:02d}", ("param", param, inp), on_ok=read_ok, on_fail=read_fail)
+            else:
+                read_fail("")
+
+        self.cp_query(text, "ack", on_ok=ak_ok, on_fail=failed)
+
+    # ---------------- Startnummern vorladen / Steuerung ---------------- #
+    def order_anchor(self):
+        return self.last_start_nr if self.eth_mode() else self.current_nr
+
+    def cp_sync_next(self, reason=""):
+        """Naechste Startnummer aus der Startliste im CP vorladen, wenn sie von seiner Folge abweicht."""
+        if not self.eth_mode() or self.cp is None or not self.cp.connected:
+            return
+        nxt = self.next_starters(1)
+        if not nxt:
+            return
+        want = nxt[0]
+        if want == self.cp_next_start or getattr(self, "_cp_next_pending", None) == want:
+            return
+        self._cp_next_pending = want
+
+        def done(ok):
+            self._cp_next_pending = None
+            if ok:
+                self.cp_next_start = want
+                self.update_panels()
+            # Startliste hat sich inzwischen geaendert: nochmals abgleichen
+            self.root.after(50, self.cp_sync_next)
+
+        self.cp_write_param("026", CH_START, want, "nächster Start", done)
+
+    def cp_set_next_finish(self, nr):
+        def done(ok):
+            if ok:
+                self.finish_override = nr
+                self.log(f"Überholen: Nr {nr} kommt als nächstes ins Ziel", tag="ok")
+                self.add_ticker(f"Nr {nr} hat überholt und kommt als nächstes ins Ziel", None)
+                self.course_changed()
+        self.cp_write_param("026", CH_FINISH, nr, "nächstes Ziel", done)
+
+    def cp_cancel_start(self, nr):
+        key = self.course_key(nr)
+        if key is None:
+            return
+        if not messagebox.askyesno("Ausgeschieden", f"{self.order_label(nr)} als ausgeschieden markieren?\n"
+                                                    "Die Startzeit wird am CP storniert, das Boot verlässt die "
+                                                    "Fahrstrecke."):
+            return
+
+        def ok(_info):
+            rec = self.cp_recs.get(key)
+            if rec and rec["status"] == "ok":
+                self.mark_dnf(nr, key)
+
+        def fail(reason):
+            self.log(f"CP: Nr {nr} nicht storniert ({reason})", tag="error")
+            messagebox.showerror("Ausgeschieden", f"Der CP hat die Stornierung von Nr {nr} nicht bestätigt "
+                                                  f"({reason}).\nAm CP mit Nr + R + 0 stornieren.")
+
+        self.cp_query(f"#WC 013 {key[1]:02d} {key[2]:04d}    C", "ack", on_ok=ok, on_fail=fail)
+
+    def mark_dnf(self, nr, key):
+        rec = self.cp_recs.get(key)
+        if rec:
+            rec["status"] = "cancelled"
+        self.dnf.add(nr)
+        if self.finish_override == nr:
+            self.finish_override = None
+        self.log(f"Nr {nr} ausgeschieden (Startzeit storniert)", tag="warn")
+        self.add_ticker(f"Nr {nr}{(' ' + self.who_text(nr)) if self.who_text(nr) else ''} ausgeschieden", "warn")
+        self.course_changed()
+
+    def cp_change_number(self, key, old, new):
+        if key is None or self.cp is None:
+            return
+        def ok(_info):
+            rec = self.cp_recs.get(key)
+            if rec and rec["nr"] == old:  # CP hat (noch) kein T- / T* gemeldet
+                self.root.after(1200, lambda: self._apply_renumber(key, old, new))
+
+        def fail(reason):
+            self.log(f"CP: Nummer {old} -> {new} nicht geändert ({reason})", tag="error")
+            messagebox.showerror("Nummer ändern", f"Der CP hat die Änderung nicht bestätigt ({reason}).")
+
+        self.cp_query(f"#WC 013 {key[1]:02d} {key[2]:04d} {new:04d}", "ack", on_ok=ok, on_fail=fail)
+
+    def _apply_renumber(self, key, old, new):
+        rec = self.cp_recs.get(key)
+        if rec and rec["nr"] == old:
+            self.on_cp_time({"type": "T*", "nr": new, "seq": key[2], "ch": key[1], "tod": rec["tod"]}, local=True)
+
+    # ---------------- Daten vom CP ---------------- #
+    def add_cp_offset(self, cp_tod):
+        now = time.time()
+        self.cp_offsets.append((now, cp_tod - local_tod()))
+        self.cp_offsets = [(t, o) for t, o in self.cp_offsets if now - t < 600][-50:]
+
+    def cp_offset(self):
+        return max(o for _t, o in self.cp_offsets) if self.cp_offsets else None
+
+    def handle_eth_line(self, raw):
+        self.cp_last_rx = time.time()
+        text = strip_frame(raw)
+        info = parse_thcom(raw)
+        if info is None:
+            return
+        quiet = info["kind"] in ("ack", "param", "serial", "sync")
+        self.log("CP " + text, focus=False, tag=None if not quiet else "test")
+        if quiet:
+            self.cp_check_reply(info)
+            return
+        if info["kind"] == "time":
+            self.on_cp_time(info)
+        elif info["kind"] == "result" and info["type"] == "RR":
+            self.on_cp_result(info)
+        elif info["kind"] == "open":
+            self.cp_run = info["run"]
+            self.finish_override = None
+            self.log(f"CP: Lauf {info['run']} geöffnet ({info['mode'] or '?'})", tag="ok")
+            if info["mode"] and "NET" not in info["mode"].upper() and "START" not in info["mode"].upper():
+                self.log(f"CP-Modus {info['mode']}: erwartet wird NET TIME (Start Eingang 1, Ziel Eingang 4)",
+                         tag="warn")
+            self.course_changed()
+        elif info["kind"] == "close":
+            self.finish_override = None
+            self.log(f"CP: Lauf {info['run']} geschlossen", tag="warn")
+            self.course_changed()
+
+    def on_cp_time(self, t, local=False):
+        typ, ch, seq, nr = t["type"], t["ch"], t["seq"], t["nr"]
+        key = (self.cp_run, ch, seq)
+        rec = self.cp_recs.get(key)
+        where = "Start" if ch == CH_START else ("Ziel" if ch == CH_FINISH else f"Eingang {ch}")
+        if typ in ("TN", "T+", "T=", "TI"):
+            if rec and rec["nr"] == nr and abs(rec["tod"] - t["tod"]) < 0.001 and rec["status"] == "ok":
+                return  # bereits bekannt (z.B. nach Neuverbindung)
+            self.cp_recs[key] = {"nr": nr, "tod": t["tod"], "status": "ok"}
+            if typ == "TN" and not local:
+                self.add_cp_offset(t["tod"])
+            if nr <= 0:
+                self.log(f"CP: {where}zeit ohne Nummer (Seq {seq})", tag="warn")
+            elif ch == CH_START:
+                prev = self.last_start_nr
+                self.last_start_nr = nr
+                self.dnf.discard(nr)
+                self.cp_next_start = nr + 1
+                self.log(f"START Nr {nr} ({fmt_tod(t['tod'])})", tag="ok" if not self.is_test(nr) else "test")
+                self.on_new_starter(prev, nr)
+                self.cp_sync_next("Start")
+            elif ch == CH_FINISH:
+                self.last_finish_key = key
+                if self.finish_override == nr:
+                    self.finish_override = None
+                self.root.after(900, lambda k=key: self.finish_without_rr(k))
+        elif typ == "T-":
+            if rec:
+                rec["status"] = "unassigned"
+            else:
+                self.cp_recs[key] = {"nr": nr, "tod": t["tod"], "status": "unassigned"}
+            if ch == CH_FINISH:
+                self.revert_cp_result(key)
+        elif typ == "T*":
+            old = rec["nr"] if rec else None
+            self.cp_recs[key] = {"nr": nr, "tod": t["tod"], "status": "ok"}
+            if old is not None and old != nr:
+                self.log(f"CP: {where}zeit (Seq {seq}) von Nr {old} zu Nr {nr}", tag="warn")
+            if ch == CH_START and nr > 0:
+                # last_start_nr bleibt: die Startreihenfolge laeuft ab der vorgesehenen Nummer weiter
+                if self.start_order and nr not in self.participants and not self.is_test(nr):
+                    self.ensure_participant(nr, after=old if old in self.order_index else None, prompt=True)
+                self.add_ticker(f"Nummer korrigiert: Nr {nr} statt Nr {old} auf der Fahrstrecke", None)
+            elif ch == CH_FINISH and nr > 0:
+                self.revert_cp_result(key)
+                self.last_finish_key = key
+                self.root.after(900, lambda k=key: self.finish_without_rr(k))
+        elif typ == "TC":
+            if rec:
+                rec["status"] = "cancelled"
+            else:
+                self.cp_recs[key] = {"nr": nr, "tod": t["tod"], "status": "cancelled"}
+            if ch == CH_START and nr > 0 and nr not in self.dnf:
+                self.mark_dnf(nr, key)
+                return
+            if ch == CH_FINISH:
+                self.revert_cp_result(key)
+        self.course_changed()
+
+    def start_rec_for(self, nr, before_tod):
+        best = None
+        for (run, ch, _seq), r in self.cp_recs.items():
+            if run == self.cp_run and ch == CH_START and r["nr"] == nr and r["status"] == "ok" \
+                    and r["tod"] <= before_tod and (best is None or r["tod"] > best["tod"]):
+                best = r
+        return best
+
+    def on_cp_result(self, info):
+        nr = info["nr"]
+        key = None
+        for k, r in self.cp_recs.items():
+            if k[0] == self.cp_run and k[1] == CH_FINISH and r["nr"] == nr and r["status"] == "ok":
+                if key is None or r["tod"] > self.cp_recs[key]["tod"]:
+                    key = k
+        secs = trunc_secs(info["secs"], min(self.cp_prec, 2))
+        self.store_cp_result(nr, secs, key)
+
+    def store_cp_result(self, nr, secs, key):
+        res = self.results.get(nr)
+        tstr = fmt_secs(secs, 2)
+        if res and key is not None and res.get("cp") == list(key):
+            return  # schon erfasst
+        if res and res["str"] == tstr and time.time() - res["ts"] < 10:
+            return
+        self.register_final(nr, secs, tstr, source="CP 545 LAN")
+        if nr in self.results:
+            self.results[nr]["cp"] = list(key) if key else None
+            self.save_autosave()
+        self.ziel_nr = nr
+        self.course_changed()
+
+    def finish_without_rr(self, key):
+        """Zielzeit ohne RR vom CP (z.B. nach Umbuchung): Fahrzeit selbst berechnen."""
+        rec = self.cp_recs.get(key)
+        if not rec or rec["status"] != "ok" or rec["nr"] <= 0:
+            return
+        if any(r.get("cp") == list(key) for r in self.results.values()):
+            return
+        start = self.start_rec_for(rec["nr"], rec["tod"])
+        if start is None:
+            self.log(f"CP: Zielzeit Nr {rec['nr']} ohne Startzeit", tag="warn")
+            return
+        self.store_cp_result(rec["nr"], trunc_secs(rec["tod"] - start["tod"], min(self.cp_prec, 2)), key)
+
+    def revert_cp_result(self, key):
+        for nr, r in list(self.results.items()):
+            if r.get("cp") == list(key):
+                prev = r.get("prev")
+                if prev:
+                    self.results[nr] = {"secs": prev["secs"], "str": prev["str"], "ts": r["ts"],
+                                        "source": r.get("source", ""), "run": max(1, r.get("run", 2) - 1),
+                                        "prev": None, "status": r.get("status", ST_OPEN)}
+                else:
+                    del self.results[nr]
+                if self.ziel_nr == nr and nr not in self.results:
+                    self.ziel_nr = None
+                self.log(f"Zielzeit Nr {nr} ({r['str']}s) zurückgenommen, Zeit wurde umgebucht", tag="warn")
+                self.add_ticker(f"Zielzeit Nr {nr} zurückgenommen ({r['str']}s), Nr {nr} wieder auf der Strecke",
+                                "warn")
+                self.on_data_changed()
+                return nr
+        return None
+
+    # ---------------- Fahrstrecke ---------------- #
+    def compute_course(self):
+        starts, finishes = {}, {}
+        for (run, ch, _seq), r in self.cp_recs.items():
+            if run != self.cp_run or r["status"] != "ok" or r["nr"] <= 0:
+                continue
+            if ch == CH_START:
+                if r["nr"] not in starts or r["tod"] > starts[r["nr"]][0]:
+                    starts[r["nr"]] = (r["tod"], (run, ch, _seq))
+            elif ch == CH_FINISH:
+                finishes[r["nr"]] = max(finishes.get(r["nr"], -1), r["tod"])
+        course = [(tod, nr, key) for nr, (tod, key) in starts.items()
+                  if finishes.get(nr, -1) < tod and nr not in self.dnf]
+        course.sort()
+        if self.finish_override is not None:
+            first = [c for c in course if c[1] == self.finish_override]
+            if first:
+                course = first + [c for c in course if c[1] != self.finish_override]
+            else:
+                self.finish_override = None
+        return course
+
+    def course_key(self, nr):
+        return next((key for _t, n, key in self.course if n == nr), None)
+
+    def course_changed(self):
+        self.course = self.compute_course()
+        self.update_eth_live()
+        self.update_panels()
+
+    def update_eth_live(self):
+        if not self.eth_mode():
+            return
+        if self.course:
+            tod, nr, _key = self.course[0]
+            off = self.cp_offset()
+            secs = max(0.0, local_tod() + off - tod) if off is not None else None
+            txt = None if secs is None else (f"{int(secs // 60)}:{int(secs % 60):02d}" if secs >= 60 else
+                                             f"{int(secs)}")
+            if nr != self.current_nr:
+                self.current_nr = nr
+            self.live_time, self.live_secs, self.live_final = txt, secs, False
+        elif self.ziel_nr is not None and self.ziel_nr in self.results:
+            self.current_nr = self.ziel_nr
+            self.live_time, self.live_secs, self.live_final = self.results[self.ziel_nr]["str"], None, True
+        self.update_live_info()
+
+    def running_text(self, tod):
+        off = self.cp_offset()
+        if off is None:
+            return ""
+        secs = max(0.0, local_tod() + off - tod)
+        return f"{int(secs // 60)}:{int(secs % 60):02d}"
+
+    def start_eth_tick(self):
+        if self._eth_tick_job is None:
+            self._eth_tick_job = self.root.after(250, self.eth_tick)
+
+    def stop_eth_tick(self):
+        if self._eth_tick_job is not None:
+            self.root.after_cancel(self._eth_tick_job)
+            self._eth_tick_job = None
+
+    def eth_tick(self):
+        self._eth_tick_job = None
+        if self.cp is None:
+            return
+        self.cp_timeout_check()
+        now = time.time()
+        if self.cp.connected:
+            if now - self.cp_last_hb > HEARTBEAT_S and self.cp_inflight is None and not self.cp_cmds:
+                self.cp_last_hb = now
+                self.cp_query("#RP 003", ("param", "003"), on_ok=self._on_run)
+            if now - self.cp_last_rx > HEARTBEAT_LOST_S:
+                self.cp_last_rx = now
+                self.log("CP antwortet nicht mehr, Verbindung wird neu aufgebaut", tag="warn")
+                self.cp.force_reconnect()
+        if self.course:
+            self.update_eth_live()
+            self.update_course_panel()
+        self._eth_tick_job = self.root.after(250, self.eth_tick)
+
     def refresh_ports(self):
         self.port_map = {}
         values = []
@@ -3462,6 +5060,17 @@ class LiveRankingApp:
             self.cmb_port.set(values[0])
 
     def toggle_connection(self):
+        if self.eth_mode():
+            if self.eth_job is not None:
+                self.eth_job = None
+                self.set_connected(False, "nicht verbunden")
+                self.log("Verbinden abgebrochen", tag="warn")
+            elif self.cp is not None:
+                self.cp.stop()
+                self.set_conn_status("trenne ...", GOLD)
+            else:
+                self.start_eth_job(connect=True)
+            return
         if self.reconnecting:
             self.stop_reconnect()
             if self.reader is not None:
@@ -3559,13 +5168,20 @@ class LiveRankingApp:
         return find_port(self.conn_target["port"], self.conn_target.get("identity"))
 
     def set_connected(self, connected, text, color=None):
-        self.set_conn_status(text, color or (GREEN if connected else MUTED))
+        self.set_conn_status(text, color or (GREEN_TEXT if connected else MUTED))
         self.btn_connect.configure(text="Trennen" if connected else "Verbinden",
                                    bg=DARK_RED if connected else GREEN)
 
     def log(self, text, focus=True, tag=None):
         """focus=False: nur im Tab 'Alle' (Rohdaten). Sonst in beiden Tabs."""
         line = f"{time.strftime('%H:%M:%S')}  {text}\n"
+        self.log_lines.append((line, tag, focus))
+        del self.log_lines[:-LOG_MAX_LINES * 2]
+        self._log_insert(line, tag, focus)
+
+    def _log_insert(self, line, tag, focus):
+        if not hasattr(self, "log_tabs"):
+            return
         for key in (("all", "focus") if focus else ("all",)):
             txt = self.log_tabs[key][1]
             txt.configure(state="normal")
@@ -3646,9 +5262,10 @@ class LiveRankingApp:
                     m[field] = idx - 1
             return m
 
-        preview = tk.Text(dlg, height=12, width=90, bg="#020617", fg=TEXT, font=self.f_log, relief="flat",
+        preview = tk.Text(dlg, height=12, width=90, bg=INPUT_BG, fg=TEXT, font=self.f_log, relief="flat",
                           highlightthickness=0, wrap="none")
         lbl_sum = tk.Label(dlg, text="", bg=PANEL, fg=TEXT, font=self.f_side, anchor="w", justify="left")
+        lbl_warn = tk.Label(dlg, text="", bg=PANEL, fg=GOLD, font=self.f_side, anchor="w", justify="left")
         var_cats = tk.BooleanVar(value=True)
 
         def refresh(*_a):
@@ -3665,7 +5282,7 @@ class LiveRankingApp:
                                       f"{p['verein'][:28]}\n")
             preview.configure(state="disabled")
             clubs = len({p["verein"] for p in parts.values() if p["verein"]})
-            cats = derive_category_ranges(order, parts)
+            cats, cat_warn = derive_category_ranges(order, parts)
             text = f"{len(order)} Starts, {clubs} Vereine, {len(cats)} Kategorien in der Datei."
             if issues["ohne_nr"]:
                 text += f"\n{issues['ohne_nr']} Zeilen ohne gültige Startnummer werden übersprungen."
@@ -3674,6 +5291,11 @@ class LiveRankingApp:
             if cats:
                 text += "\nKategorien: " + ", ".join(f"{c} {lo}-{hi} ({n})" for c, lo, hi, n in cats)
             lbl_sum.configure(text=text, wraplength=720)
+            lbl_warn.configure(text="\n".join("⚠ " + w for w in cat_warn), wraplength=720)
+            if cat_warn:
+                lbl_warn.grid()
+            else:
+                lbl_warn.grid_remove()
 
         self._radio(mf, "Einzelwettfahren", var_mode, "einzel", command=refresh).pack(side="left", padx=(0, 6))
         self._radio(mf, "Paarwettfahren", var_mode, "paar", command=refresh).pack(side="left")
@@ -3691,8 +5313,10 @@ class LiveRankingApp:
                  anchor="w").grid(row=r, column=0, columnspan=2, sticky="w", pady=(8, 2))
         preview.grid(row=r + 1, column=0, columnspan=2, sticky="nsew")
         lbl_sum.grid(row=r + 2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self._check(dlg, "Kategorien und Nummernbereiche aus der Startliste übernehmen", var_cats).grid(
-            row=r + 3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        lbl_warn.grid(row=r + 3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self._check(dlg, "Kategorien und Nummernbereiche aus der Startliste übernehmen "
+                         f"(bis ..99, ab 900 bis 950, {TEST_RANGE[0]}-{TEST_RANGE[1]} Test)", var_cats).grid(
+            row=r + 4, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         def do_import():
             m = current_mapping()
@@ -3730,7 +5354,7 @@ class LiveRankingApp:
             self.on_data_changed()
 
         btns = tk.Frame(dlg, bg=PANEL)
-        btns.grid(row=r + 4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        btns.grid(row=r + 5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         self._button(btns, "Importieren", do_import, BLUE).pack(side="right")
         self._button(btns, "Abbrechen", dlg.destroy).pack(side="right", padx=(0, 8))
         refresh()
@@ -3739,7 +5363,10 @@ class LiveRankingApp:
 
     def apply_startlist_categories(self, order, parts):
         changed = []
-        for name, lo, hi, _n in derive_category_ranges(order, parts):
+        ranges, warnings = derive_category_ranges(order, parts)
+        for w in warnings:
+            self.log(f"Kategorien: {w}", tag="warn")
+        for name, lo, hi, _n in ranges:
             cat = self._cat_lookup.get(name.casefold())
             if cat:
                 cat["min"], cat["max"] = lo, hi
@@ -3854,10 +5481,11 @@ class LiveRankingApp:
         mode = self.settings["wettkampf"]
         dlg = self._toplevel(f"{'Unbekannte Startnummer' if unknown else 'Teilnehmer'} Nr {nr}")
         self.participant_dialogs[nr] = dlg
-        dlg.columnconfigure(1, weight=1)
-        head = f"Nr {nr} ist nicht in der Startliste. Bitte erfassen:" if unknown else f"Teilnehmer Nr {nr}"
-        tk.Label(dlg, text=head, bg=PANEL, fg=GOLD, font=self.f_side_head, anchor="w").grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        dlg.columnconfigure(0, weight=1)
+        head = (f"Nr {nr} ist nicht in der Startliste. Bitte erfassen (oder leer schliessen):" if unknown
+                else f"Teilnehmer Nr {nr}")
+        tk.Label(dlg, text=head, bg=PANEL, fg=GOLD, font=self.f_side_head, anchor="w", justify="left",
+                 wraplength=self.narrow_wrap()).grid(row=0, column=0, sticky="w", pady=(0, 8))
         labels = ("Vorname", "Nachname") if mode == "einzel" else ("Steuerfahrer", "Vorderfahrer")
         fields = {}
         clubs = sorted({x.get("verein") for x in self.participants.values() if x.get("verein")}, key=str.casefold)
@@ -3867,24 +5495,24 @@ class LiveRankingApp:
             specs.append(("after", "Einfügen nach Nr", "entry"))
         for i, (key, label, kind) in enumerate(specs, start=1):
             tk.Label(dlg, text=label, bg=PANEL, fg=TEXT, font=self.f_side, anchor="w").grid(
-                row=i, column=0, sticky="w", padx=(0, 10), pady=2)
+                row=2 * i - 1, column=0, sticky="w", pady=(4, 0))
             if kind == "club":
-                w = self._combo(dlg, clubs, width=34)
+                w = self._combo(dlg, clubs, width=10)
                 w.set(p.get("verein", ""))
             else:
-                w = self._entry(dlg, width=36)
+                w = self._entry(dlg, width=10)
                 if key == "after":
                     idx = self.order_index[nr]
                     w.insert(0, str(self.start_order[idx - 1]) if idx > 0 else "Anfang")
                 else:
                     w.insert(0, str(p.get(key, "") or ""))
-            w.grid(row=i, column=1, sticky="ew", pady=2)
+            w.grid(row=2 * i, column=0, sticky="ew", pady=(1, 0))
             fields[key] = w
-        row_after = len(specs) + 1
+        row_after = 2 * len(specs) + 1
         lbl_pos = tk.Label(dlg, text="", bg=PANEL, fg=MUTED, font=self.f_side, anchor="w", justify="left",
-                           wraplength=int(420 * self.ui_scale))
+                           wraplength=self.narrow_wrap())
         if "after" in fields:
-            lbl_pos.grid(row=row_after, column=1, sticky="w", pady=(0, 4))
+            lbl_pos.grid(row=row_after, column=0, sticky="w", pady=(2, 4))
 
         def preview(_e=None):
             if "after" not in fields:
@@ -3934,13 +5562,13 @@ class LiveRankingApp:
             self.on_data_changed()
 
         btns = tk.Frame(dlg, bg=PANEL)
-        btns.grid(row=row_after + 1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        btns.grid(row=row_after + 1, column=0, sticky="ew", pady=(10, 0))
         self._button(btns, "Speichern", save, BLUE).pack(side="right")
-        self._button(btns, "Später", close).pack(side="right", padx=(0, 8))
+        self._button(btns, "Später" if unknown else "Abbrechen", close).pack(side="right", padx=(0, 8))
         dlg.bind("<Return>", lambda e: save())
         dlg.bind("<Escape>", lambda e: close())
         dlg.protocol("WM_DELETE_WINDOW", close)
-        self._center(dlg)
+        self._place(dlg, narrow=True)
         fields["p1"].focus_set()
 
     # ---------------- Notiz hinzufuegen mit Suche ---------------- #
@@ -3982,22 +5610,24 @@ class LiveRankingApp:
             return
         win = self._toplevel("Notiz hinzufügen")
         self.note_win = win
-        win.geometry(f"{int(760 * self.ui_scale)}x{int(560 * self.ui_scale)}")
         win.columnconfigure(0, weight=1)
         win.rowconfigure(2, weight=1)
         top = tk.Frame(win, bg=PANEL)
         top.grid(row=0, column=0, columnspan=2, sticky="ew")
         top.columnconfigure(1, weight=1)
         tk.Label(top, text="Suche", bg=PANEL, fg=TEXT, font=self.f_side_bold).grid(row=0, column=0, padx=(0, 8))
-        e_q = self._entry(top, width=30)
+        e_q = self._entry(top, width=10)
         e_q.grid(row=0, column=1, sticky="ew")
         tk.Label(top, text="Name, Verein oder Startnummer", bg=PANEL, fg=MUTED, font=self.f_side).grid(
             row=1, column=1, sticky="w")
-        lbl_n = tk.Label(win, text="", bg=PANEL, fg=MUTED, font=self.f_side, anchor="w")
+        lbl_n = tk.Label(win, text="", bg=PANEL, fg=MUTED, font=self.f_side, anchor="w", justify="left",
+                         wraplength=self.narrow_wrap())
         lbl_n.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 2))
-        cols = [("mark", "", 30), ("nr", "Nr", 60), ("name", "Name", 230), ("verein", "Verein", 220), ("kat", "Kategorie", 110)]
+        sc = self.ui_scale
+        cols = [("mark", "", int(22 * sc)), ("nr", "Nr", int(44 * sc)), ("name", "Name", int(120 * sc)),
+                ("verein", "Verein", int(90 * sc))]
         tree = ttk.Treeview(win, columns=[c[0] for c in cols], show="headings", style="Dark.Treeview",
-                            selectmode="browse")
+                            selectmode="browse", height=11)
         for key, label, width in cols:
             tree.heading(key, text=label)
             tree.column(key, width=width, anchor="w", stretch=key in ("name", "verein"))
@@ -4006,13 +5636,13 @@ class LiveRankingApp:
         sb.grid(row=2, column=1, sticky="ns")
         tree.configure(yscrollcommand=sb.set)
         lbl_sel = tk.Label(win, text="Teilnehmer in der Liste anklicken", bg=PANEL, fg=GOLD, font=self.f_side_bold,
-                           anchor="w")
+                           anchor="w", justify="left", wraplength=self.narrow_wrap())
         lbl_sel.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 2))
         txt = tk.Text(win, height=4, bg=INPUT_BG, fg=INPUT_FG, insertbackground=INPUT_FG, font=self.f_side,
                       relief="flat", wrap="word", highlightthickness=1, highlightbackground=BORDER,
                       highlightcolor=BLUE, state="disabled")
         txt.grid(row=4, column=0, columnspan=2, sticky="ew")
-        lbl_ok = tk.Label(win, text="", bg=PANEL, fg=GREEN, font=self.f_side, anchor="w")
+        lbl_ok = tk.Label(win, text="", bg=PANEL, fg=GREEN_TEXT, font=self.f_side, anchor="w")
         lbl_ok.grid(row=5, column=0, sticky="w", pady=(6, 0))
         btns = tk.Frame(win, bg=PANEL)
         btns.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -4028,13 +5658,12 @@ class LiveRankingApp:
             tree.delete(*tree.get_children())
             for nr in hits:
                 p = self.participants.get(nr, {})
-                cat = self.category_of(nr)
                 tree.insert("", "end", iid=str(nr), values=("✎" if p.get("notiz") else "", nr, display_name(p, mode),
-                                                            p.get("verein", ""), cat["name"] if cat else ""))
+                                                            p.get("verein", "")))
             if new_nr is not None:
-                tree.insert("", "end", iid=f"new{new_nr}", values=("", new_nr, "neu anlegen", "", ""))
+                tree.insert("", "end", iid=f"new{new_nr}", values=("", new_nr, "neu anlegen", ""))
             total = len(hits)
-            lbl_n.configure(text=f"{total} Treffer" + (" (es werden höchstens 300 angezeigt)" if total >= 300 else ""))
+            lbl_n.configure(text=f"{total} Treffer" + (" (höchstens 300 angezeigt)" if total >= 300 else ""))
 
         def select(_e=None):
             sel = tree.selection()
@@ -4069,7 +5698,7 @@ class LiveRankingApp:
             self.log(f"Notiz Nr {nr}: {note or '(gelöscht)'}")
             if tree.exists(str(nr)):
                 tree.set(str(nr), "mark", "✎" if note else "")
-            lbl_ok.configure(text=f"Gespeichert: {self.order_label(nr)}" if note else f"Notiz gelöscht: Nr {nr}", fg=GREEN)
+            lbl_ok.configure(text=f"Gespeichert: {self.order_label(nr)}" if note else f"Notiz gelöscht: Nr {nr}", fg=GREEN_TEXT)
             self.on_data_changed()
             return "break"
 
@@ -4094,11 +5723,12 @@ class LiveRankingApp:
         txt.bind("<Control-Return>", save)
         self._button(btns, "Speichern", save, BLUE).pack(side="right")
         self._button(btns, "Schliessen", close).pack(side="right", padx=(0, 8))
-        tk.Label(btns, text="Strg+Enter speichert", bg=PANEL, fg=MUTED, font=self.f_side).pack(side="left")
+        tk.Label(win, text="Strg+Enter speichert", bg=PANEL, fg=MUTED, font=self.f_side, anchor="w").grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
         win.bind("<Escape>", close)
         win.protocol("WM_DELETE_WINDOW", close)
         fill()
-        self._center(win)
+        self._place(win, narrow=True)
         e_q.focus_set()
 
     # ================================================================== #
@@ -4366,8 +5996,8 @@ class LiveRankingApp:
         sb.grid(row=1, column=1, sticky="ns", pady=(8, 0))
         tree.configure(yscrollcommand=sb.set)
         tree.tag_configure(ST_OPEN, foreground=GOLD)
-        tree.tag_configure(ST_APPROVED, foreground="#38bdf8")
-        tree.tag_configure(ST_SENT, foreground=GREEN)
+        tree.tag_configure(ST_APPROVED, foreground=ACCENT)
+        tree.tag_configure(ST_SENT, foreground=GREEN_TEXT)
         tree.tag_configure(ST_ERROR, foreground=RED)
         self.upload_tree = tree
 
@@ -4428,8 +6058,8 @@ class LiveRankingApp:
         saved = self.settings["web"]["bind"]
         self.cmb_bind.set(saved if saved in ips else (ips[0] if ips else ""))
 
-    def set_web_url(self, text, fg=MUTED):
-        self._set(self.lbl_web_url, text=text, fg=fg)
+    def set_web_url(self, text, fg=None):
+        self._set(self.lbl_web_url, text=text, fg=fg or MUTED)
 
     def toggle_web(self):
         if self.web.running:
@@ -4463,7 +6093,7 @@ class LiveRankingApp:
         self.save_settings()
         self.btn_web.configure(text="Browser-Anzeige stoppen", bg=DARK_RED)
         self.set_web_url(f"Läuft: http://{bind}:{port}\nSchlüssel im Link verborgen, mit «Link kopieren» "
-                         f"oder «QR-Code» weitergeben.", GREEN)
+                         f"oder «QR-Code» weitergeben.", GREEN_TEXT)
         self.log(f"Browser-Anzeige läuft: http://{bind}:{port}/", tag="ok")
 
     def copy_web_url(self):
@@ -4533,7 +6163,8 @@ class LiveRankingApp:
                             "info": "  ·  ".join(x for x in (p.get("verein", ""), cat["name"] if cat else "") if x)})
         live = [self.live_labels[0].cget("text"), self.who_line(self.current_nr), self.live_labels[2].cget("text")]
         ziel = [self.ziel_labels[0].cget("text"), self.who_line(self.ziel_nr), self.ziel_labels[2].cget("text")]
-        data = {"time": time.strftime("%H:%M:%S"), "live": live, "ziel": ziel, "cats": cats, "next": nxt}
+        data = {"time": time.strftime("%H:%M:%S"), "live": live, "ziel": ziel, "cats": cats, "next": nxt,
+                "theme": THEME}
         return json.dumps(data, ensure_ascii=False).encode("utf-8")
 
     def who_line(self, nr):
@@ -4565,15 +6196,14 @@ class LiveRankingApp:
             return
 
         dlg = self._toplevel(f"Zeit manuell erfassen - Nr {nr}")
-        dlg.configure(padx=24, pady=20)
         dlg.resizable(False, False)
         cat = self.category_of(nr)
         who = self.who_text(nr)
         head = f"Nr {nr}  ({cat['name'] if cat else 'ohne Kategorie'})" + (f"  {who}" if who else "")
         if self.is_test(nr):
             head = f"Nr {nr}  (Testnummer, erscheint nicht im Ranking)"
-        tk.Label(dlg, text=head,
-                 bg=PANEL, fg=GOLD, font=self.f_side_head).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 12))
+        tk.Label(dlg, text=head, bg=PANEL, fg=GOLD, font=self.f_side_head, justify="left", anchor="w",
+                 wraplength=self.narrow_wrap()).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 12))
         for col, text in ((0, "Min"), (2, "Sek"), (4, "1/10")):
             tk.Label(dlg, text=text, bg=PANEL, fg=MUTED, font=self.f_side).grid(row=1, column=col)
 
@@ -4626,7 +6256,7 @@ class LiveRankingApp:
         self._button(btns, "Speichern", save, BLUE).grid(row=0, column=1, sticky="ew", padx=(4, 0))
         dlg.bind("<Return>", lambda e: save())
         dlg.bind("<Escape>", lambda e: dlg.destroy())
-        self._center(dlg)
+        self._place(dlg, narrow=True)
         dlg.grab_set()
         fields[0][0].focus_set()
 
@@ -5013,7 +6643,8 @@ class LiveRankingApp:
         if not results and not order:
             return
         text = f"{len(results)} Resultate" + (f" und eine Startliste mit {len(order)} Starts" if order else "")
-        if messagebox.askyesno("Gespeicherte Sitzung", f"{text} aus der letzten Sitzung gefunden.\nWiederherstellen?"):
+        if messagebox.askyesno("Gespeicherte Sitzung", f"{text} aus der letzten Sitzung gefunden.\nWiederherstellen?",
+                               default="yes"):
             self.results = results
             self.participants, self.start_order = parts, order
             self.startlist_source = str(sl.get("source", ""))
@@ -5049,9 +6680,22 @@ class LiveRankingApp:
         self.stop_reconnect()
         if self.reader is not None:
             self.reader.stop()
+        if self.cp is not None:
+            self.cp.stop()
+            self.cp.join(1.5)
         self.web.stop()
         self.save_autosave()
         self.save_settings()
+        if self.settings["net_restore"].get("pending") and IS_WINDOWS:
+            # Netzwerkkarte zurueck auf automatische Adresse (Windows fragt nach Berechtigung)
+            try:
+                self.root.withdraw()
+            except tk.TclError:
+                pass
+            ok, msg = set_dhcp(self.settings["net_restore"]["adapter"])
+            if ok:
+                self.settings["net_restore"] = {"pending": False, "adapter": ""}
+                self.save_settings()
         self.root.destroy()
 
 
