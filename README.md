@@ -1,4 +1,4 @@
-# SWV Live-Ranking
+# SWV Timing Live (SWV Live-Ranking)
 
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des
 TAG Heuer Chronoprinter CP 545 und zeigt Live-Zeit, Zieleinlauf, Ranglisten pro Kategorie,
@@ -40,3 +40,7 @@ Nicht im Repository: Startlisten, Exporte und die Dateien, die die App selbst sc
 
 `MAJOR.MINOR.PATCH`, siehe [CHANGELOG.md](CHANGELOG.md). `main` ist immer der Stand für den
 Wettkampf, grössere Umbauten laufen in eigenen Branches.
+
+## Lizenz
+
+MIT, siehe [LICENSE](LICENSE).
