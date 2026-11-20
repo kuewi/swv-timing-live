@@ -11,10 +11,17 @@ nächste Starter, Ereignis-Ticker und Statistik.
 | RS232 auswerten | Anzeigetafel-Ausgang (HL970/HL980), USB-Seriell-Adapter | nur lesen |
 | Ethernet steuern | Netzwerkkabel, THCOM08 auf Port 13500 | lesen und steuern |
 
-Im Ethernet-Modus lädt die App die nächste Startnummer aus der Startliste in den CP,
-markiert Boote als ausgeschieden, ändert Nummern auf der Strecke und bucht Zielzeiten beim
-Überholen um. Die Netzwerkkarte wird dafür auf 192.168.1.55 / 255.255.255.0 gestellt und
+Im Ethernet-Modus lädt die App die nächste Startnummer aus der Startliste in den CP und ordnet
+die Zielimpulse selbst zu (wie SkiPro). Dazu kommen Prellzeit und Mindestfahrzeit gegen Fehlimpulse,
+gesperrte Messpunkte, Nachholen fehlender Zeiten (`#RT`), Download eines Laufs (`#DL`), ein
+Reserve-CP und ein eingebauter Simulator. Jede Zeile des CP landet sofort in `rohdaten/`. Die Netzwerkkarte wird dafür auf 192.168.1.55 / 255.255.255.0 gestellt und
 beim Beenden wieder auf automatische Adresse (DHCP). Der CP hat ab 192.168.1.50.
+
+## Schnittstelle für andere Programme
+
+Die Browser-Anzeige (nur lokales Netz, mit Schlüssel) bietet zusätzlich eine API nur zum Lesen:
+`/api/v1/live`, `/api/v1/results`, `/api/v1/course`, `/api/v1/startlist`, `/api/v1/events` und
+den WebSocket `/ws` (`&stream=all` für alles in einer Nachricht). Übersicht unter `/api?key=…`.
 
 ## Start und Build
 

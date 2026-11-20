@@ -35,15 +35,15 @@ check("201 weg", [c[1] for c in app.course] == [205, 999])
 check("CP Zielnummer 202 vorgeladen", sim.next[4] == 202)
 sim.finish(); pump(1.0)
 check("Ziel CP-202 -> Nr 205", 205 in app.results and 202 not in app.results)
-# 4) unbemerkt ueberholt: CP gibt naechstes Ziel 999 (erste offene im CP waere 201->dnf? nein, Want 999)
+# 4) unbemerkt ueberholt: App erwartet 999, in Wirklichkeit kam 203
 sim.start(); pump(0.6)   # 203 startet
-sim.next[4] = 203; sim.finish(); pump(1.0)   # CP ordnet 203 zu, in Wirklichkeit kam 999
-check("203 im Ziel (falsch)", 203 in app.results)
-app.reassign_last_finish(999); pump(1.0)
-check("umgebucht: 999 hat Zeit, 203 wieder auf Strecke", 999 in app.results and 203 not in app.results
-      and [c[1] for c in app.course] == [203])
-sim.finish(); pump(1.0)   # CP hat noch CP-Nr 999 offen -> gehoert jetzt zu 203
-check("naechstes Ziel CP-999 -> Nr 203", 203 in app.results)
+sim.finish(); pump(1.0)
+check("App gibt Zielzeit dem erwarteten Boot 999", 999 in app.results and [c[1] for c in app.course] == [203])
+app.reassign_last_finish(203); pump(1.0)
+check("umgebucht: 203 hat Zeit, 999 wieder auf Strecke", 203 in app.results and 999 not in app.results
+      and [c[1] for c in app.course] == [999])
+sim.finish(); pump(1.0)
+check("naechstes Ziel -> Nr 999", 999 in app.results and not app.course)
 print("Resultate", {k: v["str"] for k, v in app.results.items()})
 print("Ticker", [t[1] for t in app.ticker[:4]])
 print("GESAMT", "OK" if all(ok) else "FEHLER")

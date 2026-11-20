@@ -69,7 +69,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.6.2"
+APP_VERSION = "1.7.0"
 DEFAULT_BAUD = 9600
 TOP_N = 5
 BLINK_SECONDS = 30
@@ -183,7 +183,7 @@ DEFAULT_SETTINGS = {
         "vergleich": True, "prognose": True, "einordnung": True, "ticker": True,
         "naechste": True, "statistik": False, "namen": True, "notizen": True,
     },
-    "collapsed": {"wettkampf": False, "verbindung": False, "speaker": False, "daten": False,
+    "collapsed": {"zeitmessung": True, "wettkampf": False, "verbindung": False, "speaker": False, "daten": False,
                   "kategorien": True, "online": True, "web": True},
     "event": {"name": "", "von": "", "bis": ""},
     "online": {
@@ -194,7 +194,9 @@ DEFAULT_SETTINGS = {
     "export_dir": "",
     "theme": "dark",
     "cats_auto": True,
-    "conn": {"mode": "rs232", "cp_ip": "", "adapter": ""},
+    "timing": {"prell_start_ms": 300, "prell_finish_ms": 300, "min_run_s": 0, "lock_start": False,
+               "lock_finish": False},
+    "conn": {"mode": "rs232", "cp_ip": "", "cp_ip_b": "", "adapter": ""},
     "net_restore": {"pending": False, "adapter": ""},
 }
 
@@ -1694,11 +1696,42 @@ WEB_JS = r"""
     x.onerror=finish;x.ontimeout=finish;x.onabort=finish;
     try{x.send();}catch(e){finish();}
   }
+  // WebSocket: Daten kommen sofort; faellt er aus, Abfrage jede Sekunde wie bisher
+  var ws=null, wsOk=false, polling=false;
+  function startPolling(){if(!polling){polling=true;tick();}}
+  function connectWs(){
+    if(!window.WebSocket){startPolling();return;}
+    try{ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?key='+encodeURIComponent(key));}
+    catch(e){startPolling();return;}
+    ws.onmessage=function(ev){
+      try{var t=ev.data,d=JSON.parse(t);wsOk=true;lastOk=Date.now();lastTry=Date.now();
+        if(t!==last){last=t;render(d);}document.getElementById('state').textContent='Live verbunden, Stand '+d.time;}catch(e){}
+    };
+    ws.onclose=function(){wsOk=false;startPolling();setTimeout(connectWs,10000);};
+    ws.onerror=function(){try{ws.close();}catch(e){}};
+  }
+  var tick0=tick; tick=function(){if(wsOk){polling=false;busy=false;return;}tick0();};
   // Notbremse: falls die Abfrageschleife trotzdem stehen bleibt, neu starten
-  setInterval(function(){if(busy&&Date.now()-lastTry>8000){busy=false;tick();}else if(!busy&&Date.now()-lastTry>15000){tick();}state();},2000);
-  tick();
+  setInterval(function(){if(wsOk){state();return;}if(busy&&Date.now()-lastTry>8000){busy=false;tick();}else if(!busy&&Date.now()-lastTry>15000){tick();}state();},2000);
+  connectWs();
+  setTimeout(function(){if(!wsOk)startPolling();},1500);
 })();
 """
+
+
+API_DOC = """<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><title>SWV Live-Ranking API</title>
+<link rel="stylesheet" href="/app.css?key=__KEY__"></head><body><main style="padding:24px;max-width:900px">
+<h1>SWV Live-Ranking API</h1>
+<p>Nur lesen, nur im lokalen Netz, jede Abfrage braucht <code>?key=…</code>. Antworten im JSON-Format (UTF-8).</p>
+<table>
+<tr><td><code>GET /api/v1/live</code></td><td>laufendes Boot, Laufzeit, letzter Zieleinlauf, Wettkampf</td></tr>
+<tr><td><code>GET /api/v1/results</code></td><td>Ranglisten pro Kategorie mit Rang, Zeit, Strafpunkten, nicht klassiert (DNS, DNF, DSQ)</td></tr>
+<tr><td><code>GET /api/v1/course</code></td><td>Boote auf der Fahrstrecke mit Startzeit und Laufzeit</td></tr>
+<tr><td><code>GET /api/v1/startlist</code></td><td>nächste Starter in Startreihenfolge</td></tr>
+<tr><td><code>GET /api/v1/events</code></td><td>die letzten 30 Ereignisse des Tickers</td></tr>
+<tr><td><code>WS /ws</code></td><td>WebSocket: bei jeder Änderung der Stand der Browser-Anzeige.
+Mit <code>&amp;stream=all</code> zusätzlich live, results, course, startlist und events in einer Nachricht.</td></tr>
+</table></main></body></html>"""
 
 
 class _WebHandler(BaseHTTPRequestHandler):
@@ -1740,6 +1773,12 @@ class _WebHandler(BaseHTTPRequestHandler):
             ctype, data = "text/css; charset=utf-8", WEB_CSS.encode("utf-8")
         elif parts.path == "/data":
             ctype, data = "application/json; charset=utf-8", lan.snapshot
+        elif parts.path == "/ws":
+            return self._websocket(urllib.parse.parse_qs(parts.query).get("stream", ["display"])[0], host)
+        elif parts.path in ("/api", "/api/"):
+            ctype, data = "text/html; charset=utf-8", API_DOC.replace("__KEY__", lan.key).encode("utf-8")
+        elif parts.path.startswith("/api/v1/") and parts.path[8:] in lan.api:
+            ctype, data = "application/json; charset=utf-8", lan.api[parts.path[8:]]
         else:
             return self._deny(404)
         self.send_response(200)
@@ -1749,12 +1788,81 @@ class _WebHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        if parts.path.startswith("/api/v1/"):
+            self.send_header("Access-Control-Allow-Origin", "*")  # nur lesen, Schluessel noetig
         self.send_header("Content-Security-Policy",
-                         "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+                         f"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ws://{host}; "
                          "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
         self.end_headers()
         if send_body:
             self.wfile.write(data)
+
+    def _websocket(self, stream, host):
+        """WebSocket (RFC 6455), nur Server -> Browser: schickt bei jeder Aenderung den aktuellen Stand."""
+        import base64
+        import hashlib
+        lan = self.server.lan
+        ws_key = self.headers.get("Sec-WebSocket-Key", "")
+        origin = (self.headers.get("Origin") or "").lower()
+        if (self.headers.get("Upgrade", "").lower() != "websocket" or not ws_key
+                or (origin and urllib.parse.urlsplit(origin).netloc not in lan.allowed_hosts)):
+            return self._deny(400 if not origin else 403)
+        with lan.cond:
+            if lan.ws_count >= 20:
+                return self._deny(503)
+            lan.ws_count += 1
+        try:
+            accept = base64.b64encode(hashlib.sha1((ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+                                                   .encode()).digest()).decode()
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+            self.wfile.flush()
+            sock = self.connection
+            sock.settimeout(0.2)
+            sent = -1
+            last_ping = time.time()
+            while lan.running:
+                with lan.cond:
+                    if lan.version == sent:
+                        lan.cond.wait(1.0)
+                    version = lan.version
+                    payload = lan.snapshot if stream != "all" else lan.bundle
+                if version != sent:
+                    self._ws_send(sock, payload, 0x1)
+                    sent = version
+                if time.time() - last_ping > 20:
+                    self._ws_send(sock, b"", 0x9)
+                    last_ping = time.time()
+                try:
+                    head = sock.recv(2)
+                except socket.timeout:
+                    continue
+                if not head or (head[0] & 0x0F) == 0x8:
+                    break  # Browser hat geschlossen
+                ln = head[1] & 0x7F
+                if ln == 126:
+                    ln = int.from_bytes(sock.recv(2), "big")
+                elif ln == 127:
+                    ln = int.from_bytes(sock.recv(8), "big")
+                if ln > 4096:
+                    break
+                sock.recv(4 + ln if head[1] & 0x80 else ln)  # Daten vom Browser werden ignoriert
+        except OSError:
+            pass
+        finally:
+            with lan.cond:
+                lan.ws_count -= 1
+            self.close_connection = True
+
+    @staticmethod
+    def _ws_send(sock, data, opcode):
+        n = len(data)
+        head = bytes([0x80 | opcode]) + (bytes([n]) if n < 126 else bytes([126]) + n.to_bytes(2, "big")
+                                          if n < 65536 else bytes([127]) + n.to_bytes(8, "big"))
+        sock.sendall(head + data)
 
 
 class LanServer:
@@ -1765,7 +1873,23 @@ class LanServer:
         self.key = ""
         self.allowed_hosts = set()
         self.snapshot = b"{}"
+        self.bundle = b"{}"
+        self.api = {}
+        self.version = 0
+        self.ws_count = 0
+        self.cond = threading.Condition()
         self.url = ""
+
+    def publish(self, snapshot, api):
+        """Neuer Stand fuer Browser-Anzeige, API und WebSocket."""
+        with self.cond:
+            changed = snapshot != self.snapshot or api != self.api
+            self.snapshot, self.api = snapshot, api
+            if changed:
+                self.bundle = b'{"display":' + snapshot + b"," + b",".join(
+                    b'"' + k.encode() + b'":' + v for k, v in api.items()) + b"}"
+                self.version += 1
+                self.cond.notify_all()
 
     @property
     def running(self):
@@ -1790,6 +1914,8 @@ class LanServer:
     def stop(self):
         if self.httpd is not None:
             httpd, self.httpd = self.httpd, None
+            with self.cond:
+                self.cond.notify_all()
             httpd.shutdown()
             httpd.server_close()
 
@@ -1852,7 +1978,11 @@ HEARTBEAT_S = 15
 HEARTBEAT_LOST_S = 30
 SERIAL_SILENCE_S = 5        # RS232: so lange ohne Laufzeit waehrend eines Laufs = Abbruch
 
-_RE_TIME = re.compile(r"^(T[N\-\*\+=C]|TI)\s+(\d+)\s+(\d+)\s+(M?)(\d+)\s+(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)\s*(\d*)")
+_RE_TIME = re.compile(r"^([TA][N\-\*\+=C]|TI)\s+(\d+)\s+(\d+)\s+(M?)(\d+)\s+(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)\s*(\d*)")
+_RE_DS = re.compile(r"^DS\s+(\d+)")
+_RE_DE = re.compile(r"^DE\s+(\d+)")
+RAW_DIR = "rohdaten"
+EPOCH_2000 = datetime.date(2000, 1, 1)
 _RE_RR = re.compile(r"^(RR|GR)\s+(\d+)\s+(\d+)\s+([\d:.]+)\s*$")
 _RE_OP = re.compile(r"^OP\s+(\d+)\s+(T?)\s*(\d+)\s*(.*)$")
 _RE_CL = re.compile(r"^CL\s+(\d+)")
@@ -1878,9 +2008,19 @@ def parse_thcom(raw):
     m = _RE_TIME.match(t)
     if m:
         h, mi, sec = int(m.group(6)), int(m.group(7)), float(m.group(8))
+        tod = h * 3600 + mi * 60 + sec
+        day = int(m.group(9)) if m.group(9) else None
+        if day is None:  # ohne Tagesangabe: heute
+            day = (datetime.date.today() - EPOCH_2000).days
         return {"kind": "time", "type": m.group(1), "nr": int(m.group(2)), "seq": int(m.group(3)),
-                "manual": bool(m.group(4)), "ch": int(m.group(5)), "tod": h * 3600 + mi * 60 + sec,
-                "day": int(m.group(9)) if m.group(9) else None, "text": t}
+                "manual": bool(m.group(4)), "ch": int(m.group(5)), "tod": tod, "day": day,
+                "abs": day * 86400 + tod, "answer": m.group(1).startswith("A"), "text": t}
+    m = _RE_DS.match(t)
+    if m:
+        return {"kind": "dlstart", "run": int(m.group(1))}
+    m = _RE_DE.match(t)
+    if m:
+        return {"kind": "dlend", "run": int(m.group(1))}
     m = _RE_RR.match(t)
     if m:
         secs = parse_time(m.group(4))
@@ -1917,6 +2057,14 @@ def trunc_secs(value, digits):
 def local_tod():
     lt = time.localtime()
     return lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec + (time.time() % 1)
+
+
+def local_abs():
+    """Lokale Zeit in Sekunden ab 01.01.2000 wie die Zeiten des CP (laeuft ueber Mitternacht weiter)."""
+    now = time.time()
+    lt = time.localtime(now)
+    day = (datetime.date(lt.tm_year, lt.tm_mon, lt.tm_mday) - EPOCH_2000).days
+    return day * 86400 + lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec + (now % 1)
 
 
 def cp_hosts():
@@ -2062,6 +2210,298 @@ class CPClient(threading.Thread):
             if self.stop_event.wait(2):
                 break
         self.q.put(("eth_disconnected", self.host, self))
+
+
+# --------------------------------------------------------------------------- #
+# Eingebauter Simulator eines CP 545 (THCOM08 ueber TCP auf 127.0.0.1)
+# --------------------------------------------------------------------------- #
+class SimCP:
+    """Verhaelt sich wie der CP 545 in den Tests von Stefan: #WP 026 setzt die naechste Start- bzw.
+    Zielnummer, #WC 013 wird mit AK R abgelehnt, #RT und #DL liefern gespeicherte Zeiten."""
+
+    def __init__(self, port=0):
+        self.lock = threading.Lock()
+        self.clients = []
+        self.next = {CH_START: 1, CH_FINISH: None}
+        self.seq = {CH_START: 0, CH_FINISH: 0}
+        self.course = []          # [(nr, abs, seq)]
+        self.recs = {}            # (ch, seq) -> [typ, nr, abs]
+        self.results = []
+        self.run = 1
+        self.drop_next = False
+        self.sock = socket.socket()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", port))
+        self.sock.listen(4)
+        self.port = self.sock.getsockname()[1]
+        self.alive = True
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    @staticmethod
+    def now_abs():
+        return local_abs()
+
+    @staticmethod
+    def fmt(typ, nr, seq, ch, abs_t):
+        day, tod = divmod(abs_t, 86400)
+        h, r = divmod(tod, 3600)
+        m, sec = divmod(r, 60)
+        return f"{typ} {nr:4d} {seq:4d} M{ch} {int(h):02d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
+
+    def _accept(self):
+        while self.alive:
+            try:
+                c, _a = self.sock.accept()
+            except OSError:
+                return
+            self.clients.append(c)
+            threading.Thread(target=self._serve, args=(c,), daemon=True).start()
+
+    def send(self, line, c=None):
+        if c is None and self.drop_next and not line.startswith(("AK", "&P", "SN", "!T")):
+            self.drop_next = False
+            return  # simuliert eine verlorene Zeile
+        for cl in ([c] if c else list(self.clients)):
+            try:
+                cl.sendall((line + "\r\n").encode("latin-1"))
+            except OSError:
+                pass
+
+    def _serve(self, c):
+        buf = b""
+        while self.alive:
+            try:
+                d = c.recv(1024)
+            except OSError:
+                break
+            if not d:
+                break
+            buf += d
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                try:
+                    self._cmd(line.decode("latin-1").strip(), c)
+                except Exception:
+                    self.send("AK F", c)
+        if c in self.clients:
+            self.clients.remove(c)
+
+    def _cmd(self, t, c):
+        p = t.split()
+        if not p:
+            return
+        if t == "#SN":
+            self.send("SN 00000 CP545 SIMULATOR", c)
+        elif t == "#!T":
+            tod = self.now_abs() % 86400
+            self.send(f"!T {int(tod // 3600):02d}:{int(tod % 3600 // 60):02d}:{int(tod % 60):02d} "
+                      f"{time.strftime('%d/%m/%y')}", c)
+        elif p[:2] == ["#RP", "001"]:
+            self.send("&P 001 2", c)
+        elif p[:2] == ["#RP", "003"]:
+            self.send(f"&P 003 {self.run:02d} {self.run + 1:02d}", c)
+        elif p[:2] == ["#RP", "026"]:
+            ch = int(p[2])
+            self.send(f"&P 026 {ch:02d} {self.next.get(ch) or 0:04d}", c)
+        elif p[:2] == ["#WP", "026"] and len(p) >= 4:
+            self.next[int(p[2])] = int(p[3])
+        elif p[0] == "#RT" and len(p) >= 3:
+            r = self.recs.get((int(p[2]), int(p[1])))
+            if r:
+                self.send(self.fmt("A" + r[0][1], r[1], int(p[1]), int(p[2]), r[2]), c)
+        elif p[0] == "#DL":
+            self.send(f"DS {self.run:02d}  00  NET TIME", c)
+            for (ch, seq), r in sorted(self.recs.items(), key=lambda x: x[1][2]):
+                self.send(self.fmt("A" + r[0][1], r[1], seq, ch, r[2]), c)
+            self.send(f"DE {self.run:02d}", c)
+        elif t.startswith("#WC 013"):
+            self.send("AK R", c)
+            return
+        elif t.startswith("#"):
+            pass
+        else:
+            return
+        self.send("AK C", c)
+
+    def start(self):
+        with self.lock:
+            nr = self.next[CH_START]
+            self.next[CH_START] = nr + 1
+            self.seq[CH_START] += 1
+            t = self.now_abs()
+            self.recs[(CH_START, self.seq[CH_START])] = ["TN", nr, t]
+            self.course.append((nr, t, self.seq[CH_START]))
+            self.send(self.fmt("TN", nr, self.seq[CH_START], CH_START, t))
+            return nr
+
+    def finish(self):
+        with self.lock:
+            t = self.now_abs()
+            self.seq[CH_FINISH] += 1
+            seq = self.seq[CH_FINISH]
+            if not self.course:
+                self.recs[(CH_FINISH, seq)] = ["TN", 0, t]
+                self.send(self.fmt("TN", 0, seq, CH_FINISH, t))
+                return None
+            want = self.next[CH_FINISH]
+            st = next((x for x in self.course if x[0] == want), self.course[0])
+            self.next[CH_FINISH] = None
+            self.course.remove(st)
+            self.recs[(CH_FINISH, seq)] = ["TN", st[0], t]
+            self.send(self.fmt("TN", st[0], seq, CH_FINISH, t))
+            secs = int((t - st[1]) * 100) / 100
+            self.results.append((st[0], secs))
+            rank = 1 + sum(1 for _n, s2 in self.results if s2 < secs)
+            m, sec = divmod(secs, 60)
+            self.send(f"RR {rank:4d} {st[0]:4d}        " + (f"{int(m)}:{sec:08.5f}" if m else f"{sec:.5f}"))
+            return st[0]
+
+    def replay_line(self, line):
+        self.send(line)
+
+    def close(self):
+        self.alive = False
+        for c in list(self.clients):
+            try:
+                c.shutdown(socket.SHUT_RDWR)
+                c.close()
+            except OSError:
+                pass
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+# --------------------------------------------------------------------------- #
+# PDF ohne Zusatzmodule: A4, Helvetica, Tabellen mit Seitenumbruch
+# --------------------------------------------------------------------------- #
+_HELV_W = {c: 0.556 for c in "0123456789"}
+_HELV_W.update({" ": 0.278, ".": 0.278, ",": 0.278, ":": 0.278, "-": 0.333, "(": 0.333, ")": 0.333, "+": 0.584,
+                "/": 0.278, "'": 0.191})
+
+
+def pdf_text_width(text, size, bold=False):
+    w = 0.0
+    for ch in text:
+        if ch in _HELV_W:
+            w += _HELV_W[ch]
+        elif ch.isupper():
+            w += 0.722 if bold else 0.667
+        elif ch in "iljtf":
+            w += 0.278
+        elif ch in "mw":
+            w += 0.833
+        else:
+            w += 0.611 if bold else 0.556
+    return w * size
+
+
+class PdfDoc:
+    W, H, M = 595.28, 841.89, 42.0
+
+    def __init__(self, title, subtitle=""):
+        self.title, self.subtitle = title, subtitle
+        self.pages = []
+        self.ops = None
+        self.y = 0
+        self.new_page()
+
+    @staticmethod
+    def _esc(text):
+        raw = str(text).encode("cp1252", "replace")
+        return raw.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+
+    def text(self, x, y, text, size=9.5, bold=False, align="left", gray=0.0):
+        if align == "right":
+            x -= pdf_text_width(str(text), size, bold)
+        self.ops.append(b"%.3f g BT /%s %.1f Tf %.2f %.2f Td (" % (gray, b"F2" if bold else b"F1", size, x, y)
+                        + self._esc(text) + b") Tj ET")
+
+    def line(self, x1, y1, x2, y2, gray=0.75, width=0.5):
+        self.ops.append(b"%.3f G %.2f w %.2f %.2f m %.2f %.2f l S" % (gray, width, x1, y1, x2, y2))
+
+    def new_page(self):
+        self.ops = []
+        self.pages.append(self.ops)
+        self.text(self.M, self.H - self.M - 4, self.title, 15, True)
+        if self.subtitle:
+            self.text(self.M, self.H - self.M - 22, self.subtitle, 10, gray=0.35)
+        self.line(self.M, self.H - self.M - 30, self.W - self.M, self.H - self.M - 30, 0.6, 0.8)
+        self.y = self.H - self.M - 48
+
+    def need(self, h):
+        if self.y - h < self.M + 24:
+            self.new_page()
+
+    def heading(self, text):
+        self.need(40)
+        self.y -= 6
+        self.text(self.M, self.y, text, 12, True)
+        self.y -= 16
+
+    def table(self, cols, rows, header=True):
+        """cols: [(titel, breite_anteil, ausrichtung)]; rows: Listen von Texten."""
+        width = self.W - 2 * self.M
+        xs, x = [], self.M
+        for _t, frac, _a in cols:
+            xs.append(x)
+            x += frac * width
+
+        def draw(vals, bold, gray):
+            for (t, frac, align), cx, v in zip(cols, xs, vals):
+                v = str(v)
+                limit = frac * width - 6
+                while v and pdf_text_width(v, 9.5, bold) > limit:
+                    v = v[:-2] + "…" if len(v) > 2 else ""
+                self.text(cx + frac * width - 4 if align == "right" else cx, self.y, v, 9.5, bold, align, gray)
+            self.y -= 14
+
+        if header:
+            self.need(30)
+            draw([c[0] for c in cols], True, 0.35)
+            self.line(self.M, self.y + 10, self.W - self.M, self.y + 10)
+        for r in rows:
+            if self.y - 14 < self.M + 24:
+                self.new_page()
+                if header:
+                    draw([c[0] for c in cols], True, 0.35)
+                    self.line(self.M, self.y + 10, self.W - self.M, self.y + 10)
+            draw(r, False, 0.0)
+        self.y -= 6
+
+    def note(self, text, gray=0.35):
+        self.need(16)
+        self.text(self.M, self.y, text, 9, gray=gray)
+        self.y -= 14
+
+    def build(self, footer=""):
+        objs = [b"<< /Type /Catalog /Pages 2 0 R >>", None,
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"]
+        kids = []
+        n = len(self.pages)
+        for i, ops in enumerate(self.pages, 1):
+            foot = f"{footer}   Seite {i} von {n}".strip()
+            stream = b"\n".join(ops + [b"0.4 g BT /F1 8 Tf %.2f %.2f Td (" % (self.M, self.M - 8)
+                                       + self._esc(foot) + b") Tj ET"])
+            objs.append(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream")
+            content_id = len(objs)
+            objs.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] /Resources << /Font << /F1 3 0 R "
+                        b"/F2 4 0 R >> >> /Contents %d 0 R >>" % (self.W, self.H, content_id))
+            kids.append(len(objs))
+        objs[1] = b"<< /Type /Pages /Kids [" + b" ".join(b"%d 0 R" % k for k in kids) + b"] /Count %d >>" % n
+        out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+        offsets = []
+        for i, o in enumerate(objs, 1):
+            offsets.append(len(out))
+            out += b"%d 0 obj\n" % i + o + b"\nendobj\n"
+        xref = len(out)
+        out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+        for off in offsets:
+            out += b"%010d 00000 n \n" % off
+        out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+        return bytes(out)
 
 
 # --------------------------------------------------------------------------- #
@@ -2311,7 +2751,13 @@ class LiveRankingApp:
         self.last_start_nr = None
         self.last_finish_key = None
         self.course = []            # [(start_tod, nr, key)] in erwarteter Zielreihenfolge
-        self.dnf = set()
+        self.status = {}            # nr -> "DNS" | "DNF" | "DSQ"
+        self.cp_lastseq = {}        # (geraet, lauf, eingang) -> letzte Seq
+        self.cp_download = None     # Zeiten waehrend #DL
+        self.backup_seen = {}
+        self.cp_b = None            # Reserve-CP
+        self._quiet = False
+        self.sim = None             # eingebauter Simulator
         self._eth_tick_job = None
         self._course_menu = None
         self._next_seen = False
@@ -2749,13 +3195,16 @@ class LiveRankingApp:
         self.right_panel.grid_propagate(False)
         self.right_panel.pack_propagate(False)
         self.panel_next, self.txt_next = self._panel(self.right_panel, "Als nächstes am Start", NEXT_COUNT * 2 + 3,
-                                                     scroll=True, hint="Doppelklick: Nummer darunter einfügen")
+                                                     scroll=True, hint="Doppelklick: einfügen · Rechtsklick: DNS")
         self.txt_next.bind("<Double-Button-1>", self.on_next_double)
+        self.txt_next.bind("<Button-3>", self.on_next_right)
+        self.txt_next.tag_configure("warn", foreground=ORANGE)
         self.txt_next.bind("<Button-1>", lambda e: "break")
         self.panel_course, self.txt_course = self._panel(self.right_panel, "Auf Fahrstrecke", 8, scroll=True,
                                                          hint="Klick auf ein Boot: Aktionen")
         self.txt_course.bind("<Button-1>", self.on_course_click)
         self.txt_course.tag_configure("next", foreground=GREEN_TEXT, font=self.f_panel_bold)
+        self.txt_course.tag_configure("warn", foreground=ORANGE)
         self.panel_note, self.txt_note = self._panel(self.right_panel, "Notiz", 3)
         self.panel_note.set_outline(GOLD, 2)
         self.txt_note.configure(font=self.f_ticker, fg=TEXT)
@@ -2891,12 +3340,49 @@ class LiveRankingApp:
                                              f"unter IPv4 › Alternative Konfiguration {PC_IP} / {PC_MASK} "
                                              "eintragen.",
                                         fg=MUTED, wraplength=wrap, justify="left")
-        self.lbl_eth_hint.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self.lbl_eth_hint.grid(row=7, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self._label(eth, "Reserve-CP (optional)").grid(row=4, column=0, columnspan=2, sticky="w")
+        self.cmb_cp_b = self._combo(eth, state="readonly")
+        self.cmb_cp_b.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(2, 6))
+        tools = tk.Frame(eth, bg=PANEL)
+        tools.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        tools.columnconfigure(0, weight=1)
+        tools.columnconfigure(1, weight=1)
+        self._button(tools, "Lauf vom CP laden", self.cp_download_run).grid(row=0, column=0, sticky="ew",
+                                                                             padx=(0, 3))
+        self._button(tools, "Simulator", self.open_simulator).grid(row=0, column=1, sticky="ew", padx=(3, 0))
         self.btn_connect = self._button(b, "Verbinden", self.toggle_connection, GREEN)
         self.btn_connect.grid(row=2, column=0, sticky="ew")
         self.show_conn_frames()
         self.fill_eth_combos()
         self.set_conn_status("nicht verbunden", MUTED)
+
+        # Zeitmessung (Ethernet): Fehlimpulse, Sperren, Rohzeiten
+        b = self._section(side, "Zeitmessung", "zeitmessung")
+        b.columnconfigure(0, weight=1)
+        ts = self.settings["timing"]
+        self.timing_entries = {}
+        rows = (("prell_start_ms", "Prellzeit Start (ms)"), ("prell_finish_ms", "Prellzeit Ziel (ms)"),
+                ("min_run_s", "Mindestfahrzeit (s), 0 = aus"))
+        for i, (key, label) in enumerate(rows):
+            self._label(b, label).grid(row=i, column=0, sticky="w", pady=2)
+            e = self._entry(b, width=7)
+            e.insert(0, f"{ts[key]:g}")
+            e.grid(row=i, column=1, sticky="e", pady=2)
+            e.bind("<FocusOut>", lambda ev: self.save_timing())
+            e.bind("<Return>", lambda ev: self.save_timing())
+            self.timing_entries[key] = e
+        self.timing_switches = {}
+        for i, (key, label) in enumerate((("lock_start", "Start sperren"), ("lock_finish", "Ziel sperren")), start=3):
+            self._label(b, label).grid(row=i, column=0, sticky="w", pady=(int(5 * self.ui_scale), 0))
+            sw = Switch(b, command=lambda k=key: self.toggle_lock(k), scale=self.ui_scale, on=ts[key])
+            sw.grid(row=i, column=1, sticky="e", pady=(int(5 * self.ui_scale), 0))
+            self.timing_switches[key] = sw
+        self._label(b, "Gilt im Ethernet-Modus. Gesperrte und ungültige Impulse erscheinen unter «Auf "
+                       "Fahrstrecke» und lassen sich dort zuordnen.", fg=MUTED, wraplength=wrap,
+                    justify="left").grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self._button(b, "Resultate aus Rohzeiten neu berechnen", self.ask_recompute).grid(
+            row=6, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         # Startliste
         b = self._section(side, "Startliste")
@@ -3039,10 +3525,12 @@ class LiveRankingApp:
         self._button(b, "Resultate als CSV exportieren", self.export_csv, GREEN).grid(row=0, column=0, sticky="ew")
         self._button(b, "Export pro Verein (USB-Stick)", self.open_club_export, GREEN).grid(
             row=1, column=0, sticky="ew", pady=(6, 0))
+        self.btn_pdf = self._button(b, "PDF und Drucken ▾", self.open_pdf_menu, GREEN)
+        self.btn_pdf.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         self._button(b, "Resultate zurücksetzen", self.reset_results, DARK_RED).grid(
-            row=2, column=0, sticky="ew", pady=(6, 0))
+            row=3, column=0, sticky="ew", pady=(6, 0))
         self.lbl_count = self._label(b, "0 Resultate erfasst", fg=MUTED)
-        self.lbl_count.grid(row=3, column=0, sticky="w", pady=(4, 0))
+        self.lbl_count.grid(row=4, column=0, sticky="w", pady=(4, 0))
 
         # Log
         logbox = RoundedPanel(side, fill=PANEL, radius=int(12 * self.ui_scale), fit_height=True)
@@ -3084,6 +3572,46 @@ class LiveRankingApp:
     def set_conn_status(self, text, color):
         self._conn_status = (text, color)
         self._set(self.lbl_conn_head, text=text, fg=color)
+
+    # ---------------- Zeitmessung ---------------- #
+    def save_timing(self):
+        ts = self.settings["timing"]
+        for key, e in self.timing_entries.items():
+            try:
+                val = float(e.get().replace(",", "."))
+                if val < 0 or val > (100000 if key.endswith("ms") else 3600):
+                    raise ValueError
+            except ValueError:
+                e.delete(0, "end")
+                e.insert(0, f"{ts[key]:g}")
+                continue
+            val = int(val) if key.endswith("ms") else val
+            if val != ts[key]:
+                ts[key] = val
+                self.log(f"Zeitmessung: {key.replace('_', ' ')} = {val:g}", tag="ok")
+        self.save_settings()
+
+    def toggle_lock(self, key):
+        ts = self.settings["timing"]
+        ts[key] = not ts[key]
+        self.save_settings()
+        sw = self.timing_switches.get(key)
+        if sw is not None and sw.on != ts[key]:
+            sw.set(ts[key])
+        what = "Start" if key == "lock_start" else "Ziel"
+        self.log(f"{what} {'gesperrt: Impulse werden ohne Nummer gespeichert' if ts[key] else 'freigegeben'}",
+                 tag="warn" if ts[key] else "ok")
+        self.add_ticker(f"{what} {'gesperrt' if ts[key] else 'freigegeben'}", "warn" if ts[key] else None)
+        self.update_panels()
+
+    def ask_recompute(self):
+        if not any(k[2] == CH_FINISH for k in self.cp_recs):
+            messagebox.showinfo("Neu berechnen", "Es gibt noch keine Rohzeiten vom CP (Ethernet).")
+            return
+        if messagebox.askyesno("Neu berechnen", "Alle Fahrzeiten vom CP aus den gespeicherten Rohzeiten neu "
+                                                "berechnen?\nVon Hand erfasste Zeiten bleiben."):
+            changed, removed = self.recompute_from_raw()
+            messagebox.showinfo("Neu berechnen", f"{changed} Zeiten geändert oder ergänzt, {removed} entfernt.")
 
     # ---------------- Helles / dunkles Design ---------------- #
     def toggle_theme(self):
@@ -3340,8 +3868,11 @@ class LiveRankingApp:
                 l_sub.grid(row=r_sub, column=0, columnspan=4, sticky="nw", padx=(14, 14))
                 f.rowconfigure(r_main, weight=1)
                 f.rowconfigure(r_sub, weight=0)
-                rows_w.append({"txt": l_txt, "arrow": l_arr, "time": l_time, "pen": l_pen, "sub": l_sub,
-                               "nr": None, "rank": None, "color": TEXT, "sub_full": ""})
+                row_d = {"txt": l_txt, "arrow": l_arr, "time": l_time, "pen": l_pen, "sub": l_sub,
+                         "nr": None, "rank": None, "color": TEXT, "sub_full": ""}
+                for wdg in (l_txt, l_arr, l_time, l_sub):
+                    wdg.bind("<Button-3>", lambda e, r=row_d: self.card_row_menu(r, e))
+                rows_w.append(row_d)
             card = {"cat": cat, "frame": f, "box": box, "title": title, "rows": rows_w}
             title.bind("<ButtonPress-1>", lambda e, c=card: self.drag_start(c))
             title.bind("<B1-Motion>", self.drag_motion)
@@ -3354,6 +3885,17 @@ class LiveRankingApp:
         if hasattr(self, "lbl_count"):
             self.apply_show_settings()
         self.schedule_font_scale()
+
+    def card_row_menu(self, row, event):
+        nr = row.get("nr")
+        if nr is None:
+            return
+        menu = self._menu()
+        menu.add_command(label=self.order_label(nr), state="disabled")
+        menu.add_separator()
+        menu.add_command(label="Disqualifiziert (DSQ)", command=lambda: self.set_status(nr, "DSQ"))
+        menu.add_command(label="Teilnehmer bearbeiten ...", command=lambda: self.open_participant_dialog(nr))
+        self._popup(menu, event)
 
     def layout_cards(self):
         nc = max(1, self.card_cols)
@@ -3369,6 +3911,10 @@ class LiveRankingApp:
         title = f"{cat['name']}   {cat['min']}-{cat['max']}"
         if cat.get("rekord"):
             title += f"   Rekord {cat['rekord']}s"
+        nk = [f"{nr} {code}" for nr, code in sorted(self.status.items())
+              if (self.category_of(nr) or {}).get("name") == cat["name"]]
+        if nk:
+            title += "   nicht klassiert: " + ", ".join(nk[:4]) + (" ..." if len(nk) > 4 else "")
         return title
 
     # ---------------- Karten verschieben (Punkt 7) ---------------- #
@@ -3663,14 +4209,17 @@ class LiveRankingApp:
         if self._rank_cache is None:
             groups = {c["name"]: [] for c in self.categories}
             for nr in self.results:
+                if self.status.get(nr) in ("DNF", "DSQ", "DNS"):
+                    continue  # nicht klassiert
                 cat = self.category_of(nr)
                 if cat:
-                    groups[cat["name"]].append((round(self.total_secs(nr), 3), nr))
+                    groups[cat["name"]].append(nr)
             out = {}
-            for name, entries in groups.items():
-                entries.sort()
+            for name, nrs in groups.items():
+                # gleiche angezeigte Zeit = gleicher Rang; bei Gleichstand hoehere Startnummer zuerst (wie SkiPro)
+                entries = sorted(((round(self.total_secs(nr) + 1e-9, 2), -nr, nr) for nr in nrs))
                 ranked, prev, rank = [], None, 0
-                for i, (t, nr) in enumerate(entries):
+                for i, (t, _neg, nr) in enumerate(entries):
                     if t != prev:
                         rank, prev = i + 1, t
                     ranked.append((rank, nr, t))
@@ -3713,6 +4262,8 @@ class LiveRankingApp:
             cat = card["cat"]
             ranked = self.ranking(cat)[:TOP_N]
             top = {nr for _, nr, _ in ranked}
+            if hasattr(self, "card_inner_w"):
+                self._set_fit(card["title"], self.card_title(cat), self.f_title, self.card_inner_w)
             prev = self.prev_top.get(cat["name"])
             if not initial and prev is not None:
                 for nr in top - prev:
@@ -3848,6 +4399,8 @@ class LiveRankingApp:
                             f"({delta:+.2f} s)", None)
 
     def add_ticker(self, text, tag):
+        if self._quiet:
+            return
         self.ticker.insert(0, (time.strftime("%H:%M"), text, tag))
         del self.ticker[TICKER_MAX:]
         self.update_panels()
@@ -3964,7 +4517,7 @@ class LiveRankingApp:
         on_course = {n for _t, n, _k in self.course} if self.eth_mode() else set()
         out = []
         for nr in self.start_order[idx + 1:]:
-            if nr not in self.results and nr not in on_course and nr not in self.dnf:
+            if nr not in self.results and nr not in on_course and nr not in self.status:
                 out.append(nr)
                 if len(out) >= count:
                     break
@@ -4108,12 +4661,17 @@ class LiveRankingApp:
     # ---------------- Auf Fahrstrecke ---------------- #
     def update_course_panel(self):
         """Wie ein Fluss von oben nach unten: oben das zuletzt gestartete Boot, unten das Boot,
-        das als naechstes ins Ziel kommt, darunter der letzte Zieleinlauf."""
+        das als naechstes ins Ziel kommt, darunter der letzte Zieleinlauf und Impulse ohne Zuordnung."""
         if not hasattr(self, "txt_course"):
             return
         mode = self.settings["wettkampf"]
+        ts = self.settings["timing"]
         seg = []
-        if self.cp is None or not self.cp.connected:
+        locks = [w for w, k in (("Start", "lock_start"), ("Ziel", "lock_finish")) if ts[k]]
+        if locks:
+            seg.append((f"{' und '.join(locks)} gesperrt\n", "warn"))
+        online = self.cp is not None and self.cp.connected
+        if not online and not self.course:
             seg.append(("Keine Verbindung zum CP (Ethernet)\n", "sub"))
         elif not self.course:
             seg.append(("Kein Boot auf der Strecke\n", "sub"))
@@ -4132,8 +4690,19 @@ class LiveRankingApp:
         rec = self.cp_recs.get(self.last_finish_key) if self.last_finish_key else None
         if rec and rec["status"] == "ok" and rec["nr"] in self.results:
             seg.append(("\n", "sub"))
-            seg.append((f"Zuletzt im Ziel: Nr {rec['nr']}  {self.results[rec['nr']]['str']}s", "time"))
-        shape = (tuple(c[1] for c in self.course), self.last_finish_key)
+            seg.append((f"Zuletzt im Ziel: Nr {rec['nr']}  {self.results[rec['nr']]['str']}s\n", ("time", "lastfin")))
+        pend = self.pending_impulses()
+        self._pending_keys = pend
+        if pend:
+            seg.append(("\nImpulse ohne Zuordnung\n", "sub"))
+            why = {"locked": "gesperrt", "nobody": "ohne Boot", "fehl": "Fehlimpuls", "prell": "Prellzeit",
+                   "unassigned": "Nummer am CP entfernt"}
+            for j, k in enumerate(pend):
+                r = self.cp_recs[k]
+                where = "Start" if k[2] == CH_START else "Ziel"
+                seg.append((f"{where} {fmt_tod(r['abs'] % 86400)}  ({why.get(r['status'], r['status'])})\n",
+                            ("warn", f"imp{j}")))
+        shape = (tuple(c[1] for c in self.course), self.last_finish_key, tuple(pend))
         at_bottom = self.txt_course.yview()[1] >= 0.98
         top = self.txt_course.yview()[0]
         if self._set_text(self.txt_course, seg):
@@ -4143,21 +4712,41 @@ class LiveRankingApp:
                 self.txt_course.yview_moveto(top)
             self._course_shape = shape
 
-    def on_course_click(self, event):
-        nr = self._tag_nr(self.txt_course, event, "crs")
-        if nr is None:
-            return "break"
-        key = self.course_key(nr)
-        if key is None:
-            return "break"
+    def _menu(self):
         if self._course_menu is not None:
             try:
                 self._course_menu.destroy()
             except tk.TclError:
                 pass
-        menu = tk.Menu(self.root, tearoff=0, bg=PANEL2, fg=TEXT, activebackground=BLUE, activeforeground=WHITE,
-                       font=self.f_side, bd=0, relief="flat")
-        self._course_menu = menu
+        self._course_menu = tk.Menu(self.root, tearoff=0, bg=PANEL2, fg=TEXT, activebackground=BLUE,
+                                    activeforeground=WHITE, font=self.f_side, bd=0, relief="flat")
+        return self._course_menu
+
+    @staticmethod
+    def _popup(menu, event):
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def on_course_click(self, event):
+        idx = self.txt_course.index(f"@{event.x},{event.y}")
+        tags = self.txt_course.tag_names(idx)
+        imp = next((int(t[3:]) for t in tags if t.startswith("imp") and t[3:].isdigit()), None)
+        if imp is not None and imp < len(getattr(self, "_pending_keys", [])):
+            self.pending_menu(self._pending_keys[imp], event)
+            return "break"
+        if "lastfin" in tags and self.last_finish_key:
+            menu = self._menu()
+            fk = self.last_finish_key
+            menu.add_command(label="Zielzeit ungültig (Fehlimpuls), Boot wieder auf die Strecke",
+                             command=lambda: self.invalidate_finish(fk))
+            self._popup(menu, event)
+            return "break"
+        nr = self._tag_nr(self.txt_course, event, "crs")
+        if nr is None or self.course_key(nr) is None:
+            return "break"
+        menu = self._menu()
         menu.add_command(label=f"{self.order_label(nr)}", state="disabled")
         menu.add_separator()
         first = self.course[0][1] if self.course else None
@@ -4168,11 +4757,87 @@ class LiveRankingApp:
             menu.add_command(label=f"Letzte Zielzeit gehört Nr {nr} (statt Nr {lf['nr']})",
                              command=lambda: self.reassign_last_finish(nr))
         menu.add_command(label="Nummer ändern ...", command=lambda: self.open_renumber_dialog(nr))
-        menu.add_command(label="Ausgeschieden", command=lambda: self.cp_cancel_start(nr))
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
+        menu.add_command(label="Ausgeschieden (DNF)", command=lambda: self.cp_cancel_start(nr, "DNF"))
+        menu.add_command(label="Disqualifiziert (DSQ)", command=lambda: self.cp_cancel_start(nr, "DSQ"))
+        self._popup(menu, event)
+        return "break"
+
+    def pending_menu(self, key, event):
+        rec = self.cp_recs.get(key)
+        if rec is None:
+            return
+        menu = self._menu()
+        where = "Start" if key[2] == CH_START else "Ziel"
+        menu.add_command(label=f"{where}impuls {fmt_tod(rec['abs'] % 86400)}", state="disabled")
+        menu.add_separator()
+        if key[2] == CH_FINISH:
+            for _t, nr, skey in self.course:
+                st = self.cp_recs[skey]
+                menu.add_command(label=f"Nr {nr} zuordnen (Fahrzeit {fmt_secs(rec['abs'] - st['abs'], 2)}s)",
+                                 command=lambda n=nr: self.assign_pending(key, n))
+            if not self.course:
+                menu.add_command(label="Kein Boot auf der Strecke", state="disabled")
+        else:
+            menu.add_command(label="Startnummer zuordnen ...", command=lambda: self.open_start_assign(key))
+        menu.add_command(label="Ungültig lassen (ausblenden)", command=lambda: self.dismiss_impulse(key))
+        self._popup(menu, event)
+
+    def dismiss_impulse(self, key):
+        rec = self.cp_recs.get(key)
+        if rec:
+            rec["status"] = "invalid"
+            self.log(f"Impuls {fmt_tod(rec['abs'] % 86400)} ungültig gelassen", tag="warn")
+            self.save_autosave()
+            self.course_changed()
+
+    def open_start_assign(self, key):
+        rec = self.cp_recs.get(key)
+        if rec is None:
+            return None
+        dlg = self._toplevel("Startnummer zuordnen")
+        dlg.columnconfigure(0, weight=1)
+        nxt = self.next_starters(1)
+        tk.Label(dlg, text=f"Startimpuls {fmt_tod(rec['abs'] % 86400)}: welche Nummer ist gestartet?", bg=PANEL,
+                 fg=TEXT, font=self.f_side, justify="left", anchor="w", wraplength=self.narrow_wrap()).grid(
+            row=0, column=0, sticky="w")
+        e = self._entry(dlg, width=8)
+        if nxt:
+            e.insert(0, str(nxt[0]))
+        e.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+
+        def ok(_e=None):
+            try:
+                nr = int(e.get().strip())
+                if not 0 < nr <= 9999:
+                    raise ValueError
+            except ValueError:
+                return "break"
+            dlg.destroy()
+            self.assign_pending(key, nr)
+            return "break"
+
+        btns = tk.Frame(dlg, bg=PANEL)
+        btns.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self._button(btns, "Zuordnen", ok, BLUE).pack(side="right")
+        self._button(btns, "Abbrechen", dlg.destroy).pack(side="right", padx=(0, 8))
+        dlg.bind("<Return>", ok)
+        dlg.bind("<Escape>", lambda ev: dlg.destroy())
+        self._place(dlg, narrow=True)
+        dlg.focus_force()
+        e.focus_set()
+        e.select_range(0, "end")
+        return dlg
+
+    def on_next_right(self, event):
+        nr = self._tag_nr(self.txt_next, event, "row")
+        if nr is None:
+            return "break"
+        menu = self._menu()
+        menu.add_command(label=self.order_label(nr), state="disabled")
+        menu.add_separator()
+        menu.add_command(label="Nummer darunter einfügen ...", command=lambda: self.open_insert_dialog(nr))
+        menu.add_command(label="Nicht gestartet (DNS)", command=lambda: self.set_status(nr, "DNS"))
+        self._popup(menu, event)
         return "break"
 
     def open_renumber_dialog(self, nr):
@@ -4382,6 +5047,12 @@ class LiveRankingApp:
             self.cmb_cp.current(idx)
         else:
             self.cmb_cp.set(f"{want}  (zuletzt verwendet)" if want else "noch nicht gesucht")
+        main = self.settings["conn"]["cp_ip"]
+        opts = [(ip, info) for ip, info in self.cp_found if ip != main]
+        self.cmb_cp_b["values"] = ["(keiner)"] + [f"{ip}  {info}" for ip, info in opts]
+        want_b = self.settings["conn"]["cp_ip_b"]
+        idx = next((i + 1 for i, (ip, _i) in enumerate(opts) if ip == want_b), 0)
+        self.cmb_cp_b.current(idx)
 
     def selected_adapter(self):
         i = self.cmb_adapter.current()
@@ -4445,6 +5116,7 @@ class LiveRankingApp:
         if self.cp is not None:
             self.cp.stop()
             self.cp = None
+        self.stop_backup()
         self.cp_cmds, self.cp_inflight = [], None
         self.stop_eth_tick()
 
@@ -4574,7 +5246,10 @@ class LiveRankingApp:
                 self.eth_job = None
                 self.connect_cp(payload)
             return
-        # Nachrichten der CP-Verbindung
+        # Nachrichten der CP-Verbindungen
+        if token is not None and token is self.cp_b:
+            self.handle_backup_event(kind, payload)
+            return
         if token is not self.cp:
             return
         if kind == "eth_line":
@@ -4593,18 +5268,67 @@ class LiveRankingApp:
             self.set_conn_status(f"CP {self.cp.host} getrennt, verbinde neu ...", RED)
         elif kind == "eth_disconnected":
             self.cp = None
+            self.stop_backup()
             self.stop_eth_tick()
             self.set_connected(False, "nicht verbunden")
             self.log(f"Verbindung zum CP {payload} getrennt", tag="warn")
             self.apply_show_settings()
 
-    def connect_cp(self, ip):
+    def handle_backup_event(self, kind, payload):
+        b = self.cp_b
+        if kind == "eth_line":
+            self.handle_eth_line(payload, dev="B")
+        elif kind == "eth_connected":
+            self.log(f"Reserve-CP {b.host} verbunden", tag="ok")
+            self.backup_state = "verbunden"
+            self.refresh_conn_head()
+        elif kind in ("eth_lost", "eth_retry", "eth_open_error"):
+            if getattr(self, "backup_state", "") != "getrennt":
+                self.log(f"Reserve-CP {b.host} nicht erreichbar: {payload}", tag="warn")
+            self.backup_state = "getrennt"
+            self.refresh_conn_head()
+        elif kind == "eth_disconnected":
+            self.cp_b = None
+            self.backup_state = ""
+            self.refresh_conn_head()
+
+    def refresh_conn_head(self):
+        if self.cp is not None and self.cp.connected:
+            extra = f" · Reserve {getattr(self, 'backup_state', '')}" if self.cp_b is not None else ""
+            self.set_conn_status(f"CP {self.cp.host} verbunden{extra}", GREEN_TEXT)
+
+    def selected_backup(self):
+        i = self.cmb_cp_b.current() if hasattr(self, "cmb_cp_b") else -1
+        if i <= 0:
+            return ""
+        opts = [ip for ip, _info in self.cp_found if ip != self.settings["conn"]["cp_ip"]]
+        return opts[i - 1] if i - 1 < len(opts) else ""
+
+    def start_backup(self, ip, port=None):
+        self.stop_backup()
+        if not ip:
+            return
+        self.cp_b = CPClient(ip, port or cp_ports()[1], self.q)
+        self.backup_state = "verbinde"
+        self.cp_b.start()
+        self.log(f"Reserve-CP {ip}: Zeiten werden mitgeschrieben und übernommen, solange der Haupt-CP fehlt")
+
+    def stop_backup(self):
+        if self.cp_b is not None:
+            self.cp_b.stop()
+            self.cp_b = None
+
+    def connect_cp(self, ip, port=None):
         self.settings["conn"]["cp_ip"] = ip
         self.save_settings()
         self.fill_eth_combos()
         self.cp_reconnected = False
-        self.cp = CPClient(ip, cp_ports()[1], self.q)
+        self.cp = CPClient(ip, port or cp_ports()[1], self.q)
         self.cp.start()
+        if port is None:
+            self.settings["conn"]["cp_ip_b"] = self.selected_backup()
+            self.save_settings()
+            self.start_backup(self.settings["conn"]["cp_ip_b"])
         self.set_conn_status(f"verbinde mit CP {ip} ...", GOLD)
         self.btn_connect.configure(text="Trennen", bg=DARK_RED)
 
@@ -4613,6 +5337,7 @@ class LiveRankingApp:
         self.cp_reconnected = True
         self.cp_last_rx = self.cp_last_hb = time.time()
         self.set_connected(True, f"CP {ip} verbunden")
+        self.refresh_conn_head()
         if again:
             self.log(f"CP {ip} wieder verbunden", tag="ok")
             self.add_ticker("Verbindung zum CP 545 wieder hergestellt", "ziel")
@@ -4709,7 +5434,7 @@ class LiveRankingApp:
             self.log(f"CP: {self.cp_info}", tag="ok")
             self.cp_resolve(True, info)
         elif exp == "sync" and info["kind"] == "sync":
-            self.add_cp_offset(info["tod"])
+            self.add_cp_offset((datetime.date.today() - EPOCH_2000).days * 86400 + info["tod"])
             self.cp_resolve(True, info)
         elif isinstance(exp, tuple) and info["kind"] == "param" and info["id"] == exp[1]:
             if len(exp) > 2:
@@ -4788,38 +5513,57 @@ class LiveRankingApp:
             self._cp_next_pending = None
             if ok:
                 self.cp_next_start = want
+                if self.cp_b is not None and self.cp_b.connected:
+                    self.cp_b.send(f"#WP 026 {CH_START:02d} {want:04d}")  # Reserve gleich nummerieren
                 self.update_panels()
             # Startliste hat sich inzwischen geaendert: nochmals abgleichen
             self.root.after(50, self.cp_sync_next)
 
         self.cp_write_param("026", CH_START, want, "nächster Start", done)
 
+    # ================================================================== #
+    # Zeitmessung Ethernet: die App ordnet die Impulse selbst zu
+    #   Start: Nummer vom CP (vorgeladen aus der Startliste)
+    #   Ziel:  das Boot, das in der App als naechstes erwartet wird
+    # Jede Startzeit fuehrt 'cp_nr' (wie der CP sie kennt) und 'nr' (richtige Nummer).
+    # Schluessel einer Zeit: (geraet, lauf, eingang, seq), Zeiten absolut ab 01.01.2000 (ueber Mitternacht).
+    # ================================================================== #
+    def tset(self):
+        return self.settings["timing"]
+
+    def run_recs(self, ch=None):
+        return [(k, r) for k, r in self.cp_recs.items()
+                if k[1] == self.cp_run and (ch is None or k[2] == ch)]
+
     def cp_set_next_finish(self, nr):
-        """Ueberholen: nr kommt als naechstes ins Ziel. Der CP bekommt die Zielnummer mit #WP 026 04."""
+        """Ueberholen: nr kommt als naechstes ins Ziel."""
         self.finish_override = nr
         self.log(f"Überholen: Nr {nr} kommt als nächstes ins Ziel", tag="ok")
         self.add_ticker(f"Nr {nr} hat überholt und kommt als nächstes ins Ziel", None)
         self.course_changed()
 
+    def cp_alive(self):
+        """Startzeiten, die der CP noch auf der Strecke sieht (fuer seinen Papierstreifen)."""
+        keys = [k for k, r in self.run_recs(CH_START) if k[0] == "A" and r["status"] == "ok"
+                and r["cp_nr"] > 0 and not r.get("cp_done")]
+        return sorted(keys, key=lambda k: self.cp_recs[k]["abs"])
+
     def cp_sync_finish(self):
-        """Dafuer sorgen, dass der CP den naechsten Zielimpuls dem Boot zuordnet, das die App erwartet.
-        Noetig nach Ueberholen und wenn ein ausgeschiedenes Boot im CP noch auf der Strecke ist."""
+        """Den CP auf dasselbe naechste Boot einstellen wie die App (#WP 026 04), damit sein
+        Papierstreifen und seine Rangliste stimmen. Die Zuordnung in der App haengt nicht davon ab."""
         if not self.eth_mode() or self.cp is None or not self.cp.connected or not self.course:
             return
-        _tod, _nr, key = self.course[0]
-        want = self.cp_recs[key]
-        if want.get("cp_done"):
+        want = self.cp_recs[self.course[0][2]]
+        if want.get("cp_done") or want["cp_nr"] <= 0:
             return
         alive = self.cp_alive()
         if not alive:
             return
         cp_next = next((k for k in alive if self.cp_recs[k]["cp_nr"] == self.cp_finish_want), alive[0])
-        if self.cp_recs[cp_next]["cp_nr"] == want["cp_nr"]:
-            return
-        if getattr(self, "_cp_finish_pending", None) == want["cp_nr"]:
-            return
-        self._cp_finish_pending = want["cp_nr"]
         target = want["cp_nr"]
+        if self.cp_recs[cp_next]["cp_nr"] == target or getattr(self, "_cp_finish_pending", None) == target:
+            return
+        self._cp_finish_pending = target
 
         def done(ok):
             self._cp_finish_pending = None
@@ -4829,35 +5573,52 @@ class LiveRankingApp:
 
         self.cp_write_param("026", CH_FINISH, target, "nächstes Ziel", done)
 
-    def cp_alive(self):
-        """Startzeiten, die der CP noch auf der Strecke sieht, in Startreihenfolge."""
-        keys = [k for k, r in self.cp_recs.items() if k[0] == self.cp_run and k[1] == CH_START
-                and r["status"] == "ok" and r["cp_nr"] > 0 and not r.get("cp_done")]
-        return sorted(keys, key=lambda k: self.cp_recs[k]["tod"])
-
-    def cp_cancel_start(self, nr):
-        """Ausgeschieden. Der CP 545 kennt #WC 013 nicht: die App fuehrt das selbst."""
-        key = self.course_key(nr)
-        if key is None:
+    # ---------------- Status DNS / DNF / DSQ ---------------- #
+    def set_status(self, nr, code, reason=""):
+        """code: 'DNS', 'DNF', 'DSQ' oder None (aufheben)."""
+        old = self.status.get(nr)
+        if code == old:
             return
-        if not messagebox.askyesno("Ausgeschieden", f"{self.order_label(nr)} als ausgeschieden markieren?\n"
-                                                    "Das Boot verlässt die Fahrstrecke. Am CP bei Bedarf mit "
-                                                    "Nr + R + 0 nachtragen."):
-            return
-        self.mark_dnf(nr, key, local=True)
-
-    def mark_dnf(self, nr, key, local=False):
-        rec = self.cp_recs.get(key)
-        if rec:
-            rec["dnf"] = True
-        self.dnf.add(nr)
-        if self.finish_override == nr:
+        if code:
+            self.status[nr] = code
+        else:
+            self.status.pop(nr, None)
+        if code in ("DNF", "DSQ"):
+            key = self.course_key(nr)
+            if key:
+                self.cp_recs[key]["dnf"] = True
+        elif code is None:
+            for _k, r in self.run_recs(CH_START):
+                if r["nr"] == nr:
+                    r["dnf"] = False
+        if self.finish_override == nr and code:
             self.finish_override = None
         who = self.who_text(nr)
-        self.log(f"Nr {nr} ausgeschieden" + (" (nur in der App, am CP mit Nr + R + 0 nachtragen)" if local
-                                              else " (Startzeit am CP storniert)"), tag="warn")
-        self.add_ticker(f"Nr {nr}{(' ' + who) if who else ''} ausgeschieden", "warn")
+        label = {"DNS": "nicht gestartet", "DNF": "ausgeschieden", "DSQ": "disqualifiziert"}
+        if code:
+            self.log(f"Nr {nr} {label[code]} ({code}){(' ' + reason) if reason else ''}", tag="warn")
+            self.add_ticker(f"Nr {nr}{(' ' + who) if who else ''} {label[code]}", "warn")
+        else:
+            self.log(f"Nr {nr}: Status {old} aufgehoben", tag="ok")
+        self.save_autosave()
+        self._rank_cache = None
+        self.on_data_changed()
         self.course_changed()
+        self.cp_sync_next("Status")
+
+    def cp_cancel_start(self, nr, code="DNF"):
+        if self.course_key(nr) is None:
+            return
+        what = "ausgeschieden" if code == "DNF" else "disqualifiziert"
+        if not messagebox.askyesno(what.capitalize(), f"{self.order_label(nr)} als {what} markieren?\n"
+                                                      "Das Boot verlässt die Fahrstrecke."
+                                                      + (" Am CP bei Bedarf mit Nr + R + 0 nachtragen."
+                                                         if code == "DNF" else "")):
+            return
+        self.set_status(nr, code, "(nur in der App)" if code == "DNF" else "")
+
+    def mark_dnf(self, nr, key, local=False):
+        self.set_status(nr, "DNF", "(nur in der App)" if local else "(Startzeit am CP storniert)")
 
     def cp_change_number(self, key, old, new):
         """Nummer auf der Strecke aendern (nur in der App, der CP kennt #WC 013 nicht)."""
@@ -4865,8 +5626,7 @@ class LiveRankingApp:
         if rec is None or rec["nr"] != old:
             return
         rec["nr"] = new
-        self.dnf.discard(new)
-        # last_start_nr bleibt: die Startreihenfolge laeuft ab der vorgesehenen Nummer weiter
+        self.status.pop(new, None)
         if self.finish_override == old:
             self.finish_override = new
         self.log(f"Nummer auf der Strecke: Nr {new} statt Nr {old} (nur in der App, der CP führt weiter "
@@ -4874,35 +5634,73 @@ class LiveRankingApp:
         self.add_ticker(f"Nummer korrigiert: Nr {new} statt Nr {old} auf der Fahrstrecke", None)
         if self.start_order and new not in self.participants and not self.is_test(new):
             self.ensure_participant(new, after=old if old in self.order_index else None, prompt=True)
+        self.save_autosave()
         self.on_data_changed()
         self.course_changed()
         self.cp_sync_next("Nummer geändert")
 
     # ---------------- Daten vom CP ---------------- #
-    def add_cp_offset(self, cp_tod):
+    def add_cp_offset(self, cp_abs):
         now = time.time()
-        self.cp_offsets.append((now, cp_tod - local_tod()))
+        self.cp_offsets.append((now, cp_abs - local_abs()))
         self.cp_offsets = [(t, o) for t, o in self.cp_offsets if now - t < 600][-50:]
 
     def cp_offset(self):
         return max(o for _t, o in self.cp_offsets) if self.cp_offsets else None
 
-    def handle_eth_line(self, raw):
-        self.cp_last_rx = time.time()
+    def raw_log(self, dev, raw):
+        """Jede Zeile des CP sofort in die Rohdaten-Datei des Tages (Grundlage fuer Neuberechnung und Simulator)."""
+        try:
+            folder = os.path.join(self.data_path, RAW_DIR)
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, time.strftime("%Y-%m-%d") + ".jsonl"), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"t": round(time.time(), 3), "dev": dev, "line": strip_frame(raw)},
+                                    ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def handle_eth_line(self, raw, dev="A"):
+        if dev == "A":
+            self.cp_last_rx = time.time()
         text = strip_frame(raw)
         info = parse_thcom(raw)
         if info is None:
             return
+        self.raw_log(dev, raw)
         quiet = info["kind"] in ("ack", "param", "serial", "sync")
-        self.log("CP " + text, focus=False, tag=None if not quiet else "test")
+        self.log(("CP " if dev == "A" else "CP Reserve ") + text, focus=False, tag=None if not quiet else "test")
         if quiet:
-            self.cp_check_reply(info)
+            if dev == "A":
+                self.cp_check_reply(info)
+            return
+        if info["kind"] == "dlstart":
+            if dev == "A":
+                self.cp_download = []
+                self.log(f"Download Lauf {info['run']} vom CP läuft ...")
+            return
+        if info["kind"] == "dlend":
+            if dev == "A" and self.cp_download is not None:
+                self.process_download(self.cp_download)
+                self.cp_download = None
             return
         if info["kind"] == "time":
-            self.on_cp_time(info)
-        elif info["kind"] == "result" and info["type"] == "RR":
+            if info["answer"]:
+                if self.cp_download is not None and dev == "A":
+                    self.cp_download.append(info)
+                else:
+                    k = (dev, self.cp_run, info["ch"])
+                    if info["seq"] > self.cp_lastseq.get(k, 0):
+                        self.cp_lastseq[k] = info["seq"]
+                    self.on_cp_time(info, dev, recalled=True)
+                return
+            self.check_seq_gap(info, dev)
+            if dev == "B" and self.cp is not None and self.cp.connected:
+                self.backup_seen[(info["ch"], round(info["abs"], 2))] = True
+                return  # Reserve: nur verwenden, solange der Haupt-CP fehlt
+            self.on_cp_time(info, dev)
+        elif info["kind"] == "result" and info["type"] == "RR" and dev == "A":
             self.on_cp_result(info)
-        elif info["kind"] == "open":
+        elif info["kind"] == "open" and dev == "A":
             self.cp_run = info["run"]
             self.finish_override = self.cp_finish_want = None
             self.log(f"CP: Lauf {info['run']} geöffnet ({info['mode'] or '?'})", tag="ok")
@@ -4910,52 +5708,117 @@ class LiveRankingApp:
                 self.log(f"CP-Modus {info['mode']}: erwartet wird NET TIME (Start Eingang 1, Ziel Eingang 4)",
                          tag="warn")
             self.course_changed()
-        elif info["kind"] == "close":
+        elif info["kind"] == "close" and dev == "A":
             self.finish_override = None
             self.log(f"CP: Lauf {info['run']} geschlossen", tag="warn")
             self.course_changed()
 
-    def on_cp_time(self, t):
-        """Zeitmeldung des CP. Jede Startzeit fuehrt zwei Nummern: 'cp_nr' wie der CP sie kennt und
-        'nr' wie sie in Wirklichkeit ist (Korrekturen in der App)."""
-        typ, ch, seq, cpn = t["type"], t["ch"], t["seq"], t["nr"]
-        key = (self.cp_run, ch, seq)
+    def check_seq_gap(self, t, dev):
+        """Fehlende Sequenznummern mit #RT beim CP nachholen (verlorene Zeilen)."""
+        if t["type"] not in ("TN", "T+", "T=") or t["seq"] <= 0 or dev != "A":
+            return
+        k = (dev, self.cp_run, t["ch"])
+        last = self.cp_lastseq.get(k)
+        if last is not None and t["seq"] > last + 1:
+            missing = list(range(last + 1, min(t["seq"], last + 51)))
+            self.log(f"CP: Zeiten Seq {missing[0]}-{missing[-1]} auf Eingang {t['ch']} fehlen, werden "
+                     "nachgeholt", tag="warn")
+            for s in missing:
+                if (dev, self.cp_run, t["ch"], s) not in self.cp_recs:
+                    self.cp_query(f"#RT {s:04d} {t['ch']:02d}", "ack")
+        if last is None or t["seq"] > last:
+            self.cp_lastseq[k] = t["seq"]
+
+    def cp_probe(self):
+        """Nach der letzten bekannten Zeit je Eingang fragen: findet auch eine verlorene letzte Zeile,
+        auf die keine weitere Zeit folgt (Sequenzluecke sonst erst beim naechsten Impuls sichtbar)."""
+        for ch in (CH_START, CH_FINISH):
+            last = self.cp_lastseq.get(("A", self.cp_run, ch))
+            if last is not None:
+                self.cp_query(f"#RT {last + 1:04d} {ch:02d}", "ack")
+
+    def cp_download_run(self):
+        if self.cp is None or not self.cp.connected:
+            messagebox.showinfo("Lauf vom CP laden", "Zuerst über Ethernet mit dem CP verbinden.")
+            return
+        run = self.cp_run or 1
+        self.log(f"Lauf {run} wird vom CP geladen (#DL)", tag="ok")
+        self.cp_query(f"#DL {run:02d}", "ack",
+                      on_fail=lambda r: messagebox.showerror("Lauf vom CP laden", f"Der CP hat den Download nicht "
+                                                                                 f"bestätigt ({r})."))
+
+    def process_download(self, items):
+        """Alle Zeiten eines Laufs aus dem Speicher des CP: nur Neues uebernehmen, in Zeitfolge."""
+        before = len(self.cp_recs)
+        self._quiet = True
+        try:
+            for t in sorted(items, key=lambda x: (x["abs"], x["ch"] != CH_START)):
+                self.on_cp_time(t, "A", recalled=True)
+        finally:
+            self._quiet = False
+        added = len(self.cp_recs) - before
+        self.log(f"Download vom CP: {len(items)} Zeiten, davon {added} neu übernommen", tag="ok")
+        if added:
+            self.add_ticker(f"{added} Zeiten vom CP nachgeladen", None)
+        self.save_autosave()
+        self.on_data_changed()
+        self.course_changed()
+
+    def find_twin(self, dev, ch, abs_t):
+        """Dieselbe Zeit schon vom anderen CP erfasst? (Reserve-CP, Toleranz 0.1 s)"""
+        for k, r in self.run_recs(ch):
+            if k[0] != dev and abs(r["abs"] - abs_t) <= 0.1:
+                return k
+        return None
+
+    def on_cp_time(self, t, dev="A", recalled=False):
+        typ = t["type"]
+        if typ.startswith("A"):
+            typ = "T" + typ[1:]  # Antwort auf #RT / #DL wie eine normale Zeit behandeln
+        ch, seq, cpn = t["ch"], t["seq"], t["nr"]
+        key = (dev, self.cp_run, ch, seq)
         rec = self.cp_recs.get(key)
         if typ in ("TN", "T+", "T=", "TI"):
-            if rec and rec["cp_nr"] == cpn and abs(rec["tod"] - t["tod"]) < 0.001:
-                return  # bereits bekannt (z.B. nach Neuverbindung)
-            if typ == "TN":
-                self.add_cp_offset(t["tod"])
-            if cpn <= 0:
-                self.cp_recs[key] = {"nr": 0, "cp_nr": 0, "tod": t["tod"], "status": "ok"}
-                self.log(f"CP: Zeit ohne Nummer (Eingang {ch}, Seq {seq})", tag="warn")
-            elif ch == CH_START:
-                self.on_cp_start(key, cpn, t["tod"])
+            if rec is not None:
+                return  # bereits bekannt
+            twin = self.find_twin(dev, ch, t["abs"])
+            if twin is not None:
+                self.cp_recs[key] = {"nr": self.cp_recs[twin]["nr"], "cp_nr": cpn, "abs": t["abs"],
+                                     "status": "dup", "twin": twin}
+                return
+            if typ == "TN" and not recalled:
+                self.add_cp_offset(t["abs"])
+            if recalled:
+                self.log(f"CP: Zeit Seq {seq} Eingang {ch} nachgeholt", tag="ok")
+            if ch == CH_START:
+                self.on_start_impulse(key, cpn, t["abs"])
             elif ch == CH_FINISH:
-                self.on_cp_finish(key, cpn, t["tod"])
+                self.on_finish_impulse(key, cpn, t["abs"])
             else:
-                self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": t["tod"], "status": "ok"}
+                self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "abs": t["abs"], "status": "ok"}
         elif typ in ("T-", "TC"):
             # Korrektur an der Tastatur des CP: Zeit ohne Nummer bzw. storniert
             if rec is None:
-                rec = self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": t["tod"], "status": "ok"}
-            rec["status"] = "cancelled" if typ == "TC" else "unassigned"
+                rec = self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "abs": t["abs"], "status": "ok"}
             if ch == CH_FINISH:
                 self.undo_finish(key)
-            elif ch == CH_START and typ == "TC" and rec["nr"] > 0 and not rec.get("dnf"):
-                self.mark_dnf(rec["nr"], key)
+            rec["status"] = "cancelled" if typ == "TC" else "unassigned"
+            if ch == CH_START and typ == "TC" and rec["nr"] > 0 and self.status.get(rec["nr"]) is None:
+                self.set_status(rec["nr"], "DNF", "(Startzeit am CP storniert)")
                 return
         elif typ == "T*":
             if ch == CH_FINISH:
                 if rec is not None:
                     self.undo_finish(key)
-                self.cp_recs.pop(key, None)
-                self.on_cp_finish(key, cpn, t["tod"])
+                skey = self.course_key(cpn)
+                self.cp_recs[key] = {"nr": 0, "cp_nr": cpn, "abs": t["abs"], "status": "nobody"}
+                if skey:
+                    self.assign_finish(key, skey)
             elif ch == CH_START:
                 old = rec["nr"] if rec else None
                 if rec is None:
-                    rec = self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": t["tod"], "status": "ok"}
-                if rec["nr"] == rec["cp_nr"]:
+                    rec = self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "abs": t["abs"], "status": "ok"}
+                if rec["nr"] in (rec["cp_nr"], 0):
                     rec["nr"] = cpn  # keine eigene Korrektur in der App: CP gilt
                 rec["cp_nr"], rec["status"] = cpn, "ok"
                 if old is not None and old != rec["nr"]:
@@ -4965,59 +5828,141 @@ class LiveRankingApp:
                         self.ensure_participant(rec["nr"], after=old if old in self.order_index else None,
                                                 prompt=True)
             else:
-                self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": t["tod"], "status": "ok"}
+                self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "abs": t["abs"], "status": "ok"}
+        self.save_autosave()
         self.course_changed()
 
-    def on_cp_start(self, key, cpn, tod):
-        self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": tod, "status": "ok"}
+    def bounce(self, ch, abs_t, key):
+        """Prellimpuls: zweiter Impuls am selben Messpunkt innerhalb der eingestellten Zeit."""
+        ms = self.tset()["prell_start_ms" if ch == CH_START else "prell_finish_ms"]
+        if ms <= 0:
+            return False
+        return any(k != key and r["status"] in ("ok", "fehl") and abs(abs_t - r["abs"]) * 1000 < ms
+                   for k, r in self.run_recs(ch))
+
+    def on_start_impulse(self, key, cpn, abs_t):
+        rec = self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "abs": abs_t, "status": "ok"}
+        if self.tset()["lock_start"]:
+            rec.update(nr=0, status="locked")
+            self.log(f"Startimpuls {fmt_tod(abs_t % 86400)} bei gesperrtem Start gespeichert (ohne Nummer)",
+                     tag="warn")
+            return
+        if self.bounce(CH_START, abs_t, key):
+            rec.update(nr=0, status="prell")
+            self.log(f"Startimpuls {fmt_tod(abs_t % 86400)} ungültig (Prellzeit)", tag="warn")
+            return
+        if cpn <= 0:
+            rec["status"] = "nobody"
+            self.log(f"Startimpuls {fmt_tod(abs_t % 86400)} ohne Nummer", tag="warn")
+            return
+        self.start_number(key, cpn)
+
+    def start_number(self, key, nr):
+        rec = self.cp_recs[key]
+        rec.update(nr=nr, status="ok")
         prev = self.last_start_nr
-        self.last_start_nr = cpn
-        self.dnf.discard(cpn)
-        self.cp_next_start = cpn + 1
-        self.log(f"START Nr {cpn} ({fmt_tod(tod)})", tag="test" if self.is_test(cpn) else "ok")
-        self.on_new_starter(prev, cpn)
+        self.last_start_nr = nr
+        if self.status.get(nr) == "DNS":
+            self.status.pop(nr, None)
+            self.log(f"Nr {nr} startet doch: Status DNS aufgehoben", tag="warn")
+        self.cp_next_start = rec["cp_nr"] + 1 if rec["cp_nr"] > 0 else self.cp_next_start
+        self.log(f"START Nr {nr} ({fmt_tod(rec['abs'] % 86400)})", tag="test" if self.is_test(nr) else "ok")
+        self.on_new_starter(prev, nr)
         self.cp_sync_next("Start")
 
-    def on_cp_finish(self, key, cpn, tod):
-        """Zielzeit: der CP hat sie der Nummer cpn zugeordnet, also seiner aeltesten offenen Startzeit
-        mit dieser Nummer. In Wirklichkeit gehoert sie zur Nummer, die in der App bei dieser Startzeit steht."""
-        start_key = next((k for k in self.cp_alive() if self.cp_recs[k]["cp_nr"] == cpn
-                          and self.cp_recs[k]["tod"] <= tod), None)
-        self.cp_finish_want = None  # der CP verbraucht die vorgeladene Zielnummer mit jedem Zieleinlauf
-        if start_key is None:
-            self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "tod": tod, "status": "ok", "start": None}
-            self.last_finish_key = key
-            self.log(f"CP: Zielzeit Nr {cpn} ohne offene Startzeit", tag="warn")
+    def on_finish_impulse(self, key, cpn, abs_t):
+        rec = self.cp_recs[key] = {"nr": 0, "cp_nr": cpn, "abs": abs_t, "status": "nobody"}
+        # Sicht des CP nachfuehren (Papierstreifen): seine offene Startzeit mit dieser Nummer ist fertig
+        cp_start = next((k for k in self.cp_alive() if self.cp_recs[k]["cp_nr"] == cpn
+                         and self.cp_recs[k]["abs"] <= abs_t), None)
+        if cp_start:
+            self.cp_recs[cp_start]["cp_done"] = True
+        self.cp_finish_want = None
+        rec["cp_start"] = cp_start
+        tod = fmt_tod(abs_t % 86400)
+        if self.tset()["lock_finish"]:
+            rec["status"] = "locked"
+            self.log(f"Zielimpuls {tod} bei gesperrtem Ziel gespeichert (ohne Nummer)", tag="warn")
             return
-        st = self.cp_recs[start_key]
-        st["cp_done"] = True
-        if st.get("dnf"):
-            self.cp_recs[key] = {"nr": st["nr"], "cp_nr": cpn, "tod": tod, "status": "ignored", "start": start_key}
-            self.log(f"Zielimpuls für ausgeschiedene Nr {st['nr']} nicht gewertet", tag="warn")
+        if self.bounce(CH_FINISH, abs_t, key):
+            rec["status"] = "prell"
+            self.log(f"Zielimpuls {tod} ungültig (Prellzeit)", tag="warn")
             return
+        if not self.course:
+            self.log(f"Zielimpuls {tod}: kein Boot auf der Strecke", tag="warn")
+            return
+        skey = self.course[0][2]
+        st = self.cp_recs[skey]
+        min_s = self.tset()["min_run_s"]
+        if min_s > 0 and abs_t - st["abs"] < min_s:
+            rec["status"] = "fehl"
+            self.log(f"Zielimpuls {tod} ungültig: Fahrzeit {fmt_secs(abs_t - st['abs'], 2)}s unter der "
+                     f"Mindestzeit {min_s:g}s (Fehlimpuls)", tag="warn")
+            self.add_ticker(f"Fehlimpuls im Ziel ({tod}) nicht gewertet", "warn")
+            return
+        self.assign_finish(key, skey)
+
+    def assign_finish(self, fkey, skey):
+        fin, st = self.cp_recs[fkey], self.cp_recs[skey]
         nr = st["nr"]
-        self.cp_recs[key] = {"nr": nr, "cp_nr": cpn, "tod": tod, "status": "ok", "start": start_key,
-                             "proxy": st.get("proxy", False)}
-        st["done"] = key
-        self.last_finish_key = key
+        fin.update(nr=nr, status="ok", start=skey,
+                   rr_ok=fin.get("cp_start") == skey and fin["cp_nr"] == st["cp_nr"] == nr)
+        st["done"] = fkey
+        self.last_finish_key = fkey
         if self.finish_override == nr:
             self.finish_override = None
-        if nr != cpn:
-            self.log(f"ZIEL CP-Nr {cpn} gehört zu Nr {nr}", tag="warn")
-        # Fahrzeit sofort selbst rechnen; ein passendes RR vom CP bestaetigt sie danach nur
-        self.store_cp_result(nr, trunc_secs(tod - st["tod"], min(self.cp_prec, 2)), key)
+        if fin["cp_nr"] != nr:
+            self.log(f"ZIEL Nr {nr} (der CP führt diese Zeit unter Nr {fin['cp_nr']})", tag="warn")
+        self.store_cp_result(nr, trunc_secs(fin["abs"] - st["abs"], min(self.cp_prec, 2)), fkey)
+
+    def assign_pending(self, fkey, nr):
+        """Impuls ohne Zuordnung von Hand zuordnen (Ziel: Boot auf der Strecke, Start: Nummer)."""
+        rec = self.cp_recs.get(fkey)
+        if rec is None:
+            return
+        if fkey[2] == CH_FINISH:
+            skey = self.course_key(nr)
+            if skey is None:
+                return
+            self.assign_finish(fkey, skey)
+            self.log(f"Zielimpuls {fmt_tod(rec['abs'] % 86400)} von Hand Nr {nr} zugeordnet", tag="ok")
+        else:
+            self.start_number(fkey, nr)
+            self.log(f"Startimpuls {fmt_tod(rec['abs'] % 86400)} von Hand Nr {nr} zugeordnet", tag="ok")
+        self.save_autosave()
+        self.on_data_changed()
+        self.course_changed()
+
+    def invalidate_finish(self, fkey):
+        """Zielzeit ungueltig schalten (Fehlimpuls): Resultat weg, Boot wieder auf der Strecke."""
+        rec = self.cp_recs.get(fkey)
+        if not rec or rec["status"] != "ok":
+            return
+        nr = rec["nr"]
+        self.undo_finish(fkey)
+        rec.update(status="fehl", nr=0, start=None)
+        self.log(f"Zielzeit {fmt_tod(rec['abs'] % 86400)} ungültig geschaltet, Nr {nr} wieder auf der Strecke",
+                 tag="warn")
+        self.add_ticker(f"Zielzeit von Nr {nr} ungültig (Fehlimpuls), Nr {nr} wieder auf der Strecke", "warn")
+        self.save_autosave()
+        self.on_data_changed()
+        self.course_changed()
+
+    def pending_impulses(self):
+        """Impulse ohne Zuordnung im laufenden Lauf, neueste zuletzt."""
+        items = [(r["abs"], k) for k, r in self.run_recs()
+                 if k[2] in (CH_START, CH_FINISH) and r["status"] in ("locked", "nobody", "fehl", "prell",
+                                                                         "unassigned")]
+        return [k for _a, k in sorted(items)][-8:]
 
     def on_cp_result(self, info):
-        """RR vom CP: Rang und Fahrzeit fuer die CP-Nummer. Gilt nur, wenn die App nichts umgebucht hat."""
+        """RR vom CP bestaetigt die Fahrzeit, wenn der CP dieselbe Start- und Zielzeit verwendet hat."""
         cpn = info["nr"]
-        key = max((k for k, r in self.cp_recs.items() if k[0] == self.cp_run and k[1] == CH_FINISH
-                   and r["cp_nr"] == cpn and r["status"] == "ok"), key=lambda k: self.cp_recs[k]["tod"],
-                  default=None)
-        if key is None:
+        key = max((k for k, r in self.run_recs(CH_FINISH) if k[0] == "A" and r["cp_nr"] == cpn
+                   and r["status"] == "ok"), key=lambda k: self.cp_recs[k]["abs"], default=None)
+        if key is None or not self.cp_recs[key].get("rr_ok"):
             return
         rec = self.cp_recs[key]
-        if rec.get("proxy"):
-            return  # Startzeit wurde in der App umgebucht: eigene Rechnung gilt
         secs = trunc_secs(info["secs"], min(self.cp_prec, 2))
         res = self.results.get(rec["nr"])
         if res and res.get("cp") == list(key) and abs(res["secs"] - secs) > 0.011:
@@ -5037,36 +5982,27 @@ class LiveRankingApp:
         self.ziel_nr = nr
 
     def undo_finish(self, key):
-        """Zielzeit zuruecknehmen: Resultat weg, Boot wieder auf der Strecke."""
         rec = self.cp_recs.get(key)
         if rec and rec.get("start") in self.cp_recs:
             st = self.cp_recs[rec["start"]]
             if st.get("done") == key:
                 st["done"] = None
-            st["cp_done"] = False
         self.revert_cp_result(key)
 
     def reassign_last_finish(self, nr):
-        """Letzte Zielzeit gehoert in Wirklichkeit Nr nr (unbemerkt ueberholt). Nur in der App:
-        die beiden Startzeiten tauschen ihre CP-Nummern, damit spaetere Meldungen richtig ankommen."""
+        """Letzte Zielzeit gehoert in Wirklichkeit Nr nr (unbemerkt ueberholt)."""
         fkey = self.last_finish_key
         frec = self.cp_recs.get(fkey) if fkey else None
         new_key = self.course_key(nr)
-        if not frec or frec["status"] != "ok" or new_key is None or not frec.get("start"):
+        if not frec or frec["status"] != "ok" or new_key is None:
             return
-        old_key = frec["start"]
-        a, b = self.cp_recs[old_key], self.cp_recs[new_key]
-        old = a["nr"]
-        self.revert_cp_result(fkey)
-        a["done"], b["done"] = None, fkey
-        # der CP sieht a als angekommen und b als unterwegs: CP-Nummern tauschen
-        a["cp_nr"], b["cp_nr"] = b["cp_nr"], a["cp_nr"]
-        a["cp_done"], b["cp_done"] = False, True
-        a["proxy"] = b["proxy"] = True
-        frec.update({"nr": nr, "start": new_key, "proxy": True})
-        self.log(f"Zielzeit umgebucht: Nr {nr} statt Nr {old} (nur in der App)", tag="warn")
+        old = frec["nr"]
+        self.undo_finish(fkey)
+        self.assign_finish(fkey, new_key)
+        self.cp_recs[fkey]["rr_ok"] = False
+        self.log(f"Zielzeit umgebucht: Nr {nr} statt Nr {old}", tag="warn")
         self.add_ticker(f"Zielzeit korrigiert: Nr {nr} war im Ziel, Nr {old} wieder auf der Strecke", "warn")
-        self.store_cp_result(nr, trunc_secs(frec["tod"] - b["tod"], min(self.cp_prec, 2)), fkey)
+        self.save_autosave()
         self.on_data_changed()
         self.course_changed()
 
@@ -5087,12 +6023,42 @@ class LiveRankingApp:
                 return nr
         return None
 
+    def recompute_from_raw(self):
+        """Resultate aus den Rohzeiten neu berechnen. Von Hand erfasste Zeiten bleiben."""
+        changed, removed = 0, 0
+        linked = {}
+        for k, r in self.cp_recs.items():
+            if k[2] == CH_FINISH and r["status"] == "ok" and r.get("start") in self.cp_recs:
+                st = self.cp_recs[r["start"]]
+                linked[list(k).__repr__()] = (r["nr"], trunc_secs(r["abs"] - st["abs"], min(self.cp_prec, 2)), k)
+        for nr, res in list(self.results.items()):
+            if res.get("source") != "CP 545 LAN" or not res.get("cp"):
+                continue
+            item = linked.get(repr(res["cp"]))
+            if item is None or item[0] != nr:
+                del self.results[nr]
+                removed += 1
+            elif abs(item[1] - res["secs"]) > 0.001:
+                res["secs"], res["str"] = item[1], fmt_secs(item[1], 2)
+                changed += 1
+        for nr, secs, k in linked.values():
+            if nr not in self.results and self.status.get(nr) not in ("DNF",):
+                self.results[nr] = {"secs": secs, "str": fmt_secs(secs, 2), "ts": time.time(),
+                                    "source": "CP 545 LAN", "run": 1, "prev": None, "status": ST_OPEN,
+                                    "cp": list(k)}
+                changed += 1
+        self._rank_cache = None
+        self.log(f"Aus Rohzeiten neu berechnet: {changed} geändert oder ergänzt, {removed} entfernt", tag="ok")
+        self.save_autosave()
+        self.on_data_changed()
+        self.course_changed()
+        return changed, removed
+
     # ---------------- Fahrstrecke ---------------- #
     def compute_course(self):
         """Boote auf der Strecke in erwarteter Zielreihenfolge: [(startzeit, nr, key)]."""
-        course = sorted((r["tod"], r["nr"], k) for k, r in self.cp_recs.items()
-                        if k[0] == self.cp_run and k[1] == CH_START and r["status"] == "ok" and r["nr"] > 0
-                        and not r.get("dnf") and not r.get("done"))
+        course = sorted((r["abs"], r["nr"], k) for k, r in self.run_recs(CH_START)
+                        if r["status"] == "ok" and r["nr"] > 0 and not r.get("dnf") and not r.get("done"))
         if self.finish_override is not None:
             first = [c for c in course if c[1] == self.finish_override]
             if first:
@@ -5116,7 +6082,7 @@ class LiveRankingApp:
         if self.course:
             tod, nr, _key = self.course[0]
             off = self.cp_offset()
-            secs = max(0.0, local_tod() + off - tod) if off is not None else None
+            secs = max(0.0, local_abs() + off - tod) if off is not None else None
             txt = None if secs is None else (f"{int(secs // 60)}:{int(secs % 60):02d}" if secs >= 60 else
                                              f"{int(secs)}")
             if nr != self.current_nr:
@@ -5131,7 +6097,7 @@ class LiveRankingApp:
         off = self.cp_offset()
         if off is None:
             return ""
-        secs = max(0.0, local_tod() + off - tod)
+        secs = max(0.0, local_abs() + off - tod)
         return f"{int(secs // 60)}:{int(secs % 60):02d}"
 
     def start_eth_tick(self):
@@ -5153,6 +6119,7 @@ class LiveRankingApp:
             if now - self.cp_last_hb > HEARTBEAT_S and self.cp_inflight is None and not self.cp_cmds:
                 self.cp_last_hb = now
                 self.cp_query("#RP 003", ("param", "003"), on_ok=self._on_run)
+                self.cp_probe()
             if now - self.cp_last_rx > HEARTBEAT_LOST_S:
                 self.cp_last_rx = now
                 self.log("CP antwortet nicht mehr, Verbindung wird neu aufgebaut", tag="warn")
@@ -5161,6 +6128,240 @@ class LiveRankingApp:
             self.update_eth_live()
             self.update_course_panel()
         self._eth_tick_job = self.root.after(250, self.eth_tick)
+
+    # ================================================================== #
+    # Simulator in der App
+    # ================================================================== #
+    def open_simulator(self):
+        if getattr(self, "sim_win", None) is not None and self.sim_win.winfo_exists():
+            self.sim_win.lift()
+            return self.sim_win
+        if self.sim is None:
+            self.sim = SimCP()
+            self.log(f"Simulator gestartet (127.0.0.1:{self.sim.port})", tag="ok")
+        if not self.eth_mode():
+            self.var_conn.set("ethernet")
+            self.on_conn_mode_change()
+            self.conn_seg.redraw()
+        if self.cp is None or self.cp.host != "127.0.0.1" or self.cp.port != self.sim.port:
+            self.disconnect_all()
+            self.connect_cp("127.0.0.1", self.sim.port)
+        win = self.sim_win = self._toplevel("Simulator CP 545")
+        win.columnconfigure(0, weight=1)
+        win.columnconfigure(1, weight=1)
+        tk.Label(win, text="Impulse wie am CP auslösen. Die App reagiert wie im Rennen.", bg=PANEL, fg=MUTED,
+                 font=self.f_side, wraplength=self.narrow_wrap(), justify="left").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        self._button(win, "Start", lambda: self.sim_do("start"), GREEN).grid(row=1, column=0, sticky="ew",
+                                                                             padx=(0, 3), pady=(8, 0))
+        self._button(win, "Ziel", lambda: self.sim_do("finish"), BLUE).grid(row=1, column=1, sticky="ew",
+                                                                            padx=(3, 0), pady=(8, 0))
+        self._button(win, "Nächste Zeile verlieren", lambda: self.sim_do("drop")).grid(
+            row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        row = tk.Frame(win, bg=PANEL)
+        row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        row.columnconfigure(0, weight=1)
+        tk.Label(row, text="Automatisch (Start alle 15 s)", bg=PANEL, fg=TEXT, font=self.f_side).grid(
+            row=0, column=0, sticky="w")
+        self.sw_sim_auto = Switch(row, command=self.sim_toggle_auto, scale=self.ui_scale, on=False)
+        self.sw_sim_auto.grid(row=0, column=1, sticky="e")
+        self._button(win, "Log abspielen ...", self.sim_replay_dialog).grid(row=4, column=0, columnspan=2,
+                                                                         sticky="ew", pady=(8, 0))
+        self.var_sim_speed = tk.StringVar(value="5")
+        Segmented(win, (("1", "1×"), ("5", "5×"), ("20", "20×")), self.var_sim_speed, font=self.f_side_bold,
+                  scale=self.ui_scale).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.lbl_sim = tk.Label(win, text="", bg=PANEL, fg=MUTED, font=self.f_side, wraplength=self.narrow_wrap(),
+                                justify="left", anchor="w")
+        self.lbl_sim.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self._button(win, "Simulator beenden", self.close_simulator, DARK_RED).grid(
+            row=7, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        self._place(win, narrow=True)
+        return win
+
+    def sim_status(self, text):
+        if getattr(self, "lbl_sim", None) is not None and self.lbl_sim.winfo_exists():
+            self.lbl_sim.configure(text=text)
+
+    def sim_do(self, what):
+        if self.sim is None:
+            return
+        if what == "start":
+            self.sim_status(f"Start Nr {self.sim.start()}")
+        elif what == "finish":
+            nr = self.sim.finish()
+            self.sim_status(f"Ziel (CP: Nr {nr})" if nr else "Ziel ohne Boot")
+        elif what == "drop":
+            self.sim.drop_next = True
+            self.sim_status("Die nächste Zeitmeldung geht verloren")
+
+    def sim_toggle_auto(self):
+        self._sim_auto = not getattr(self, "_sim_auto", False)
+        if self._sim_auto:
+            self._sim_next = time.time()
+            self.sim_auto_tick()
+
+    def sim_auto_tick(self):
+        if not getattr(self, "_sim_auto", False) or self.sim is None:
+            return
+        import random
+        now = time.time()
+        if now >= self._sim_next:
+            self.sim_do("start")
+            self._sim_next = now + 15
+            self.root.after(int(random.uniform(20, 40) * 1000), lambda: self.sim and self.sim_do("finish"))
+        self.root.after(500, self.sim_auto_tick)
+
+    def sim_replay_dialog(self):
+        path = filedialog.askopenfilename(parent=self.sim_win, title="Log abspielen",
+                                          initialdir=os.path.join(self.data_path, RAW_DIR),
+                                          filetypes=[("Rohdaten oder Text", "*.jsonl *.txt *.log"), ("Alle", "*.*")])
+        if path:
+            self.sim_replay(path, float(self.var_sim_speed.get()))
+
+    def sim_replay(self, path, speed=5.0):
+        """Aufgezeichnete Zeilen (Rohdaten .jsonl oder PuTTY-Log) mit den Originalabstaenden abspielen."""
+        items = []
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("{"):
+                        try:
+                            d = json.loads(line)
+                        except ValueError:
+                            continue
+                        if d.get("dev", "A") == "A":
+                            items.append((float(d.get("t", 0)), str(d.get("line", ""))))
+                    elif re.match(r"^(T[N\-\*\+=C]|RR|OP|CL)\s", line):
+                        items.append((None, line))
+        except OSError as exc:
+            messagebox.showerror("Log abspielen", str(exc))
+            return
+        if not items:
+            messagebox.showinfo("Log abspielen", "Keine Zeitmeldungen in der Datei gefunden.")
+            return
+        # ohne Zeitstempel: Zeitabstaende aus den Tageszeiten der Zeilen
+        base, out = None, []
+        for t, line in items:
+            if t is None:
+                info = parse_thcom(line)
+                t = info["abs"] if info and info.get("kind") == "time" else (out[-1][0] if out else 0)
+            base = t if base is None else base
+            out.append((t, line))
+        self.sim_status(f"Spielt {len(out)} Zeilen ab ({speed:g}×)")
+        self.log(f"Simulator: {os.path.basename(path)} wird abgespielt ({len(out)} Zeilen, {speed:g}×)")
+        t0 = out[0][0]
+        for t, line in out:
+            delay = max(0, int((t - t0) / speed * 1000))
+            self.root.after(delay, lambda l=line: self.sim and self.sim.replay_line(l))
+
+    def close_simulator(self):
+        self._sim_auto = False
+        if self.cp is not None and self.cp.host == "127.0.0.1" and self.sim and self.cp.port == self.sim.port:
+            self.disconnect_all()
+            self.set_connected(False, "nicht verbunden")
+        if self.sim is not None:
+            self.sim.close()
+            self.sim = None
+            self.log("Simulator beendet")
+        if getattr(self, "sim_win", None) is not None and self.sim_win.winfo_exists():
+            self.sim_win.destroy()
+
+    # ================================================================== #
+    # PDF und Druck
+    # ================================================================== #
+    def pdf_folder(self):
+        folder = self.settings["export_dir"] or os.path.join(self.data_path, "pdf")
+        os.makedirs(folder, exist_ok=True)
+        return folder
+
+    def pdf_doc(self, what):
+        label = self.event_label() or "SWV Wettkampf"
+        doc = PdfDoc(f"{what}", f"{label}   ·   Stand {time.strftime('%d.%m.%Y %H:%M')}")
+        mode = self.settings["wettkampf"]
+        if what == "Rangliste":
+            for cat in self.categories:
+                ranked = self.ranking(cat)
+                nk = [(nr, code) for nr, code in sorted(self.status.items())
+                      if (self.category_of(nr) or {}).get("name") == cat["name"]]
+                if not ranked and not nk:
+                    continue
+                doc.heading(f"{cat['name']}   ({cat['min']}-{cat['max']})")
+                rows = []
+                for rank, nr, _t in ranked:
+                    p = self.participants.get(nr, {})
+                    pen = self.penalty(nr)
+                    rows.append([f"{rank}.", nr, display_name(p, mode), p.get("verein", ""),
+                                 self.results[nr]["str"], f"+{pen}" if pen else "", self.disp_time(nr)])
+                doc.table([("Rang", .07, "right"), ("Nr", .07, "right"), ("Name", .30, "left"),
+                           ("Verein", .24, "left"), ("Zeit", .11, "right"), ("Straf", .08, "right"),
+                           ("Total", .13, "right")], rows)
+                if nk:
+                    doc.note("Nicht klassiert: " + ", ".join(
+                        f"Nr {nr} {display_name(self.participants.get(nr, {}), mode)} ({code})".replace(" ()", "")
+                        for nr, code in nk))
+        elif what == "Startliste":
+            rows = []
+            for i, nr in enumerate(self.start_order, 1):
+                p = self.participants.get(nr, {})
+                cat = self.category_of(nr)
+                rows.append([i, nr, display_name(p, mode), p.get("verein", ""),
+                             cat["name"] if cat else ("Test" if self.is_test(nr) else ""),
+                             self.status.get(nr, "") or (self.results[nr]["str"] if nr in self.results else "")])
+            doc.table([("Pos", .07, "right"), ("Nr", .07, "right"), ("Name", .30, "left"), ("Verein", .24, "left"),
+                       ("Kategorie", .17, "left"), ("Zeit/Status", .15, "right")], rows)
+        else:  # Zeitprotokoll wie der Papierstreifen des CP
+            why = {"ok": "", "locked": "gesperrt", "nobody": "ohne Boot", "fehl": "Fehlimpuls", "prell": "Prellzeit",
+                   "unassigned": "ohne Nummer (CP)", "cancelled": "storniert (CP)", "invalid": "ungültig",
+                   "dup": "doppelt (Reserve)", "ignored": "ausgeschieden"}
+            rows = []
+            for k, r in sorted(self.cp_recs.items(), key=lambda x: x[1]["abs"]):
+                where = {CH_START: "Start", CH_FINISH: "Ziel"}.get(k[2], f"Eingang {k[2]}")
+                day = EPOCH_2000 + datetime.timedelta(days=int(r["abs"] // 86400))
+                rows.append([day.strftime("%d.%m."), fmt_tod(r["abs"] % 86400), where,
+                             ("Reserve " if k[0] == "B" else "") + str(k[3]), r.get("cp_nr", ""), r.get("nr") or "",
+                             why.get(r["status"], r["status"]) + (" ausgeschieden" if r.get("dnf") else "")])
+            if not rows:
+                doc.note("Keine Rohzeiten vom CP vorhanden (nur im Ethernet-Modus).")
+            doc.table([("Tag", .08, "left"), ("Tageszeit", .15, "right"), ("Messpunkt", .12, "left"),
+                       ("Seq", .12, "right"), ("CP-Nr", .09, "right"), ("Nr", .08, "right"),
+                       ("Bemerkung", .36, "left")], rows)
+        return doc
+
+    def make_pdf(self, what, print_it=False):
+        doc = self.pdf_doc(what)
+        name = f"{self.event_prefix()}_{what}.pdf"
+        path = os.path.join(self.pdf_folder(), name)
+        try:
+            with open(path, "wb") as fh:
+                fh.write(doc.build(f"SWV Live-Ranking {APP_VERSION}"))
+        except OSError as exc:
+            messagebox.showerror("PDF", f"PDF konnte nicht gespeichert werden:\n{exc}")
+            return None
+        self.log(f"PDF gespeichert: {path}", tag="ok")
+        if IS_WINDOWS:
+            try:
+                os.startfile(path, "print" if print_it else "open")
+            except OSError as exc:
+                messagebox.showwarning("PDF", f"Gespeichert unter\n{path}\n\nÖffnen nicht möglich: {exc}")
+        return path
+
+    def open_pdf_menu(self, event=None):
+        menu = self._menu()
+        for what in ("Rangliste", "Startliste", "Zeitprotokoll"):
+            menu.add_command(label=f"{what} als PDF", command=lambda w=what: self.make_pdf(w))
+        menu.add_separator()
+        for what in ("Rangliste", "Startliste"):
+            menu.add_command(label=f"{what} drucken", command=lambda w=what: self.make_pdf(w, print_it=True))
+        w = self.btn_pdf
+        x, y = w.winfo_rootx(), w.winfo_rooty() + w.winfo_height()
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
 
     def refresh_ports(self):
         self.port_map = {}
@@ -5696,15 +6897,20 @@ class LiveRankingApp:
         fields = {}
         clubs = sorted({x.get("verein") for x in self.participants.values() if x.get("verein")}, key=str.casefold)
         specs = [("p1", labels[0], "entry"), ("p2", labels[1], "entry"), ("verein", "Verein", "club"),
-                 ("notiz", "Notiz für Speaker", "entry")]
+                 ("notiz", "Notiz für Speaker", "entry"), ("status", "Status", "status")]
         if nr in self.order_index:
             specs.append(("after", "Einfügen nach Nr", "entry"))
+        status_opts = ["klassiert", "DNS nicht gestartet", "DNF ausgeschieden", "DSQ disqualifiziert"]
         for i, (key, label, kind) in enumerate(specs, start=1):
             tk.Label(dlg, text=label, bg=PANEL, fg=TEXT, font=self.f_side, anchor="w").grid(
                 row=2 * i - 1, column=0, sticky="w", pady=(4, 0))
             if kind == "club":
                 w = self._combo(dlg, clubs, width=10)
                 w.set(p.get("verein", ""))
+            elif kind == "status":
+                w = self._combo(dlg, status_opts, width=10, state="readonly")
+                code = self.status.get(nr)
+                w.set(next((o for o in status_opts if code and o.startswith(code)), status_opts[0]))
             else:
                 w = self._entry(dlg, width=10)
                 if key == "after":
@@ -5757,6 +6963,10 @@ class LiveRankingApp:
                 return
             for key in ("p1", "p2", "verein", "notiz"):
                 p[key] = fields[key].get().strip()
+            new_code = fields["status"].get().split()[0]
+            new_code = None if new_code == "klassiert" else new_code
+            if new_code != self.status.get(nr):
+                self.set_status(nr, new_code)
             moved = ""
             if "after" in fields:
                 kind, val = self.parse_after(fields["after"].get(), nr)
@@ -6381,6 +7591,36 @@ class LiveRankingApp:
                 "theme": THEME}
         return json.dumps(data, ensure_ascii=False).encode("utf-8")
 
+    def build_api(self):
+        """Daten fuer andere Programme (Anzeigetafel, Livestream): nur lesen, ohne Speaker-Notizen."""
+        mode = self.settings["wettkampf"]
+        enc = lambda d: json.dumps(d, ensure_ascii=False).encode("utf-8")  # noqa: E731
+
+        def person(nr):
+            p = self.participants.get(nr, {})
+            cat = self.category_of(nr)
+            return {"nr": nr, "name": display_name(p, mode), "verein": p.get("verein", ""),
+                    "kategorie": cat["name"] if cat else "", "test": self.is_test(nr)}
+
+        results = []
+        for cat in self.categories:
+            ranked = [dict(person(nr), rang=rank, zeit=self.disp_time(nr), sekunden=round(self.total_secs(nr), 3),
+                           strafpunkte=self.penalty(nr)) for rank, nr, _t in self.ranking(cat)]
+            nk = [dict(person(nr), status=code) for nr, code in sorted(self.status.items())
+                  if (self.category_of(nr) or {}).get("name") == cat["name"]]
+            results.append({"kategorie": cat["name"], "von": cat["min"], "bis": cat["max"], "rangliste": ranked,
+                            "nicht_klassiert": nk})
+        course = [dict(person(nr), start=fmt_tod(tod % 86400), laufzeit=self.running_text(tod),
+                       naechstes_ziel=i == 0) for i, (tod, nr, _k) in enumerate(self.course)]
+        live = {"laufend": person(self.current_nr) if self.current_nr else None, "zeit": self.live_time,
+                "fertig": bool(self.live_final), "ziel": person(self.ziel_nr) if self.ziel_nr else None,
+                "zielzeit": self.results[self.ziel_nr]["str"] if self.ziel_nr in self.results else None,
+                "stand": time.strftime("%H:%M:%S"), "wettkampf": self.event_label()}
+        events = [{"zeit": t[0], "text": t[1]} for t in self.ticker[:30]]
+        start = [dict(person(nr), status=self.status.get(nr)) for nr in self.next_starters(count=200)]
+        return {"live": enc(live), "results": enc(results), "course": enc(course), "events": enc(events),
+                "startlist": enc(start)}
+
     def who_line(self, nr):
         """Wie participant_line, aber ohne Speaker-Notizen (nicht oeffentlich)."""
         if nr is None:
@@ -6392,7 +7632,7 @@ class LiveRankingApp:
     def web_tick(self):
         if self.web.running:
             try:
-                self.web.snapshot = self.build_web_snapshot()
+                self.web.publish(self.build_web_snapshot(), self.build_api())
             except Exception as exc:
                 self.log(f"Browser-Anzeige: {exc}", tag="error")
         self.root.after(WEB_SNAPSHOT_MS, self.web_tick)
@@ -6825,6 +8065,11 @@ class LiveRankingApp:
             "results": {str(k): v for k, v in self.results.items()},
             "startlist": {"order": self.start_order, "source": self.startlist_source,
                           "participants": {str(k): v for k, v in self.participants.items()}},
+            "status": {str(k): v for k, v in self.status.items()},
+            "cp": {"run": self.cp_run, "last_start": self.last_start_nr,
+                   "last_finish": list(self.last_finish_key) if self.last_finish_key else None,
+                   "recs": [[list(k), {f: (list(v) if isinstance(v, tuple) else v) for f, v in r.items()}]
+                            for k, r in self.cp_recs.items()]},
         }
         try:
             tmp = os.path.join(self.data_path, AUTOSAVE_FILE + ".tmp")
@@ -6848,10 +8093,19 @@ class LiveRankingApp:
                     "source": str(v.get("source", "")), "run": int(v.get("run", 1)),
                     "prev": v.get("prev") if isinstance(v.get("prev"), dict) else None,
                     "status": v.get("status", ST_OPEN),
+                    "cp": v.get("cp") if isinstance(v.get("cp"), list) else None,
                 }
             sl = data.get("startlist") or {}
             parts = {int(k): v for k, v in (sl.get("participants") or {}).items()}
-            order = [int(n) for n in sl.get("order", []) if int(n) in parts]
+            order = [int(n) for n in sl.get("order", [])]
+            status = {int(k): v for k, v in (data.get("status") or {}).items() if v in ("DNS", "DNF", "DSQ")}
+            cpd = data.get("cp") or {}
+            recs = {}
+            for k, r in cpd.get("recs", []):
+                for f in ("start", "done", "cp_start", "twin"):
+                    if isinstance(r.get(f), list):
+                        r[f] = tuple(r[f])
+                recs[tuple(k)] = r
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return
         if not results and not order:
@@ -6862,6 +8116,11 @@ class LiveRankingApp:
             self.results = results
             self.participants, self.start_order = parts, order
             self.startlist_source = str(sl.get("source", ""))
+            self.status, self.cp_recs = status, recs
+            self.cp_run = int(cpd.get("run") or 0)
+            self.last_start_nr = cpd.get("last_start")
+            self.last_finish_key = tuple(cpd["last_finish"]) if cpd.get("last_finish") else None
+            self.course = self.compute_course()
             self.rebuild_order_index()
             self.update_startlist_label()
             self._rank_cache = None
@@ -6879,6 +8138,9 @@ class LiveRankingApp:
                                    "Vorher exportieren! Die Startliste bleibt erhalten.", "Alle löschen"):
             return
         self.results.clear()
+        self.cp_recs.clear()
+        self.status.clear()
+        self.course, self.last_finish_key, self.finish_override = [], None, None
         self.blink.clear()
         self.ticker.clear()
         self.current_nr = None
@@ -6897,6 +8159,9 @@ class LiveRankingApp:
         if self.cp is not None:
             self.cp.stop()
             self.cp.join(1.5)
+        self.stop_backup()
+        if self.sim is not None:
+            self.sim.close()
         self.web.stop()
         self.save_autosave()
         self.save_settings()

@@ -1,5 +1,20 @@
 # Änderungen
 
+## v1.7.0 (20.11.2026) Zeitmessung wie OpenSkiPro2 / SkiPro
+- Zielimpulse ordnet die App selbst zu: das Boot, das als nächstes erwartet wird (Überholen berücksichtigt). Der CP wird mit `#WP 026 04` nur noch für seinen Papierstreifen nachgeführt
+- Fehlende Zeiten werden mit `#RT` nachgeholt (Sequenzlücke oder Abfrage beim Heartbeat)
+- «Lauf vom CP laden» (`#DL`): übernimmt nur Zeiten, die der App fehlen, z.B. nach einem Neustart
+- Fehlimpulse: Prellzeit für Start und Ziel (ms) und Mindestfahrzeit (s) einstellbar; Zielzeit nachträglich ungültig schalten
+- Start und Ziel sperren: Impulse werden ohne Nummer gespeichert und unter «Auf Fahrstrecke» von Hand zugeordnet
+- Rohimpulse als Grundlage: jede Zeile des CP sofort in `rohdaten/JJJJ-MM-TT.jsonl`, Rohzeiten im Autosave, «Resultate aus Rohzeiten neu berechnen»
+- Status DNS, DNF, DSQ: Rechtsklick in «Als nächstes» (DNS), Menü auf der Fahrstrecke (DNF, DSQ), Rechtsklick in der Rangliste (DSQ), Teilnehmerfenster. Nicht klassierte stehen im Kartentitel, in PDF und API
+- Gleiche angezeigte Zeit = gleicher Rang, bei Gleichstand höhere Startnummer zuerst
+- Simulator in der App: Start, Ziel, verlorene Zeile, automatischer Ablauf, Log abspielen (Rohdaten oder PuTTY-Log)
+- Reserve-CP: zweiter CP über Ethernet, seine Zeiten werden übernommen, solange der Haupt-CP fehlt
+- API: `/api/v1/live`, `/results`, `/course`, `/startlist`, `/events` und WebSocket `/ws` (Browser-Anzeige jetzt live, Rückfall auf Abfrage)
+- PDF und Drucken: Rangliste, Startliste, Zeitprotokoll (ohne Zusatzmodule)
+- Zeiten über Mitternacht (Tag aus der Meldung des CP)
+
 ## v1.6.2 (20.11.2026) Korrekturen in der App
 - Der CP 545 kennt `#WC 013` nicht (Antwort AK R): Nummer ändern, Ausgeschieden und Zielzeit umbuchen führt die App selbst. Jede Startzeit führt die Nummer des CP und die richtige Nummer, spätere Meldungen des CP werden umgebucht
 - Ausgeschiedene Boote bleiben im CP auf der Strecke: die App lädt mit `#WP 026 04` das richtige nächste Ziel vor

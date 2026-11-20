@@ -1,5 +1,6 @@
 """Simulierter TAG Heuer CP 545 (THCOM08 ueber TCP), Verhalten wie im Test von Stefan."""
-import socket, threading, time
+import datetime, socket, threading, time
+DAY = (datetime.date.today() - datetime.date(2000, 1, 1)).days
 
 class CPSim:
     def __init__(self, scan_port=17000, data_port=23500, readback=True, wc013=False):
@@ -58,7 +59,7 @@ class CPSim:
         if t == "#SN": self.send("SN 04711 CP545 VB12", c); self.send("AK C", c); return
         if t == "#!T": self.send("!T " + self.ts(self.tod())[:8] + " 20/11/26", c); self.send("AK C", c); return
         if p[:2] == ["#RP", "001"]: self.send("&P 001 2", c); self.send("AK C", c); return
-        if p[:2] == ["#RP", "003"]: self.send(f"&P 003 {self.run:02d} {self.run+1:02d} 11:00:00 09820", c); self.send("AK C", c); return
+        if p[:2] == ["#RP", "003"]: self.send(f"&P 003 {self.run:02d} {self.run+1:02d} 11:00:00 {DAY:05d}", c); self.send("AK C", c); return
         if p[:2] == ["#RP", "026"]:
             ch = int(p[2]); v = self.next.get(ch) or 0
             if self.readback: self.send(f"&P 026 {ch:02d} {v:04d}", c)
@@ -69,7 +70,7 @@ class CPSim:
             self.send("AK R", c); return
         if p[:1] == ["#RT"]:
             seq, ch = int(p[1]), int(p[2]); r = self.recs.get((ch, seq))
-            if r: self.send(f"AN {r[0]:4d} {seq:4d} M{ch} {self.ts(r[1])}  9820", c)
+            if r: self.send(f"AN {r[0]:4d} {seq:4d} M{ch} {self.ts(r[1])}  {DAY}", c)
             self.send("AK C", c); return
         if p[:2] == ["#WC", "013"]:
             ch, seq = int(p[2]), int(p[3]); new = t[len("#WC 013 01 0000 "):]
@@ -77,13 +78,13 @@ class CPSim:
             if not r: self.send("AK F", c); return
             self.send("AK C", c)
             if new.strip() == "C":
-                self.send(f"TC {r[0]:4d} {seq:4d} M{ch} {self.ts(r[1])}  9820"); r[0] = 0
+                self.send(f"TC {r[0]:4d} {seq:4d} M{ch} {self.ts(r[1])}  {DAY}"); r[0] = 0
                 self.course = [x for x in self.course if x[2] != seq or ch != 1]
             else:
                 n = int(new)
-                self.send(f"T- {r[0]:4d} {seq:4d} M{ch} {self.ts(r[1])}  9820")
+                self.send(f"T- {r[0]:4d} {seq:4d} M{ch} {self.ts(r[1])}  {DAY}")
                 old = r[0]; r[0] = n
-                self.send(f"T* {n:4d} {seq:4d} M{ch} {self.ts(r[1])}  9820")
+                self.send(f"T* {n:4d} {seq:4d} M{ch} {self.ts(r[1])}  {DAY}")
                 if ch == 1:
                     self.course = [(n if x[2] == seq else x[0], x[1], x[2]) for x in self.course]
                 if ch == 4:  # Umbuchung Ziel: alter Fahrer wieder auf der Strecke, neuer weg
@@ -100,7 +101,7 @@ class CPSim:
             self.recs[(1, self.seq[1])] = [nr, tod]
             self.course.append((nr, tod, self.seq[1]))
             self.all_starts = getattr(self, "all_starts", []) + [(nr, tod, self.seq[1])]
-            self.send(f"TN {nr:4d} {self.seq[1]:4d} M1 {self.ts(tod)}  9820")
+            self.send(f"TN {nr:4d} {self.seq[1]:4d} M1 {self.ts(tod)}  {DAY}")
             return nr
 
     def finish(self):
@@ -112,7 +113,7 @@ class CPSim:
             self.course.remove(st)
             self.seq[4] += 1; tod = self.tod()
             self.recs[(4, self.seq[4])] = [nr, tod]
-            self.send(f"TN {nr:4d} {self.seq[4]:4d} M4 {self.ts(tod)}  9820")
+            self.send(f"TN {nr:4d} {self.seq[4]:4d} M4 {self.ts(tod)}  {DAY}")
             secs = int((tod - st[1]) * 10) / 10
             self.results.append((nr, secs))
             rank = 1 + sum(1 for n, s in self.results if s < secs)

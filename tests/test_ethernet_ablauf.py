@@ -55,7 +55,7 @@ app.cp_change_number(app.course_key(103), 103, 105); pump(1.0)
 print("course after renumber", [c[1] for c in app.course])
 # Ausgeschieden 105
 app.cp_cancel_start(105); pump(1.0)
-print("course after dnf", [c[1] for c in app.course], "dnf", app.dnf)
+print("course after dnf", [c[1] for c in app.course], "status", app.status)
 print("ticker:", [t[1] for t in app.ticker[:6]])
 # Verbindungsabbruch
 sim.drop_clients(); pump(4)
