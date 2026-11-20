@@ -69,7 +69,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "2026-11-20 Ethernet"
+APP_VERSION = "1.6.1"
 DEFAULT_BAUD = 9600
 TOP_N = 5
 BLINK_SECONDS = 30
@@ -90,7 +90,7 @@ PALETTES = {
         "BG": "#000000", "PANEL": "#1c1c1e", "PANEL2": "#2c2c2e", "BUTTON": "#3a3a3c", "BUTTON_FG": "#ffffff",
         "BORDER": "#38383a", "TEXT": "#ffffff", "MUTED": "#98989d", "BLUE": "#0872dd", "ACCENT": "#0a84ff",
         "GREEN": "#1e8538", "GREEN_TEXT": "#30d158", "GOLD": "#ffd60a", "RED": "#ff453a", "ORANGE": "#ff9f0a",
-        "LIGHT_YELLOW": "#fff3c4", "DARK_RED": "#d63930", "LIST_BG": "#f2f2f7", "LIST_FG": "#000000",
+        "LIGHT_YELLOW": "#fff3c4", "DARK_RED": "#d63930", "LIST_BG": "#2c2c2e", "LIST_FG": "#ffffff",
         "SEG_BG": "#2c2c2e", "SEG_ACTIVE": "#636366", "SEG_TEXT": "#c7c7cc", "SEG_TEXT_ACTIVE": "#ffffff",
         "SWITCH_OFF": "#39393d", "SWITCH_ON": "#30d158", "DISABLED_FG": "#6e6e73", "LOG_TEST": "#64748b",
         "CHECK_SEL": "#0872dd", "CHECK_SEL_FG": "#ffffff", "CAPTION": 0x00000000, "CAPTION_TEXT": 0x00FFFFFF,
@@ -1849,6 +1849,7 @@ CH_START, CH_FINISH = 1, 4  # Net Time: Start Eingang 1, Ziel Eingang 4
 CMD_TIMEOUT = 1.6
 HEARTBEAT_S = 15
 HEARTBEAT_LOST_S = 30
+SERIAL_SILENCE_S = 5        # RS232: so lange ohne Laufzeit waehrend eines Laufs = Abbruch
 
 _RE_TIME = re.compile(r"^(T[N\-\*\+=C]|TI)\s+(\d+)\s+(\d+)\s+(M?)(\d+)\s+(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)\s*(\d*)")
 _RE_RR = re.compile(r"^(RR|GR)\s+(\d+)\s+(\d+)\s+([\d:.]+)\s*$")
@@ -2191,8 +2192,18 @@ class SerialReader(threading.Thread):
             return
         self.q.put(("connected", self.port, self))
         buf = bytearray()
+        lines, next_lines = None, 0.0
         try:
             while not self.stop_event.is_set():
+                if time.time() >= next_lines:  # Steuerleitungen (nur wenn das Kabel sie fuehrt)
+                    next_lines = time.time() + 0.5
+                    try:
+                        now = {"CTS": bool(ser.cts), "DSR": bool(ser.dsr), "CD": bool(ser.cd)}
+                    except Exception:
+                        now = lines
+                    if now is not None and now != lines:
+                        lines = now
+                        self.q.put(("lines", dict(now), self))
                 chunk = ser.read(ser.in_waiting or 1)
                 if not chunk:
                     continue
@@ -2326,6 +2337,9 @@ class LiveRankingApp:
 
         self.root.after(POLL_INTERVAL_MS, self.poll_queue)
         self.root.after(BLINK_INTERVAL_MS, self.blink_tick)
+        self.serial_base, self.serial_last_rx, self.serial_silent, self.serial_lines0 = None, 0.0, None, None
+        self._conn_status = ("nicht verbunden", None)
+        self.root.after(1000, self.serial_watch_tick)
         self.root.after(WEB_SNAPSHOT_MS, self.web_tick)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -2410,7 +2424,9 @@ class LiveRankingApp:
                         arrowcolor=TEXT, padding=4, bordercolor=BORDER, lightcolor=INPUT_BG, darkcolor=INPUT_BG,
                         insertcolor=TEXT)
         style.map("Port.TCombobox",
-                  fieldbackground=[("readonly", INPUT_BG), ("!disabled", INPUT_BG)],
+                  fieldbackground=[("readonly", INPUT_BG), ("!disabled", INPUT_BG), ("disabled", INPUT_BG)],
+                  background=[("readonly", BUTTON), ("active", BUTTON), ("!disabled", BUTTON)],
+                  arrowcolor=[("disabled", MUTED), ("!disabled", TEXT)],
                   foreground=[("readonly", INPUT_FG), ("!disabled", INPUT_FG)],
                   selectbackground=[("!disabled", BLUE)],
                   selectforeground=[("!disabled", WHITE)])
@@ -2867,7 +2883,10 @@ class LiveRankingApp:
         self._button(eth, "Suchen", lambda: self.start_eth_job(connect=False)).grid(
             row=3, column=1, sticky="e", padx=(6, 0), pady=(2, 6))
         self.lbl_eth_hint = self._label(eth, f"PC erhält {PC_IP}, der CP hat ab {CP_NET}{CP_FIRST}. "
-                                             "Ethernet am CP einschalten (F › Einstellungen › Ethernet).",
+                                             "Ethernet am CP einschalten (F › Einstellungen › Ethernet). "
+                                             "Ohne Adminrechte im Betrieb: in Windows bei der Netzwerkkarte "
+                                             f"unter IPv4 › Alternative Konfiguration {PC_IP} / {PC_MASK} "
+                                             "eintragen.",
                                         fg=MUTED, wraplength=wrap, justify="left")
         self.lbl_eth_hint.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 6))
         self.btn_connect = self._button(b, "Verbinden", self.toggle_connection, GREEN)
@@ -4224,7 +4243,10 @@ class LiveRankingApp:
                 if reader is not self.reader:
                     continue  # Nachzuegler einer frueheren Verbindung
                 if kind == "line":
+                    self.serial_rx()
                     self.handle_line(payload)
+                elif kind == "lines":
+                    self.on_serial_lines(payload)
                 elif kind == "connected":
                     self.on_serial_connected(reader)
                 elif kind == "lost":
@@ -4449,9 +4471,14 @@ class LiveRankingApp:
     def _eth_job_run(self, token, adapter, info, want, connect):
         put = lambda kind, payload: self.q.put((kind, payload, token))  # noqa: E731
         hosts = cp_hosts()
-        if IS_WINDOWS and adapter and not os.environ.get("SWV_CP_HOSTS"):
-            ips = info["ips"] if info else []
-            if not any(ip.startswith(CP_NET) for ip in ips):
+        put("eth_status", ("CP suchen ...", "gold"))
+        found = scan_cps(hosts)  # zuerst ohne Umstellung: braucht keine Adminrechte
+        if not found and IS_WINDOWS and adapter and not os.environ.get("SWV_CP_HOSTS"):
+            fresh = next((a for a in list_adapters() if a["name"] == adapter), None)
+            ips = (fresh or info or {}).get("ips", [])
+            if any(ip.startswith(CP_NET) for ip in ips):
+                put("eth_log", (f"Netzwerkkarte «{adapter}» hat bereits {', '.join(ips)}", "ok"))
+            else:
                 put("eth_status", (f"Netzwerkkarte «{adapter}» auf {PC_IP} stellen, Windows fragt nach "
                                    "Berechtigung ...", "gold"))
                 put("net_pending", adapter)
@@ -4464,13 +4491,13 @@ class LiveRankingApp:
                     put("eth_fail", f"{PC_IP} ist nach 12 s noch nicht aktiv. Kabel zum CP prüfen.")
                     return
                 put("eth_log", (f"Netzwerkkarte «{adapter}» hat {PC_IP} / {PC_MASK}", "ok"))
-        put("eth_status", (f"CP suchen ({hosts[0]} bis {hosts[-1]}) ..." if len(hosts) > 1 else "CP suchen ...",
-                           "gold"))
-        found = scan_cps(hosts)
-        if not found:
-            # zweiter Versuch: Windows braucht nach der Umstellung manchmal einige Sekunden
-            time.sleep(2)
+            put("eth_status", (f"CP suchen ({hosts[0]} bis {hosts[-1]}) ..." if len(hosts) > 1 else "CP suchen ...",
+                               "gold"))
             found = scan_cps(hosts)
+            if not found:
+                # zweiter Versuch: Windows braucht nach der Umstellung manchmal einige Sekunden
+                time.sleep(2)
+                found = scan_cps(hosts)
         put("eth_found", found)
         if not connect:
             return
@@ -5108,6 +5135,10 @@ class LiveRankingApp:
         if self.conn_target.get("identity") is None:
             self.conn_target["identity"] = port_identity(reader.port)
         self.set_connected(True, f"{reader.port} verbunden")
+        self.serial_base = f"{reader.port} verbunden"
+        self.serial_last_rx = time.time()
+        self.serial_silent = None
+        self.serial_lines0 = None
         if was_reconnecting:
             self.log(f"{reader.port} wieder verbunden", tag="ok")
             self.add_ticker(f"Verbindung zum CP 545 wieder hergestellt ({reader.port})", "ziel")
@@ -5117,6 +5148,61 @@ class LiveRankingApp:
                 self.cmb_port.set(match)
         else:
             self.log(f"Verbunden mit {reader.port}", tag="ok")
+
+    # ---------------- Datenueberwachung RS232 ---------------- #
+    def serial_alive(self):
+        return (not self.eth_mode() and self.reader is not None and self.reader.is_alive()
+                and not self.reconnecting and getattr(self, "serial_base", None))
+
+    def serial_rx(self):
+        self.serial_last_rx = time.time()
+        if self.serial_silent == "data":
+            self.serial_ok_again("Daten vom CP 545 wieder da")
+
+    def serial_ok_again(self, text):
+        self.serial_silent = None
+        self.set_connected(True, self.serial_base)
+        self.log(text, tag="ok")
+        self.add_ticker(text, "ziel")
+
+    def serial_problem(self, kind, text):
+        if self.serial_silent:
+            return
+        self.serial_silent = kind
+        self.set_conn_status(text, RED)
+        self.log(text, tag="error")
+        self.add_ticker(text, "warn")
+
+    def on_serial_lines(self, lines):
+        state = "  ".join(f"{k} {'ein' if v else 'aus'}" for k, v in lines.items())
+        self.log(f"Steuerleitungen: {state}", focus=False)
+        if self.serial_lines0 is None:
+            self.serial_lines0 = lines
+            return
+        dropped = [k for k, v in lines.items() if self.serial_lines0.get(k) and not v]
+        if dropped:
+            self.serial_problem("lines", f"Kabel zum CP getrennt ({', '.join(dropped)} aus), Kabel prüfen")
+        elif self.serial_silent == "lines":
+            self.serial_ok_again("Kabel zum CP wieder verbunden")
+
+    def serial_watch_tick(self):
+        """Jede Sekunde: Abbruch erkennen, wenn waehrend eines Laufs keine Laufzeit mehr kommt."""
+        self.root.after(1000, self.serial_watch_tick)
+        if not self.serial_alive():
+            return
+        age = time.time() - self.serial_last_rx
+        running = self.live_time is not None and not self.live_final
+        if running and age > SERIAL_SILENCE_S and not self.serial_silent:
+            self.serial_problem("data", "keine Daten vom CP, Kabel prüfen")
+            return
+        if self.serial_silent:
+            return
+        if age >= 60:
+            mins = int(age // 60)
+            ago = f"{mins} min" if mins < 60 else f"{mins // 60} h {mins % 60} min"
+            self.set_conn_status(f"{self.serial_base} · letzte Daten vor {ago}", GREEN_TEXT)
+        elif self._conn_status[0] != self.serial_base:
+            self.set_conn_status(self.serial_base, GREEN_TEXT)
 
     def on_serial_lost(self, reader, exc):
         """Unerwarteter Abbruch (z.B. USB ausgesteckt): kein Fenster, automatisch wieder verbinden."""

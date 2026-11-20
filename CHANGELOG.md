@@ -1,5 +1,12 @@
 # Änderungen
 
+## v1.6.1 (20.11.2026) Korrekturen
+- RS232: Abbruch wird erkannt, wenn während eines Laufs länger als 5 s keine Laufzeit kommt (Kabel am CP oder RJ11 ausgesteckt, USB-Adapter bleibt am PC). Status rot, Ticker und Log, automatisch zurück auf «verbunden», sobald wieder Daten kommen
+- RS232: ohne Boot auf der Strecke zeigt die Kopfzeile das Alter der letzten Daten
+- RS232: Steuerleitungen CTS, DSR und CD werden protokolliert und, falls das Kabel sie führt, als sofortige Abbruchmeldung genutzt
+- Ethernet: Suche zuerst ohne Umstellung der Netzwerkkarte (keine Adminrechte nötig, wenn der PC schon im Netz 192.168.1.x ist, z.B. mit der Windows-Einstellung «Alternative Konfiguration»)
+- Aufklapplisten folgen dem hellen oder dunklen Design
+
 ## v1.6.0 (20.11.2026) Ethernet-Steuerung
 - Verbindungsart RS232 (auswerten) oder Ethernet (THCOM08, CP aktiv steuern)
 - Nächste Startnummer vorladen mit Zurücklesen, ausgeschieden, Nummer ändern, Überholen, Zielzeit umbuchen
