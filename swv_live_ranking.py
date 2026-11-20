@@ -193,6 +193,7 @@ DEFAULT_SETTINGS = {
     "web": {"bind": "", "port": 8080, "key": ""},
     "export_dir": "",
     "theme": "dark",
+    "cats_auto": True,
     "conn": {"mode": "rs232", "cp_ip": "", "adapter": ""},
     "net_restore": {"pending": False, "adapter": ""},
 }
@@ -2979,6 +2980,15 @@ class LiveRankingApp:
         self._button(b, "Löschen", self.category_delete, DARK_RED).grid(row=6, column=2, sticky="ew", pady=(6, 0))
         self._label(b, "Karten lassen sich auch direkt an der Titelzeile verschieben.", fg=MUTED,
                     wraplength=wrap, justify="left").grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        tk.Frame(b, bg=BORDER, height=1).grid(row=8, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        auto = tk.Frame(b, bg=PANEL)
+        auto.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(int(5 * self.ui_scale), 0))
+        auto.columnconfigure(0, weight=1)
+        self._label(auto, "Bereiche automatisch aus der Startliste (bis ..99, ab 900 bis 950)",
+                    wraplength=wrap - int(60 * self.ui_scale), justify="left").grid(row=0, column=0, sticky="w")
+        self.sw_cats_auto = Switch(auto, command=self.toggle_cats_auto, scale=self.ui_scale,
+                                   on=self.settings["cats_auto"])
+        self.sw_cats_auto.grid(row=0, column=1, sticky="e")
         self.refresh_category_list()
 
         # Onlinetool
@@ -3751,6 +3761,7 @@ class LiveRankingApp:
         self.root.after(BLINK_INTERVAL_MS, self.blink_tick)
 
     def on_data_changed(self, save=True):
+        self.sync_categories()
         self._rank_cache = None
         self.update_rankings()
         self.update_live_info()
@@ -5352,7 +5363,7 @@ class LiveRankingApp:
                           highlightthickness=0, wrap="none")
         lbl_sum = tk.Label(dlg, text="", bg=PANEL, fg=TEXT, font=self.f_side, anchor="w", justify="left")
         lbl_warn = tk.Label(dlg, text="", bg=PANEL, fg=GOLD, font=self.f_side, anchor="w", justify="left")
-        var_cats = tk.BooleanVar(value=True)
+        var_cats = tk.BooleanVar(value=self.settings["cats_auto"])
 
         def refresh(*_a):
             m = current_mapping()
@@ -5430,6 +5441,10 @@ class LiveRankingApp:
             self.var_mode.set(var_mode.get())
             self.update_mode_buttons()
             self.save_settings()
+            self.settings["cats_auto"] = bool(var_cats.get())
+            self.save_settings()
+            if hasattr(self, "sw_cats_auto"):
+                self.sw_cats_auto.set(self.settings["cats_auto"])
             if var_cats.get():
                 self.apply_startlist_categories(order, parts)
             else:
@@ -5447,13 +5462,16 @@ class LiveRankingApp:
         self._center(dlg)
         dlg.grab_set()
 
-    def apply_startlist_categories(self, order, parts):
+    def apply_startlist_categories(self, order, parts, only_changes=False):
+        """Nummernbereiche der Kategorien aus der Startliste setzen. -> Liste der Aenderungen"""
         changed = []
         ranges, warnings = derive_category_ranges(order, parts)
-        for w in warnings:
-            self.log(f"Kategorien: {w}", tag="warn")
         for name, lo, hi, _n in ranges:
             cat = self._cat_lookup.get(name.casefold())
+            if cat and (cat["min"], cat["max"]) == (lo, hi):
+                if not only_changes:
+                    changed.append(f"{cat['name']} {lo}-{hi}")
+                continue
             if cat:
                 cat["min"], cat["max"] = lo, hi
             else:
@@ -5461,12 +5479,37 @@ class LiveRankingApp:
                 self.categories.append(cat)
                 self.rebuild_cat_lookup()
             changed.append(f"{cat['name']} {lo}-{hi}")
+        if only_changes and not changed:
+            return []
+        for w in warnings:
+            self.log(f"Kategorien: {w}", tag="warn")
         self.rebuild_cat_lookup()
         self.save_categories()
         self.refresh_category_list()
         self.build_cards()
         if changed:
-            self.log("Kategorien aus Startliste: " + ", ".join(changed))
+            self.log("Kategorien aus Startliste: " + ", ".join(changed), tag="ok")
+        return changed
+
+    def sync_categories(self):
+        """Bereiche automatisch nachfuehren, wenn sich die Startliste geaendert hat."""
+        if not self.settings["cats_auto"] or not self.start_order or getattr(self, "_syncing_cats", False):
+            return
+        self._syncing_cats = True
+        try:
+            if self.apply_startlist_categories(self.start_order, self.participants, only_changes=True):
+                self._rank_cache = None
+        finally:
+            self._syncing_cats = False
+
+    def toggle_cats_auto(self):
+        self.settings["cats_auto"] = not self.settings["cats_auto"]
+        self.save_settings()
+        if self.settings["cats_auto"]:
+            self.log("Kategoriebereiche werden automatisch aus der Startliste nachgeführt", tag="ok")
+            self.on_data_changed()
+        else:
+            self.log("Kategoriebereiche: Automatik aus, Bereiche bleiben wie eingestellt", tag="warn")
 
     def clear_startlist(self):
         if not self.start_order:
@@ -5879,6 +5922,14 @@ class LiveRankingApp:
                     if p.get("kategorie", "").casefold() == old_name.casefold():
                         p["kategorie"] = cat["name"]
             self.categories[sel[0]] = cat
+            in_list = any(p.get("kategorie", "").casefold() == cat["name"].casefold()
+                          for p in self.participants.values())
+            if self.settings["cats_auto"] and in_list:
+                self.settings["cats_auto"] = False
+                self.save_settings()
+                self.sw_cats_auto.set(False)
+                self.log(f"Bereich von {cat['name']} von Hand geändert: automatische Bereiche aus der Startliste "
+                         "ausgeschaltet", tag="warn")
             self.categories_changed(select=sel[0])
 
     def category_add(self):

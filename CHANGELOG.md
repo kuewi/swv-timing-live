@@ -6,6 +6,7 @@
 - RS232: Steuerleitungen CTS, DSR und CD werden protokolliert und, falls das Kabel sie führt, als sofortige Abbruchmeldung genutzt
 - Ethernet: Suche zuerst ohne Umstellung der Netzwerkkarte (keine Adminrechte nötig, wenn der PC schon im Netz 192.168.1.x ist, z.B. mit der Windows-Einstellung «Alternative Konfiguration»)
 - Aufklapplisten folgen dem hellen oder dunklen Design
+- Kategoriebereiche werden bei jeder Änderung der Startliste automatisch nachgeführt (auch nach Wiederherstellen der Sitzung und beim Einfügen). Schalter im Abschnitt Kategorien, eine Änderung von Hand schaltet die Automatik aus
 
 ## v1.6.0 (20.11.2026) Ethernet-Steuerung
 - Verbindungsart RS232 (auswerten) oder Ethernet (THCOM08, CP aktiv steuern)
