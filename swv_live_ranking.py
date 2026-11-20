@@ -69,7 +69,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 DEFAULT_BAUD = 9600
 TOP_N = 5
 BLINK_SECONDS = 30
@@ -196,7 +196,8 @@ DEFAULT_SETTINGS = {
     "cats_auto": True,
     "timing": {"prell_start_ms": 300, "prell_finish_ms": 300, "min_run_s": 0, "lock_start": False,
                "lock_finish": False},
-    "conn": {"mode": "rs232", "cp_ip": "", "cp_ip_b": "", "adapter": ""},
+    "conn": {"mode": "rs232", "cp_ip": "", "cp_ip_b": "", "adapter": "",
+             "usb_port": "", "usb_baud": 9600, "usb_ack": False},
     "net_restore": {"pending": False, "adapter": ""},
 }
 
@@ -2137,6 +2138,7 @@ class CPClient(threading.Thread):
         self.reconnect_event = threading.Event()
         self.out = queue.Queue()
         self.connected = False
+        self.link = "eth"
 
     def send(self, text):
         self.out.put((text.rstrip("\r\n") + "\r\n").encode("latin-1", "replace"))
@@ -2212,6 +2214,106 @@ class CPClient(threading.Thread):
         self.q.put(("eth_disconnected", self.host, self))
 
 
+def thcom_cs16(data):
+    """THCOM08 RS232: Summe aller Bytes der Daten ohne '#', 4 Hex-Ziffern."""
+    return f"{sum(b for b in data if b != 0x23) & 0xFFFF:04X}"
+
+
+def split_serial_frame(raw):
+    """RS232/USB-Zeile: STX entfernen, [Daten] TAB CS16 pruefen. -> (daten, ok)."""
+    raw = raw.rstrip("\r")
+    stx = raw.rfind("\x02")
+    if stx >= 0:
+        raw = raw[stx + 1:]
+    if "\t" not in raw:
+        return raw, True
+    data, cs = raw.rsplit("\t", 1)
+    cs = cs.strip()
+    if not cs:
+        return data, True
+    if not re.fullmatch(r"[0-9A-Fa-f]{4}", cs):
+        return data, False
+    return data, thcom_cs16(data.encode("latin-1", "replace")) == cs.upper()
+
+
+class CPSerialClient(CPClient):
+    """CP 545 direkt per USB (virtueller COM-Port) oder RS232: gleiche Befehle wie ueber Ethernet,
+    Rahmen mit TAB und Pruefsumme. Findet den Port nach dem Ausstecken wieder (auch mit neuer COM-Nummer)."""
+
+    def __init__(self, device, baud, out_queue, identity=None, ack=False):
+        super().__init__(device, None, out_queue)
+        self.baud, self.identity, self.ack = baud, identity, ack
+        self.link = "usb"
+
+    def send(self, text):
+        data = text.rstrip("\r\n").encode("latin-1", "replace")
+        self.out.put(data + b"\t" + thcom_cs16(data).encode("ascii") + b"\r\n")
+
+    def run(self):
+        first = True
+        while not self.stop_event.is_set():
+            dev = find_port(self.host, self.identity) or self.host
+            try:
+                ser = serial.serial_for_url(dev, baudrate=self.baud, bytesize=serial.EIGHTBITS,
+                                            parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE,
+                                            timeout=0.1, write_timeout=1)
+            except Exception as exc:
+                self.q.put(("eth_open_error" if first else "eth_retry", exc, self))
+                first = False
+                if self.stop_event.wait(2):
+                    break
+                continue
+            first = False
+            self.host = dev
+            if self.identity is None:
+                self.identity = port_identity(dev)
+            while not self.out.empty():
+                self.out.get_nowait()
+            self.connected = True
+            self.reconnect_event.clear()
+            self.q.put(("eth_connected", dev, self))
+            buf = bytearray()
+            err = None
+            try:
+                while not self.stop_event.is_set() and not self.reconnect_event.is_set():
+                    while not self.out.empty():
+                        ser.write(self.out.get_nowait())
+                    chunk = ser.read(ser.in_waiting or 1)
+                    if not chunk:
+                        continue
+                    buf.extend(chunk)
+                    while True:
+                        idx = buf.find(b"\n")
+                        if idx < 0:
+                            break
+                        raw = bytes(buf[:idx]).decode("latin-1", errors="replace")
+                        del buf[: idx + 1]
+                        if self.ack:
+                            ser.write(b"\x06")  # Flow Ctrl: CP sendet erst nach ACK weiter
+                        line, ok = split_serial_frame(raw)
+                        if not ok:
+                            self.q.put(("eth_bad", raw, self))
+                        elif line.strip():
+                            self.q.put(("eth_line", line, self))
+                    if len(buf) > 8192:
+                        buf.clear()
+            except Exception as exc:
+                err = exc
+            if self.reconnect_event.is_set() and err is None:
+                err = TimeoutError("keine Antwort vom CP")
+            self.connected = False
+            try:
+                ser.close()
+            except Exception:
+                pass
+            if self.stop_event.is_set():
+                break
+            self.q.put(("eth_lost", err, self))
+            if self.stop_event.wait(2):
+                break
+        self.q.put(("eth_disconnected", self.host, self))
+
+
 # --------------------------------------------------------------------------- #
 # Eingebauter Simulator eines CP 545 (THCOM08 ueber TCP auf 127.0.0.1)
 # --------------------------------------------------------------------------- #
@@ -2219,7 +2321,8 @@ class SimCP:
     """Verhaelt sich wie der CP 545 in den Tests von Stefan: #WP 026 setzt die naechste Start- bzw.
     Zielnummer, #WC 013 wird mit AK R abgelehnt, #RT und #DL liefern gespeicherte Zeiten."""
 
-    def __init__(self, port=0):
+    def __init__(self, port=0, rs232=False):
+        self.rs232 = rs232        # Rahmen wie am RS232/USB-Anschluss: [Daten] TAB CS16
         self.lock = threading.Lock()
         self.clients = []
         self.next = {CH_START: 1, CH_FINISH: None}
@@ -2261,9 +2364,12 @@ class SimCP:
         if c is None and self.drop_next and not line.startswith(("AK", "&P", "SN", "!T")):
             self.drop_next = False
             return  # simuliert eine verlorene Zeile
+        data = line.encode("latin-1")
+        if self.rs232:
+            data += b"\t" + thcom_cs16(data).encode("ascii")
         for cl in ([c] if c else list(self.clients)):
             try:
-                cl.sendall((line + "\r\n").encode("latin-1"))
+                cl.sendall(data + b"\r\n")
             except OSError:
                 pass
 
@@ -2279,8 +2385,14 @@ class SimCP:
             buf += d
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
+                text = line.decode("latin-1")
+                if self.rs232:
+                    text, ok = split_serial_frame(text)
+                    if not ok:
+                        self.send("AK F", c)
+                        continue
                 try:
-                    self._cmd(line.decode("latin-1").strip(), c)
+                    self._cmd(text.strip(), c)
                 except Exception:
                     self.send("AK F", c)
         if c in self.clients:
@@ -2778,7 +2890,7 @@ class LiveRankingApp:
         self.update_ziel_info()
         self.update_window_title()
         self.report_missing_modules()
-        if self.eth_mode():
+        if self.settings["conn"]["mode"] == "ethernet":
             self.refresh_adapters()
         elif self.settings["net_restore"].get("pending"):
             # letzte Sitzung endete ohne Rueckstellen (Absturz, Strom weg): jetzt nachholen
@@ -3201,8 +3313,13 @@ class LiveRankingApp:
         self.txt_next.tag_configure("warn", foreground=ORANGE)
         self.txt_next.bind("<Button-1>", lambda e: "break")
         self.panel_course, self.txt_course = self._panel(self.right_panel, "Auf Fahrstrecke", 8, scroll=True,
-                                                         hint="Klick auf ein Boot: Aktionen")
-        self.txt_course.bind("<Button-1>", self.on_course_click)
+                                                         hint="Klick auf ein Boot: Aktionen · ziehen: überholen")
+        self.txt_course.bind("<Button-1>", self.on_course_press)
+        self.txt_course.bind("<B1-Motion>", self.on_course_motion)
+        self.txt_course.bind("<ButtonRelease-1>", self.on_course_release)
+        self.txt_course.tag_configure("drop", background=mix(PANEL, BLUE, 0.45))
+        self.txt_course.tag_configure("dragged", foreground=MUTED)
+        self._crs_drag = None
         self.txt_course.tag_configure("next", foreground=GREEN_TEXT, font=self.f_panel_bold)
         self.txt_course.tag_configure("warn", foreground=ORANGE)
         self.panel_note, self.txt_note = self._panel(self.right_panel, "Notiz", 3)
@@ -3304,11 +3421,11 @@ class LiveRankingApp:
             entry.bind("<FocusOut>", lambda e: self.save_event_fields(normalize=True))
             entry.bind("<Return>", lambda e: self.save_event_fields(normalize=True))
 
-        # Verbindung: RS232 (nur auswerten) oder Ethernet (CP aktiv steuern)
+        # Verbindung: RS232 (nur auswerten), Ethernet oder USB (CP aktiv steuern)
         b, self.lbl_conn_head = self._section(side, "Verbindung", "verbindung", status=True)
         b.columnconfigure(0, weight=1)
         self.var_conn = tk.StringVar(value=self.settings["conn"]["mode"])
-        self.conn_seg = Segmented(b, (("rs232", "RS232 auswerten"), ("ethernet", "Ethernet steuern")),
+        self.conn_seg = Segmented(b, (("rs232", "RS232"), ("ethernet", "Ethernet"), ("usb", "USB")),
                                   self.var_conn, command=self.on_conn_mode_change, font=self.f_side_bold,
                                   scale=self.ui_scale)
         self.conn_seg.grid(row=0, column=0, sticky="ew", pady=(0, 8))
@@ -3323,6 +3440,35 @@ class LiveRankingApp:
         self.e_baud.insert(0, str(self.conn_target.get("baud") or DEFAULT_BAUD))
         self.e_baud.grid(row=3, column=0, sticky="w", pady=(2, 6))
         self._label(rs, "8N1", fg=MUTED).grid(row=3, column=1, sticky="e")
+        self._label(rs, "Fahrzeiten nur auswerten. Ethernet und USB steuern den CP aktiv.", fg=MUTED, wraplength=wrap, justify="left").grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        us = self.frm_usb = tk.Frame(b, bg=PANEL)
+        us.columnconfigure(0, weight=1)
+        self._label(us, "COM-Port des CP (USB)").grid(row=0, column=0, columnspan=2, sticky="w")
+        self.cmb_usb = self._combo(us)
+        self.cmb_usb.grid(row=1, column=0, sticky="ew", pady=(2, 6))
+        self._button(us, "⟳", self.refresh_ports).grid(row=1, column=1, sticky="e", padx=(6, 0), pady=(2, 6))
+        self._label(us, "Baudrate").grid(row=2, column=0, columnspan=2, sticky="w")
+        self.e_usb_baud = self._entry(us, width=10)
+        self.e_usb_baud.insert(0, str(self.settings["conn"]["usb_baud"]))
+        self.e_usb_baud.grid(row=3, column=0, sticky="w", pady=(2, 6))
+        self._label(us, "8N1", fg=MUTED).grid(row=3, column=1, sticky="e")
+        self._label(us, "ACK nach jeder Zeile (Flow Ctrl)").grid(row=4, column=0, sticky="w")
+        self.sw_usb_ack = Switch(us, command=self.toggle_usb_ack, scale=self.ui_scale,
+                                 on=self.settings["conn"]["usb_ack"])
+        self.sw_usb_ack.grid(row=4, column=1, sticky="e")
+        tools_u = tk.Frame(us, bg=PANEL)
+        tools_u.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 6))
+        tools_u.columnconfigure(0, weight=1)
+        tools_u.columnconfigure(1, weight=1)
+        self._button(tools_u, "Lauf vom CP laden", self.cp_download_run).grid(row=0, column=0, sticky="ew",
+                                                                               padx=(0, 3))
+        self._button(tools_u, "Simulator", self.open_simulator).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        self._label(us, "CP per USB-Kabel direkt am PC. Die App steuert ihn wie über Ethernet. Erscheint "
+                        "beim Einstecken kein neuer COM-Port, erkennt Windows den CP nicht (Treiber prüfen). "
+                        "«ACK» nur einschalten, wenn am CP «9600bds Flow Ctrl» gewählt ist.",
+                    fg=MUTED, wraplength=wrap, justify="left").grid(row=6, column=0, columnspan=2, sticky="w",
+                                                                   pady=(0, 6))
         eth = self.frm_eth = tk.Frame(b, bg=PANEL)
         eth.columnconfigure(0, weight=1)
         self._label(eth, "Netzwerkkarte am PC").grid(row=0, column=0, columnspan=2, sticky="w")
@@ -3378,7 +3524,7 @@ class LiveRankingApp:
             sw = Switch(b, command=lambda k=key: self.toggle_lock(k), scale=self.ui_scale, on=ts[key])
             sw.grid(row=i, column=1, sticky="e", pady=(int(5 * self.ui_scale), 0))
             self.timing_switches[key] = sw
-        self._label(b, "Gilt im Ethernet-Modus. Gesperrte und ungültige Impulse erscheinen unter «Auf "
+        self._label(b, "Gilt bei Ethernet und USB. Gesperrte und ungültige Impulse erscheinen unter «Auf "
                        "Fahrstrecke» und lassen sich dort zuordnen.", fg=MUTED, wraplength=wrap,
                     justify="left").grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self._button(b, "Resultate aus Rohzeiten neu berechnen", self.ask_recompute).grid(
@@ -3606,7 +3752,7 @@ class LiveRankingApp:
 
     def ask_recompute(self):
         if not any(k[2] == CH_FINISH for k in self.cp_recs):
-            messagebox.showinfo("Neu berechnen", "Es gibt noch keine Rohzeiten vom CP (Ethernet).")
+            messagebox.showinfo("Neu berechnen", "Es gibt noch keine Rohzeiten vom CP (Ethernet oder USB).")
             return
         if messagebox.askyesno("Neu berechnen", "Alle Fahrzeiten vom CP aus den gespeicherten Rohzeiten neu "
                                                 "berechnen?\nVon Hand erfasste Zeiten bleiben."):
@@ -4664,6 +4810,8 @@ class LiveRankingApp:
         das als naechstes ins Ziel kommt, darunter der letzte Zieleinlauf und Impulse ohne Zuordnung."""
         if not hasattr(self, "txt_course"):
             return
+        if self._crs_drag and self._crs_drag.get("active"):
+            return  # waehrend dem Ziehen nicht neu zeichnen
         mode = self.settings["wettkampf"]
         ts = self.settings["timing"]
         seg = []
@@ -4672,7 +4820,7 @@ class LiveRankingApp:
             seg.append((f"{' und '.join(locks)} gesperrt\n", "warn"))
         online = self.cp is not None and self.cp.connected
         if not online and not self.course:
-            seg.append(("Keine Verbindung zum CP (Ethernet)\n", "sub"))
+            seg.append(("Keine Verbindung zum CP (Ethernet oder USB)\n", "sub"))
         elif not self.course:
             seg.append(("Kein Boot auf der Strecke\n", "sub"))
         n = len(self.course)
@@ -4685,7 +4833,8 @@ class LiveRankingApp:
                     if x]
             seg.append(("  ·  ".join(info) + "\n", ("sub", tag)))
             if i == 0 and n > 1:
-                seg.append(("▸ als nächstes im Ziel" + ("  (überholt)" if self.finish_override == nr else "") + "\n",
+                moved = self.finish_override == nr or "order" in self.cp_recs[_key]
+                seg.append(("▸ als nächstes im Ziel" + ("  (überholt)" if moved else "") + "\n",
                             ("next", tag)))
         rec = self.cp_recs.get(self.last_finish_key) if self.last_finish_key else None
         if rec and rec["status"] == "ok" and rec["nr"] in self.results:
@@ -4728,6 +4877,113 @@ class LiveRankingApp:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    # ---------------- Ueberholen per Ziehen ---------------- #
+    def on_course_press(self, event):
+        nr = self._tag_nr(self.txt_course, event, "crs")
+        self._crs_drag = {"nr": nr, "x": event.x, "y": event.y, "event": event, "active": False, "target": None}
+        return "break"
+
+    def _course_target(self, y):
+        """Boot unter der Maus; ober- oder unterhalb aller Boote: erstes bzw. letztes."""
+        boxes = []
+        for _t, nr, _k in self.course:
+            rng = self.txt_course.tag_ranges(f"crs{nr}")
+            if not rng:
+                continue
+            b1, b2 = self.txt_course.bbox(rng[0]), self.txt_course.dlineinfo(f"{rng[-1]} -1c")
+            if b1 is None or b2 is None:
+                continue
+            boxes.append((b1[1], b2[1] + b2[3], nr))
+        if not boxes:
+            return None
+        for top, bottom, nr in boxes:
+            if top <= y < bottom:
+                return nr
+        top_nr = min(boxes)[2]
+        bottom_nr = max(boxes, key=lambda b: b[1])[2]
+        if y < min(b[0] for b in boxes):
+            return top_nr
+        if y >= max(b[1] for b in boxes):
+            return bottom_nr
+        return None
+
+    def on_course_motion(self, event):
+        d = self._crs_drag
+        if not d or d["nr"] is None or self.course_key(d["nr"]) is None or len(self.course) < 2:
+            return "break"
+        if not d["active"]:
+            if abs(event.y - d["y"]) < 8 * self.ui_scale and abs(event.x - d["x"]) < 8 * self.ui_scale:
+                return "break"
+            d["active"] = True
+            self.txt_course.configure(cursor="fleur")
+            rng = self.txt_course.tag_ranges(f"crs{d['nr']}")
+            if rng:
+                self.txt_course.tag_add("dragged", rng[0], rng[-1])
+        # am Rand automatisch scrollen
+        h = self.txt_course.winfo_height()
+        if event.y < 10:
+            self.txt_course.yview_scroll(-1, "units")
+        elif event.y > h - 10:
+            self.txt_course.yview_scroll(1, "units")
+        target = self._course_target(event.y)
+        if target != d["target"]:
+            self.txt_course.tag_remove("drop", "1.0", "end")
+            d["target"] = target
+            if target is not None and target != d["nr"]:
+                rng = self.txt_course.tag_ranges(f"crs{target}")
+                if rng:
+                    self.txt_course.tag_add("drop", rng[0], rng[-1])
+        return "break"
+
+    def on_course_release(self, event):
+        d, self._crs_drag = self._crs_drag, None
+        if not d:
+            return "break"
+        if not d["active"]:
+            return self.on_course_click(d["event"])
+        self.txt_course.configure(cursor="")
+        self.txt_course.tag_remove("drop", "1.0", "end")
+        self.txt_course.tag_remove("dragged", "1.0", "end")
+        target = d["target"]
+        if target is not None and target != d["nr"]:
+            self.move_on_course(d["nr"], target)
+        else:
+            self.update_course_panel()
+        return "break"
+
+    def move_on_course(self, nr, target):
+        """nr nimmt den Platz von target in der erwarteten Zielreihenfolge ein."""
+        order = [k for _t, _n, k in self.course]
+        src, dst = self.course_key(nr), self.course_key(target)
+        if src is None or dst is None or src == dst:
+            return
+        to = order.index(dst)
+        order.remove(src)
+        order.insert(to, src)
+        self.set_course_order(order)
+        pos = order.index(src)
+        if pos == 0:
+            text = f"Nr {nr} hat überholt und kommt als nächstes ins Ziel"
+        else:
+            ahead = self.cp_recs[order[pos - 1]]["nr"]
+            text = f"Reihenfolge auf der Strecke: Nr {nr} jetzt hinter Nr {ahead}"
+        self.log(text, tag="ok")
+        self.add_ticker(text, None)
+
+    def set_course_order(self, keys):
+        """Erwartete Zielreihenfolge festlegen: die Startzeiten der Boote werden in der neuen Reihenfolge
+        als Sortierschluessel verteilt. Spaeter gestartete Boote kommen so weiterhin hinten dazu."""
+        stamps = sorted(self.cp_recs[k]["abs"] for k in keys)
+        for k, a in zip(keys, stamps):
+            r = self.cp_recs[k]
+            if r["abs"] == a:
+                r.pop("order", None)
+            else:
+                r["order"] = a
+        self.finish_override = None
+        self.save_autosave()
+        self.course_changed()
 
     def on_course_click(self, event):
         idx = self.txt_course.index(f"@{event.x},{event.y}")
@@ -5018,15 +5274,48 @@ class LiveRankingApp:
     # Verbindungsart RS232 / Ethernet
     # ================================================================== #
     def eth_mode(self):
-        return self.settings["conn"]["mode"] == "ethernet"
+        """CP wird aktiv gesteuert (THCOM08), ueber Ethernet oder USB."""
+        return self.settings["conn"]["mode"] in ("ethernet", "usb")
+
+    def usb_mode(self):
+        return self.settings["conn"]["mode"] == "usb"
 
     def show_conn_frames(self):
-        if self.eth_mode():
-            self.frm_rs.grid_remove()
-            self.frm_eth.grid(row=1, column=0, sticky="ew")
-        else:
-            self.frm_eth.grid_remove()
-            self.frm_rs.grid(row=1, column=0, sticky="ew")
+        want = {"ethernet": self.frm_eth, "usb": self.frm_usb}.get(self.settings["conn"]["mode"], self.frm_rs)
+        for f in (self.frm_rs, self.frm_eth, self.frm_usb):
+            if f is not want:
+                f.grid_remove()
+        want.grid(row=1, column=0, sticky="ew")
+
+    def toggle_usb_ack(self):
+        c = self.settings["conn"]
+        c["usb_ack"] = not c["usb_ack"]
+        self.save_settings()
+        if self.cp is not None and self.cp.link == "usb":
+            self.cp.ack = c["usb_ack"]
+
+    def connect_usb(self):
+        if serial is None:
+            messagebox.showerror("pyserial fehlt", "Modul 'pyserial' ist nicht installiert:\npip install pyserial")
+            return
+        sel = self.cmb_usb.get().strip()
+        port = self.port_map.get(sel, sel.split(" - ")[0].strip())
+        if not port:
+            messagebox.showwarning("Verbindung", "Kein COM-Port ausgewählt.")
+            return
+        try:
+            baud = int(self.e_usb_baud.get().strip())
+        except ValueError:
+            messagebox.showwarning("Verbindung", "Baudrate ist ungültig.")
+            return
+        c = self.settings["conn"]
+        c["usb_port"], c["usb_baud"] = port, baud
+        self.save_settings()
+        self.cp_reconnected = False
+        self.cp = CPSerialClient(port, baud, self.q, identity=port_identity(port), ack=c["usb_ack"])
+        self.cp.start()
+        self.set_conn_status(f"verbinde mit CP an {port} ...", GOLD)
+        self.btn_connect.configure(text="Trennen", bg=DARK_RED)
 
     def fill_eth_combos(self):
         labels = [f"{a['name']}" + ("" if a["up"] else " (kein Kabel)") for a in self.adapters]
@@ -5102,6 +5391,10 @@ class LiveRankingApp:
             self.log("Verbindungsart Ethernet: CP 545 wird aktiv gesteuert (THCOM08)", tag="ok")
             if not self.adapters:
                 self.refresh_adapters()
+        elif mode == "usb":
+            self.log("Verbindungsart USB: CP 545 wird aktiv gesteuert (THCOM08 über COM-Port)", tag="ok")
+            self.refresh_ports()
+            self.restore_network(background=True)
         else:
             self.log("Verbindungsart RS232: Fahrzeiten nur auswerten", tag="ok")
             self.restore_network(background=True)
@@ -5254,6 +5547,9 @@ class LiveRankingApp:
             return
         if kind == "eth_line":
             self.handle_eth_line(payload)
+        elif kind == "eth_bad":
+            self.cp_last_rx = time.time()
+            self.log(f"CP: Zeile mit falscher Prüfsumme verworfen: {payload.strip()}", tag="warn")
         elif kind == "eth_connected":
             self.on_cp_connected(payload)
         elif kind == "eth_open_error":
@@ -5342,7 +5638,8 @@ class LiveRankingApp:
             self.log(f"CP {ip} wieder verbunden", tag="ok")
             self.add_ticker("Verbindung zum CP 545 wieder hergestellt", "ziel")
         else:
-            self.log(f"Verbunden mit CP {ip} (Ethernet, Port {self.cp.port})", tag="ok")
+            how = f"USB, {self.cp.baud} Bd" if self.cp.link == "usb" else f"Ethernet, Port {self.cp.port}"
+            self.log(f"Verbunden mit CP {ip} ({how})", tag="ok")
         self.cp_cmds, self.cp_inflight = [], None
         self.cp_query("#SN", "serial")
         self.cp_query("#RP 003", ("param", "003"), on_ok=self._on_run)
@@ -6057,8 +6354,9 @@ class LiveRankingApp:
     # ---------------- Fahrstrecke ---------------- #
     def compute_course(self):
         """Boote auf der Strecke in erwarteter Zielreihenfolge: [(startzeit, nr, key)]."""
-        course = sorted((r["abs"], r["nr"], k) for k, r in self.run_recs(CH_START)
-                        if r["status"] == "ok" and r["nr"] > 0 and not r.get("dnf") and not r.get("done"))
+        course = sorted(((r["abs"], r["nr"], k) for k, r in self.run_recs(CH_START)
+                         if r["status"] == "ok" and r["nr"] > 0 and not r.get("dnf") and not r.get("done")),
+                        key=lambda c: (self.cp_recs[c[2]].get("order", c[0]), c[0]))
         if self.finish_override is not None:
             first = [c for c in course if c[1] == self.finish_override]
             if first:
@@ -6139,7 +6437,7 @@ class LiveRankingApp:
         if self.sim is None:
             self.sim = SimCP()
             self.log(f"Simulator gestartet (127.0.0.1:{self.sim.port})", tag="ok")
-        if not self.eth_mode():
+        if self.settings["conn"]["mode"] != "ethernet":
             self.var_conn.set("ethernet")
             self.on_conn_mode_change()
             self.conn_seg.redraw()
@@ -6325,7 +6623,7 @@ class LiveRankingApp:
                              ("Reserve " if k[0] == "B" else "") + str(k[3]), r.get("cp_nr", ""), r.get("nr") or "",
                              why.get(r["status"], r["status"]) + (" ausgeschieden" if r.get("dnf") else "")])
             if not rows:
-                doc.note("Keine Rohzeiten vom CP vorhanden (nur im Ethernet-Modus).")
+                doc.note("Keine Rohzeiten vom CP vorhanden (nur bei Ethernet oder USB).")
             doc.table([("Tag", .08, "left"), ("Tageszeit", .15, "right"), ("Messpunkt", .12, "left"),
                        ("Seq", .12, "right"), ("CP-Nr", .09, "right"), ("Nr", .08, "right"),
                        ("Bemerkung", .36, "left")], rows)
@@ -6374,8 +6672,21 @@ class LiveRankingApp:
         self.cmb_port["values"] = values
         if values and self.cmb_port.get() not in values:
             self.cmb_port.set(values[0])
+        if hasattr(self, "cmb_usb"):
+            self.cmb_usb["values"] = values
+            if self.cmb_usb.get() not in values:
+                want = self.settings["conn"]["usb_port"]
+                match = next((label for label, dev in self.port_map.items() if dev == want), None)
+                self.cmb_usb.set(match or (values[0] if values else want))
 
     def toggle_connection(self):
+        if self.usb_mode():
+            if self.cp is not None:
+                self.cp.stop()
+                self.set_conn_status("trenne ...", GOLD)
+            else:
+                self.connect_usb()
+            return
         if self.eth_mode():
             if self.eth_job is not None:
                 self.eth_job = None

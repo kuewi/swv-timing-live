@@ -14,7 +14,8 @@ nächste Starter, Ereignis-Ticker und Statistik.
 Im Ethernet-Modus lädt die App die nächste Startnummer aus der Startliste in den CP und ordnet
 die Zielimpulse selbst zu (wie SkiPro). Dazu kommen Prellzeit und Mindestfahrzeit gegen Fehlimpulse,
 gesperrte Messpunkte, Nachholen fehlender Zeiten (`#RT`), Download eines Laufs (`#DL`), ein
-Reserve-CP und ein eingebauter Simulator. Jede Zeile des CP landet sofort in `rohdaten/`. Die Netzwerkkarte wird dafür auf 192.168.1.55 / 255.255.255.0 gestellt und
+Reserve-CP und ein eingebauter Simulator. Statt Ethernet geht auch USB: der CP hängt dann direkt am PC
+(virtueller COM-Port) und wird gleich gesteuert. Jede Zeile des CP landet sofort in `rohdaten/`. Die Netzwerkkarte wird dafür auf 192.168.1.55 / 255.255.255.0 gestellt und
 beim Beenden wieder auf automatische Adresse (DHCP). Der CP hat ab 192.168.1.50.
 
 ## Schnittstelle für andere Programme
