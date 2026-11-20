@@ -99,6 +99,24 @@ app.toggle_sidebar_pin(); pump(0.2)
 check("wieder angepinnt", app.side_outer.winfo_manager() == "grid" and app.settings["sidebar_pinned"])
 check("Startliste zuklappbar", "startliste" in app.settings["collapsed"] and "manuell" in app.settings["collapsed"])
 
+# Nummer aendern: Hinweis mit Tastenfolge, spaetere Korrektur am CP hat Vorrang
+seen = []
+app.dialog_hook = lambda kind, title, msg, d=None: seen.append(msg) or True
+sim.start(); pump(0.5)
+k, r = max(((k, r) for k, r in app.cp_recs.items() if k[2] == 1 and r["status"] == "ok" and not r.get("done")),
+           key=lambda x: x[1]["abs"])
+cpn = r["cp_nr"]
+app.cp_change_number(k, r["nr"], 77); pump(0.3)
+check("Hinweis mit Tastenfolge", seen and f"{cpn}  R  E1  77  Enter" in seen[-1])
+check("Fahrstrecke: CP führt noch alte Nr", f"CP führt noch Nr {cpn}" in app.txt_course.get("1.0", "end"))
+day = int(r["abs"] // 86400)
+tod = m.fmt_tod(r["abs"] % 86400)
+sim.replay_line(f"T- {cpn:4d} {k[3]:4d} M1 {tod} {day:5d}"); pump(0.3)
+sim.replay_line(f"T* {88:4d} {k[3]:4d} M1 {tod} {day:5d}"); pump(0.5)
+check("Korrektur am CP gilt", app.cp_recs[k]["nr"] == 88 and app.cp_recs[k]["cp_nr"] == 88
+      and 88 in [c[1] for c in app.course] and "CP führt noch" not in app.txt_course.get("1.0", "end"))
+app.dialog_hook = lambda *a: True
+
 app.cp.stop(); pump(0.5); sim.close()
 
 # Datenordner und Uebernahme

@@ -71,7 +71,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.9.1"
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -5297,6 +5297,10 @@ class LiveRankingApp:
             seg.append((f"Nr {nr}   {self.running_text(tod)}   {display_name(p, mode) or '-'}\n", ("nr", tag)))
             if self.status.get(nr) == "DSQ":
                 seg.append(("DSQ, fährt noch ins Ziel (nicht klassiert)\n", ("warn", tag)))
+            crec = self.cp_recs.get(_key)
+            if crec and crec.get("cp_nr") and crec["cp_nr"] != nr and self.eth_mode():
+                seg.append((f"CP führt noch Nr {crec['cp_nr']}: am CP {crec['cp_nr']} R E1 {nr} Enter\n",
+                            ("warn", tag)))
             info = [x for x in (p.get("verein", ""), cat["name"] if cat else ("Test" if self.is_test(nr) else ""))
                     if x]
             seg.append(("  ·  ".join(info) + "\n", ("sub", tag)))
@@ -6441,6 +6445,12 @@ class LiveRankingApp:
             self.finish_override = new
         self.log(f"Nummer auf der Strecke: Nr {new} statt Nr {old} (nur in der App, der CP führt weiter "
                  f"Nr {rec['cp_nr']})", tag="warn")
+        if rec["cp_nr"] != new and self.eth_mode():
+            messagebox.showinfo("Nummer am CP nachführen",
+                                f"Die App führt das Boot jetzt als Nr {new}. Der CP kann nicht ferngesteuert "
+                                f"umnummerieren und zeigt weiter Nr {rec['cp_nr']}.\n\nAm CP eingeben:\n"
+                                f"{rec['cp_nr']}  R  E1  {new}  Enter\n\nDanach stimmen Anzeigetafel, "
+                                f"Papierstreifen und App überein.")
         self.add_ticker(f"Nummer korrigiert: Nr {new} statt Nr {old} auf der Fahrstrecke", None)
         if self.start_order and new not in self.participants and not self.is_test(new):
             self.ensure_participant(new, after=old if old in self.order_index else None, prompt=True)
@@ -6674,8 +6684,8 @@ class LiveRankingApp:
                 old = rec["nr"] if rec else None
                 if rec is None:
                     rec = self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "abs": t["abs"], "status": "ok"}
-                if rec["nr"] in (rec["cp_nr"], 0):
-                    rec["nr"] = cpn  # keine eigene Korrektur in der App: CP gilt
+                if not recalled or rec["nr"] in (rec["cp_nr"], 0):
+                    rec["nr"] = cpn  # Korrektur an der Tastatur des CP gilt, auch nach einer Aenderung in der App
                 rec["cp_nr"], rec["status"] = cpn, "ok"
                 if old is not None and old != rec["nr"]:
                     self.log(f"CP: Startzeit (Seq {seq}) von Nr {old} zu Nr {rec['nr']}", tag="warn")

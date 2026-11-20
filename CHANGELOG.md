@@ -1,5 +1,9 @@
 # Änderungen
 
+## v1.9.1 (21.11.2026)
+- Nummer ändern auf der Fahrstrecke: Hinweis mit der Tastenfolge für den CP (alte Nr R E1 neue Nr Enter), weil der CP 545 nicht ferngesteuert umnummeriert. Auf der Fahrstrecke steht «CP führt noch Nr X», bis der CP nachgezogen hat
+- Korrektur an der Tastatur des CP (T*) gilt immer, auch nach einer Änderung in der App
+
 ## v1.9.0 (20.11.2026)
 - Installer `SWV_LiveRanking_Setup_x.y.z.exe`: Programm in «Programme», Startmenü, optional Desktop, Eintrag unter «Apps» mit Version und Deinstallation. Eine neue Version ersetzt die installierte, ältere Versionen nur nach Rückfrage. Versionsinfo in den Dateieigenschaften der .exe
 - Datenordner `Dokumente\SWV Live-Ranking` (Einstellungen, Autosave, `logs`, `rohdaten`, `fehlerberichte`, `pdf`), bleibt bei Update und Deinstallation. Daten vom bisherigen Ort werden beim ersten Start übernommen. Knopf «Datenordner öffnen»
