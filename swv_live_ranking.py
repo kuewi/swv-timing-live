@@ -71,7 +71,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.10.1"
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -2274,6 +2274,7 @@ def scan_cps(hosts=None, port=None):
 
     def one(h):
         info = probe_cp(h, port)
+        DIAG.debug(f"Suche {h}:{port}: {info or 'keine Antwort'}")
         if info:
             with lock:
                 found.append((h, info))
@@ -3046,6 +3047,8 @@ class LiveRankingApp:
         self.cp_backlog = None      # alte Zeilen aus dem Puffer des CP direkt nach dem Verbinden
         self.cp_backlog_t = 0.0
         self.cp_backlog_again = False
+        self.cp_session_seen = False   # in dieser Sitzung schon einmal mit einem CP verbunden
+        self.cp_closed_runs = set()    # in dieser Sitzung am CP geschlossene Laeufe
         self.backup_seen = {}
         self.cp_b = None            # Reserve-CP
         self._quiet = False
@@ -5995,8 +5998,22 @@ class LiveRankingApp:
     def _eth_job_run(self, token, adapter, info, want, connect):
         put = lambda kind, payload: self.q.put((kind, payload, token))  # noqa: E731
         hosts = cp_hosts()
+        DIAG.info(f"CP-Suche: Karte {adapter!r}, Adressen {hosts[0]}..{hosts[-1]}, verbinden={connect}")
+        if IS_WINDOWS and adapter:
+            fresh_list = list_adapters()
+            put("net_adapters_job", fresh_list)  # Liste aktualisieren (z.B. «kein Kabel» weg)
+            fresh = next((a for a in fresh_list if a["name"] == adapter), None)
+            DIAG.info(f"CP-Suche: Karte jetzt {fresh}")
+            if fresh is not None:
+                info = fresh
         put("eth_status", ("CP suchen ...", "gold"))
         found = scan_cps(hosts)  # zuerst ohne Umstellung: braucht keine Adminrechte
+        if not found and IS_WINDOWS and adapter and info is not None and not info.get("up", True):
+            put("eth_fail", f"Netzwerkkarte «{adapter}» hat keine Verbindung (Windows: kein Kabel). Prüfen: "
+                            "Kabel an PC und CP eingesteckt (Lämpchen an der Buchse?), CP eingeschaltet, Ethernet "
+                            "am CP eingeschaltet (F › Einstellungen › Ethernet), richtige Netzwerkkarte gewählt. "
+                            "Danach ⟳ und nochmals versuchen.")
+            return
         if not found and IS_WINDOWS and adapter and not os.environ.get("SWV_CP_HOSTS"):
             fresh = next((a for a in list_adapters() if a["name"] == adapter), None)
             ips = (fresh or info or {}).get("ips", [])
@@ -6044,6 +6061,16 @@ class LiveRankingApp:
             return
         if kind == "net_restored":
             self.on_network_restored(*payload)
+            return
+        if kind == "net_adapters_job":
+            if payload:
+                sel = self.selected_adapter()
+                self.adapters = payload
+                self.fill_eth_combos()
+                if sel:
+                    match = next((lbl for lbl in self.cmb_adapter["values"] if lbl.split(" (")[0] == sel), None)
+                    if match:
+                        self.cmb_adapter.set(match)
             return
         if kind.startswith("eth_") and kind in ("eth_status", "eth_fail", "eth_found", "eth_go", "eth_log") \
                 or kind == "net_pending":
@@ -6096,6 +6123,9 @@ class LiveRankingApp:
         elif kind == "eth_retry":
             self.set_conn_status(f"CP {self.cp.host} getrennt, verbinde neu ...", RED)
         elif kind == "eth_lost":
+            now = time.time()
+            DIAG.warning(f"Verbindung verloren: {payload!r} | zuletzt gesendet {getattr(self, '_diag_tx', None)!r} "
+                         f"| zuletzt empfangen vor {now - self.cp_last_rx:.1f} s: {getattr(self, '_diag_rx', None)!r}")
             self.cp_inflight, self.cp_cmds = None, []
             self.log(f"Verbindung zum CP {self.cp.host} unterbrochen: {payload}", tag="error")
             self.add_ticker("Verbindung zum CP 545 unterbrochen, verbinde neu", "warn")
@@ -6169,6 +6199,9 @@ class LiveRankingApp:
     def on_cp_connected(self, ip):
         again = self.cp_reconnected
         self.cp_reconnected = True
+        # Wechsel Ethernet <-> USB oder neues Verbinden in derselben Sitzung: verpasste Zeilen nachtragen
+        take_buffer = again or self.cp_session_seen
+        self.cp_session_seen = True
         self.cp_last_rx = self.cp_last_hb = time.time()
         self.set_connected(True, f"CP {ip} verbunden")
         self.refresh_conn_head()
@@ -6181,7 +6214,7 @@ class LiveRankingApp:
         self.cp_cmds, self.cp_inflight = [], None
         # Der CP schickt zuerst alles, was er seit dem letzten Abholen gepuffert hat, erst dann die Antwort
         # auf #SN. Diese Zeilen werden gesammelt und nicht als neue Impulse behandelt.
-        self.cp_backlog, self.cp_backlog_t, self.cp_backlog_again = [], time.time(), again
+        self.cp_backlog, self.cp_backlog_t, self.cp_backlog_again = [], time.time(), take_buffer
         self.cp_query("#SN", "serial")
         self.cp_query("#RP 003", ("param", "003"), on_ok=self._on_run)
         self.cp_query(f"#RP 026 {CH_START:02d}", ("param", "026", CH_START), on_ok=self._on_next_read,
@@ -6243,6 +6276,7 @@ class LiveRankingApp:
         cmd["deadline"] = time.time() + CMD_TIMEOUT
         self.cp_inflight = cmd
         DIAG.debug(f"CP A> {cmd['text']}")
+        self._diag_tx = (time.strftime("%H:%M:%S"), cmd["text"])
         self.cp.send(cmd["text"])
         self.log(f"→ CP {cmd['text']}", focus=False, tag="ok")
 
@@ -6523,6 +6557,8 @@ class LiveRankingApp:
         text = strip_frame(raw)
         info = parse_thcom(raw)
         DIAG.debug(f"CP {dev}< {raw.strip()}")
+        if dev == "A":
+            self._diag_rx = raw.strip()
         if info is None:
             return
         self.raw_log(dev, raw)
@@ -6570,6 +6606,10 @@ class LiveRankingApp:
         elif info["kind"] == "result" and info["type"] == "RR" and dev == "A":
             self.on_cp_result(info)
         elif info["kind"] == "open" and dev == "A":
+            if info["run"] in self.cp_closed_runs:
+                # Lauf mit derselben Nummer neu geoeffnet: der CP zaehlt wieder ab 1
+                self.archive_run(info["run"], "am CP geschlossen und wieder geöffnet")
+                self.cp_closed_runs.discard(info["run"])
             self.cp_run = info["run"]
             self.finish_override = self.cp_finish_want = None
             self.log(f"CP: Lauf {info['run']} geöffnet ({info['mode'] or '?'})", tag="ok")
@@ -6578,9 +6618,46 @@ class LiveRankingApp:
                          tag="warn")
             self.course_changed()
         elif info["kind"] == "close" and dev == "A":
+            self.cp_closed_runs.add(info["run"])
             self.finish_override = None
             self.log(f"CP: Lauf {info['run']} geschlossen", tag="warn")
             self.course_changed()
+
+    def archive_run(self, run, why):
+        """Bisherige Zeiten eines Laufs als abgeschlossene Runde ablegen (Laufnummer run + 1000 * n),
+        damit der neu begonnene Lauf mit derselben Nummer wieder ab Seq 1 zaehlen kann. Resultate bleiben."""
+        mapping = {k: k for k in self.cp_recs if k[1] == run}
+        if not mapping:
+            return None
+        n = 1 + max((k[1] // 1000 for k in self.cp_recs if k[1] >= 1000 and k[1] % 1000 == run), default=0)
+        new_run = run + 1000 * n
+        mapping = {k: (k[0], new_run, k[2], k[3]) for k in mapping}
+
+        def remap(v):
+            if isinstance(v, (tuple, list)) and len(v) == 4 and tuple(v) in mapping:
+                return mapping[tuple(v)]
+            return v
+
+        self.cp_recs = {mapping.get(k, k): r for k, r in self.cp_recs.items()}
+        for r in self.cp_recs.values():
+            for f in ("start", "done", "twin", "cp_start"):
+                if f in r:
+                    r[f] = remap(r[f])
+        for res in self.results.values():
+            if res.get("cp"):
+                res["cp"] = list(remap(res["cp"]))
+        self.last_finish_key = remap(self.last_finish_key) if self.last_finish_key else None
+        if getattr(self, "cp_last_finish_rx", None):
+            self.cp_last_finish_rx = remap(self.cp_last_finish_rx)
+        for k in [k for k in self.cp_lastseq if k[1] == run]:
+            del self.cp_lastseq[k]
+        self.finish_override = self.cp_finish_want = None
+        self.log(f"CP: Lauf {run} neu begonnen ({why}). {len(mapping)} bisherige Zeiten als Runde {new_run} "
+                 "abgelegt, Resultate bleiben.", tag="warn")
+        DIAG.info(f"Lauf {run} archiviert als {new_run}: {sorted(mapping)}")
+        self.save_autosave()
+        self.course_changed()
+        return new_run
 
     def finish_backlog(self):
         """Gepufferte Zeilen des CP nach dem Verbinden auswerten. Nach einem Unterbruch in dieser Sitzung
@@ -6590,8 +6667,18 @@ class LiveRankingApp:
             return
         run = self.cp_run
         timed = []
+        closed = set()
         for info in items:
-            if info["kind"] == "open":
+            if info["kind"] == "close":
+                closed.add(info["run"])
+            elif info["kind"] == "open":
+                if info["run"] in closed or info["run"] in self.cp_closed_runs:
+                    # im Puffer: Lauf geschlossen und neu geoeffnet. Zeilen davor gehoeren zur alten Runde
+                    timed = [(-1, i) for _r, i in timed]
+                    if self.cp_backlog_again:
+                        self.archive_run(info["run"], "während der Unterbrechung am CP neu geöffnet")
+                    closed.discard(info["run"])
+                    self.cp_closed_runs.discard(info["run"])
                 run = info["run"]
             elif info["kind"] == "time":
                 timed.append((run, info))
@@ -6683,6 +6770,11 @@ class LiveRankingApp:
         key = (dev, self.cp_run, ch, seq)
         rec = self.cp_recs.get(key)
         if typ in ("TN", "T+", "T=", "TI"):
+            if rec is not None and abs(rec["abs"] - t["abs"]) > 0.5 and dev == "A":
+                # gleiche Laufnummer und Zaehlnummer, andere Zeit: der CP hat den Lauf neu begonnen
+                self.archive_run(self.cp_run, f"Seq {seq} kam mit neuer Zeit")
+                key = (dev, self.cp_run, ch, seq)
+                rec = self.cp_recs.get(key)
             if rec is not None:
                 return  # bereits bekannt
             twin = self.find_twin(dev, ch, t["abs"])

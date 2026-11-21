@@ -1,5 +1,10 @@
 # Änderungen
 
+## v1.10.1 (21.11.2026)
+- Fehlerbericht ad4f: Lauf am CP geschlossen und mit derselben Nummer wieder geöffnet (Zählung beginnt wieder bei 1): die bisherigen Zeiten werden als eigene Runde abgelegt, neue Zeiten wieder verarbeitet, Resultate bleiben. Erkennung auch, wenn dieselbe Zählnummer mit neuer Uhrzeit kommt
+- Wechsel Ethernet ↔ USB oder neues Verbinden in derselben Sitzung: Zeiten, die der CP in der Zwischenzeit gepuffert hat, werden nachgetragen
+- Ethernet-Suche: hat die Netzwerkkarte keine Verbindung (kein Kabel), meldet die App das direkt mit Prüfpunkten. Liste der Netzwerkkarten wird bei jeder Suche aufgefrischt. Jeder Suchschritt und jeder Verbindungsabbruch (mit zuletzt gesendeter und empfangener Zeile) im Diagnose-Log
+
 ## v1.10.0 (21.11.2026)
 - SWV-Logo: Symbol für .exe, Setup, Desktop, Startmenü, Fenster und Taskleiste (eigene App-Kennung), Logo oben in der Seitenleiste. Vektor-Nachzeichnung in `assets/swv_logo.svg`
 - Fehlerbericht a23e: Storno einer älteren Startzeit am CP (z.B. nachgeholt nach einem Unterbruch) setzt das Boot nicht mehr auf DNF, wenn es inzwischen neu gestartet ist
