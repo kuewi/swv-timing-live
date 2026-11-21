@@ -71,7 +71,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.9.1"
+APP_VERSION = "1.10.0"
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -247,7 +247,17 @@ SHOW_LABELS = [
 CATEGORIES_FILE = "swv_kategorien.json"
 SETTINGS_FILE = "swv_einstellungen.json"
 AUTOSAVE_FILE = "swv_resultate_autosave.json"
-ICON_FILES = ("swv_logo.png", "logo.png", "image_928d28.png")
+ICON_FILES = (os.path.join("assets", "swv_icon_256.png"), "swv_logo.png", "logo.png", "image_928d28.png")
+ICON_ICO = os.path.join("assets", "swv_logo.ico")
+LOGO_SIZES = (32, 44, 60, 80)   # assets/swv_logo_h<Hoehe>.png
+
+
+def resource_file(name):
+    for d in resource_dirs():
+        path = os.path.join(d, name)
+        if os.path.isfile(path):
+            return path
+    return None
 
 ST_OPEN, ST_APPROVED, ST_SENT, ST_ERROR = "offen", "freigegeben", "gesendet", "Fehler"
 
@@ -1403,11 +1413,15 @@ def derive_category_ranges(order, parts):
     (Senioren 200-244 -> 200-299, 300-480 -> 300-499). Ab 900 endet der Bereich bei 950,
     951-999 bleiben fuer Testnummern frei. Ueberschneiden sich zwei Bereiche, gelten fuer beide
     die exakte kleinste und groesste Nummer."""
-    groups = {}
+    from collections import Counter
+    by_key, spell = {}, {}
     for nr in order:
         cat = (parts.get(nr) or {}).get("kategorie", "").strip()  # Testnummern ohne Teilnehmerdaten
         if cat:
-            groups.setdefault(cat, []).append(nr)
+            # «JUNGFAHRER» und «Jungfahrer» sind dieselbe Kategorie: Schreibweise der Mehrheit gilt
+            by_key.setdefault(cat.casefold(), []).append(nr)
+            spell.setdefault(cat.casefold(), Counter())[cat] += 1
+    groups = {spell[k].most_common(1)[0][0]: nrs for k, nrs in by_key.items()}
     ranges, warnings = {}, []
     for cat, nrs in groups.items():
         lo, hi = min(nrs), max(nrs)
@@ -2123,7 +2137,7 @@ HEARTBEAT_S = 15
 HEARTBEAT_LOST_S = 30
 SERIAL_SILENCE_S = 5        # RS232: so lange ohne Laufzeit waehrend eines Laufs = Abbruch
 
-_RE_TIME = re.compile(r"^([TA][N\-\*\+=C]|TI)\s+(\d+)\s+(\d+)\s+(M?)(\d+)\s+(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)\s*(\d*)")
+_RE_TIME = re.compile(r"^([TA][N\-\*\+=C]|TI)\s+(\d*)\s+(\d+)\s+(M?)(\d+)\s+(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)\s*(\d*)")
 _RE_DS = re.compile(r"^DS\s+(\d+)")
 _RE_DE = re.compile(r"^DE\s+(\d+)")
 RAW_DIR = "rohdaten"
@@ -2157,7 +2171,7 @@ def parse_thcom(raw):
         day = int(m.group(9)) if m.group(9) else None
         if day is None:  # ohne Tagesangabe: heute
             day = (datetime.date.today() - EPOCH_2000).days
-        return {"kind": "time", "type": m.group(1), "nr": int(m.group(2)), "seq": int(m.group(3)),
+        return {"kind": "time", "type": m.group(1), "nr": int(m.group(2) or 0), "seq": int(m.group(3)),
                 "manual": bool(m.group(4)), "ch": int(m.group(5)), "tod": tod, "day": day,
                 "abs": day * 86400 + tod, "answer": m.group(1).startswith("A"), "text": t}
     m = _RE_DS.match(t)
@@ -3087,6 +3101,12 @@ class LiveRankingApp:
                 self.root.geometry("1600x900")
         self.root.after(30, lambda: set_titlebar(self.root))
         self.icon_img = None
+        ico = resource_file(ICON_ICO)
+        if IS_WINDOWS and ico:
+            try:
+                self.root.iconbitmap(default=ico)  # Fenster, Taskleiste und alle Dialoge
+            except tk.TclError:
+                pass
         for name in ICON_FILES:
             for d in resource_dirs():
                 path = os.path.join(d, name)
@@ -3714,11 +3734,26 @@ class LiveRankingApp:
         self.txt_ticker.tag_configure("newest", font=self.f_ticker_bold)
 
         # Seitenleiste erst jetzt, weil sie auf Kartenbereich und Panels verweist
+        head = tk.Frame(side, bg=BG)
+        head.pack(fill="x", padx=10, pady=(8, 0))
+        want = int(30 * self.ui_scale)
+        size = min(LOGO_SIZES, key=lambda h: abs(h - want))
+        path = resource_file(os.path.join("assets", f"swv_logo_h{size}.png"))
+        self.logo_img = None
+        if path:
+            try:
+                self.logo_img = tk.PhotoImage(file=path)
+            except tk.TclError:
+                self.logo_img = None
+        if self.logo_img is not None:
+            # weisses Feld, damit Rot und Blau auch im dunklen Design gut lesbar sind
+            tk.Label(head, image=self.logo_img, bg="#FFFFFF", bd=0, padx=int(8 * self.ui_scale),
+                     pady=int(4 * self.ui_scale)).pack(side="left")
+        self.btn_pin = self._button(head, "", self.toggle_sidebar_pin)
+        self.btn_pin.pack(side="right")
         pin = tk.Frame(side, bg=BG)
         pin.pack(fill="x", padx=10, pady=(8, 0))
-        self.btn_pin = self._button(pin, "", self.toggle_sidebar_pin)
-        self.btn_pin.pack(side="right")
-        self._button(pin, "Fehler melden (F12)", self.open_report_dialog, DARK_RED).pack(side="left")
+        self._button(pin, "Fehler melden (F12)", self.open_report_dialog, DARK_RED).pack(fill="x")
         self.build_sidebar(side)
         self.apply_sidebar_mode()
 
@@ -4482,8 +4517,11 @@ class LiveRankingApp:
             self.cards.append(card)
 
         self.layout_cards()
-        self.prev_top = {}
-        self.update_rankings(initial=True)
+        # Bisherige Top-Listen behalten: ein Neuaufbau (z.B. Kategorien nachgefuehrt) darf das Blinken
+        # eines gerade eingetroffenen Resultats nicht verschlucken
+        old = dict(self.prev_top)
+        self.prev_top = old
+        self.update_rankings(initial=not old)
         if hasattr(self, "lbl_count"):
             self.apply_show_settings()
         self.schedule_font_scale()
@@ -6666,14 +6704,24 @@ class LiveRankingApp:
             # Korrektur an der Tastatur des CP: Zeit ohne Nummer bzw. storniert
             if rec is None:
                 rec = self.cp_recs[key] = {"nr": cpn, "cp_nr": cpn, "abs": t["abs"], "status": "ok"}
+            # Nur wenn genau diese Startzeit die aktuelle des Boots ist, verlaesst es die Strecke. Eine
+            # stornierte alte Startzeit (z.B. nachgeholt nach einem Unterbruch) trifft einen Neustart nicht.
+            mine = [(t_, k) for t_, n, k in self.compute_course() if n == rec["nr"]]
+            active = bool(mine) and max(mine)[1] == key  # bei Neustart gilt die juengste Startzeit
             if ch == CH_FINISH:
                 self.undo_finish(key)
             rec["status"] = "cancelled" if typ == "TC" else "unassigned"
-            if ch == CH_START and typ == "TC" and rec["nr"] > 0 and self.status.get(rec["nr"]) is None:
-                self.set_status(rec["nr"], "DNF", "(Startzeit am CP storniert)")
-                return
+            if ch == CH_START and typ == "TC" and rec["nr"] > 0:
+                if active and self.status.get(rec["nr"]) is None:
+                    self.set_status(rec["nr"], "DNF", "(Startzeit am CP storniert)")
+                    return
+                if not active:
+                    self.log(f"CP: ältere Startzeit von Nr {rec['nr']} (Seq {seq}, {fmt_tod(t['abs'] % 86400)}) "
+                             "storniert, das Boot bleibt wie es ist", tag="warn")
         elif typ == "T*":
             if ch == CH_FINISH:
+                if dev == "A":
+                    self.cp_last_finish_rx = key
                 if rec is not None:
                     self.undo_finish(key)
                 skey = self.course_key(cpn)
@@ -6737,6 +6785,8 @@ class LiveRankingApp:
         self.cp_sync_next("Start")
 
     def on_finish_impulse(self, key, cpn, abs_t):
+        if key[0] == "A":
+            self.cp_last_finish_rx = key
         DIAG.info(f"Zielimpuls {key} CP-Nr {cpn} {fmt_tod(abs_t % 86400)} | erwartet: "
                   f"{[c[1] for c in self.course]} | Vorrang {self.finish_override} | "
                   f"Sperre {self.settings['timing']['lock_finish']}")
@@ -6827,9 +6877,14 @@ class LiveRankingApp:
     def on_cp_result(self, info):
         """RR vom CP bestaetigt die Fahrzeit, wenn der CP dieselbe Start- und Zielzeit verwendet hat."""
         cpn = info["nr"]
-        key = max((k for k, r in self.run_recs(CH_FINISH) if k[0] == "A" and r["cp_nr"] == cpn
-                   and r["status"] == "ok"), key=lambda k: self.cp_recs[k]["abs"], default=None)
-        if key is None or not self.cp_recs[key].get("rr_ok"):
+        # RR folgt direkt auf die Zielzeit, zu der es gehoert. Gehoert diese Zielzeit keinem Boot oder einem
+        # anderen als dem, das der CP meint, gilt das RR nicht.
+        key = getattr(self, "cp_last_finish_rx", None)
+        rec = self.cp_recs.get(key) if key else None
+        if rec is None or rec["cp_nr"] != cpn or rec["status"] != "ok" or not rec.get("rr_ok"):
+            if rec is not None and rec["cp_nr"] == cpn:
+                DIAG.info(f"RR Nr {cpn} {info['secs']} ignoriert: Zielzeit {key} Status {rec['status']}, "
+                          f"Boot {rec['nr']}")
             return
         rec = self.cp_recs[key]
         secs = trunc_secs(info["secs"], min(self.cp_prec, 2))
@@ -9085,6 +9140,12 @@ def main():
         try:
             import ctypes
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            pass
+        try:
+            # eigene App-Kennung: die Taskleiste zeigt dann das SWV-Symbol statt dem von Python
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SWV.LiveRanking")
         except Exception:
             pass
     root = tk.Tk()

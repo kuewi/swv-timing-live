@@ -31,6 +31,7 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#AppExe}
+SetupIconFile=..\assets\swv_logo.ico
 UninstallDisplayName={#AppName}
 VersionInfoVersion={#AppVersion}
 VersionInfoProductName={#AppName}

@@ -25,8 +25,8 @@ if errorlevel 1 (
 set DATA=
 if exist swv_logo.png set DATA=%DATA% --add-data "swv_logo.png;."
 if exist logo.png set DATA=%DATA% --add-data "logo.png;."
-set ICON=
-if exist swv_logo.ico set ICON=--icon swv_logo.ico
+set ICON=--icon assets\swv_logo.ico
+set DATA=%DATA% --add-data "assets;assets"
 
 python -m pip install --upgrade pillow
 python tools\make_version_file.py version_info.txt

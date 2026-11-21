@@ -37,7 +37,7 @@ jobs:
       - name: Build
         run: |
           python tools/make_version_file.py version_info.txt
-          pyinstaller --onefile --windowed --name SWV_LiveRanking --version-file version_info.txt --hidden-import xlrd --hidden-import openpyxl --hidden-import PIL.ImageGrab swv_live_ranking.py
+          pyinstaller --onefile --windowed --name SWV_LiveRanking --version-file version_info.txt --icon assets/swv_logo.ico --add-data "assets;assets" --hidden-import xlrd --hidden-import openpyxl --hidden-import PIL.ImageGrab swv_live_ranking.py
       - name: Installer
         shell: pwsh
         run: |

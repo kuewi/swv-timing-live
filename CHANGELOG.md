@@ -1,5 +1,12 @@
 # Änderungen
 
+## v1.10.0 (21.11.2026)
+- SWV-Logo: Symbol für .exe, Setup, Desktop, Startmenü, Fenster und Taskleiste (eigene App-Kennung), Logo oben in der Seitenleiste. Vektor-Nachzeichnung in `assets/swv_logo.svg`
+- Fehlerbericht a23e: Storno einer älteren Startzeit am CP (z.B. nachgeholt nach einem Unterbruch) setzt das Boot nicht mehr auf DNF, wenn es inzwischen neu gestartet ist
+- Fehlerbericht a23e: Zeit des CP (RR) gilt nur für die Zielzeit, die der CP direkt davor gemeldet hat. Gehört diese keinem oder einem anderen Boot, bleibt die Zeit der App
+- Fehlerbericht a23e: Zeilen ohne Startnummer (z.B. `TN        10 M4 ...`) werden erkannt, die App fragt sie nicht mehr endlos nach
+- Fehlerbericht 7ed8: Kategorienamen ohne Unterschied von Gross/Klein («JUNGFAHRER» = «Jungfahrer»), kein ständiges Nachführen der Bereiche mehr. Ein Neuaufbau der Ranglisten behält das Blinken neuer Resultate
+
 ## v1.9.1 (21.11.2026)
 - Nummer ändern auf der Fahrstrecke: Hinweis mit der Tastenfolge für den CP (alte Nr R E1 neue Nr Enter), weil der CP 545 nicht ferngesteuert umnummeriert. Auf der Fahrstrecke steht «CP führt noch Nr X», bis der CP nachgezogen hat
 - Korrektur an der Tastatur des CP (T*) gilt immer, auch nach einer Änderung in der App
