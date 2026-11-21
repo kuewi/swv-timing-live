@@ -1,5 +1,8 @@
 # SWV Timing Live (SWV Live-Ranking)
 
+![Oberfläche v1.10.1](docs/screenshots/ui_v1.10.1.png)
+
+
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des
 TAG Heuer Chronoprinter CP 545 und zeigt Live-Zeit, Zieleinlauf, Ranglisten pro Kategorie,
 nächste Starter, Ereignis-Ticker und Statistik.
