@@ -1,4 +1,5 @@
-"""Screenshot der Oberflaeche fuer das aktuelle Release: docs/screenshots/ui_v<APP_VERSION>.png.
+"""Screenshots fuer das aktuelle Release: docs/screenshots/ui_v<APP_VERSION>.png und die Trainingsfenster
+sim_cp545_v<APP_VERSION>.png, sim_tm550_v<APP_VERSION>.png.
 Aeltere Screenshots in diesem Ordner werden entfernt, README zeigt den neuen.
 Braucht eine Anzeige (unter Linux z.B. Xvfb :99) und ImageMagick 'import'.
 Alle Namen sind erfunden."""
@@ -80,9 +81,44 @@ def main():
         lines = text.split("\n")
         lines.insert(1, f"\n{img}\n")
         text = "\n".join(lines)
+    # Trainingsfenster CP 545 und TM550
+    shots = []
+    for dev, label in (("cp545", "CP 545"), ("tm550", "TM550")):
+        win = app.open_trainer(dev)
+        pump(3.0)
+        if dev == "cp545":
+            for k in ("K1", "K1", "K4"):
+                app.trainer_key(k)
+                pump(0.6)
+            for k in ("1", "2", "R"):
+                app.trainer_key(k)
+        else:
+            for k in ("E1", "E1", "E4"):
+                app.trainer_key(k)
+                pump(0.6)
+        pump(0.5)
+        win.update()
+        name = f"sim_{dev}_v{m.APP_VERSION}.png"
+        wid = win.wm_frame() or hex(win.winfo_id())
+        subprocess.run(["import", "-window", wid, os.path.join(OUT_DIR, name)], check=True)
+        shots.append((label, name))
+        app.trainer_close()
+        pump(0.3)
+    for name in os.listdir(OUT_DIR):
+        if name.startswith("sim_") and name not in [n for _l, n in shots]:
+            os.remove(os.path.join(OUT_DIR, name))
+    block = "\n".join(f"![Simulator {lab} v{m.APP_VERSION}](docs/screenshots/{n})" for lab, n in shots)
+    pat = r"(?:!\[Simulator [^\]]*\]\(docs/screenshots/[^)]*\)\n?)+"
+    if re.search(pat, text):
+        text = re.sub(pat, block + "\n", text, count=1)
+    elif "### Üben\n" in text:
+        text = text.replace("### Üben\n", "### Üben\n\n" + block + "\n", 1)
     open(readme, "w", encoding="utf-8").write(text)
-    app.cp.stop()
+    if app.cp is not None:
+        app.cp.stop()
     sim.close()
+    if app.sim is not None:
+        app.sim.close()
     shutil.rmtree(data, ignore_errors=True)
     print(out)
 

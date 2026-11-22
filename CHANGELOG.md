@@ -1,5 +1,10 @@
 # Änderungen
 
+## v1.13.0 (22.11.2026)
+- Verbindung: Hauptgerät und Reserve-Gerät je mit eigener Verbindungsart. Hauptgerät RS232, Ethernet oder USB, Reserve keines, Ethernet oder USB. Damit CP 545 über USB und TM550 über Ethernet, umgekehrt oder beide über Ethernet. Netzwerkkarte erscheint, sobald eines der Geräte Ethernet nutzt, und wird auch für eine Reserve über Ethernet vorbereitet. IP der Reserve aus der Suche oder eingetippt, die App fragt das Gerät ab (CP 545 oder TM550). Reserve lässt sich während des Betriebs wechseln. Die Suche wählt als Hauptgerät nie die Adresse der Reserve
+- Üben: CP 545 und TM550 nach Fotos nachgebaut. CP 545 hochkant mit Papierstreifen, Display, Tasten E1 bis E4, Zahlenblock 7-8-9 oben, * 0 R, ⇧ F C links, ▲ ↵ ▼ rechts, grüne Kanaltasten 1 bis 4 mit roter LED. Rückseite mit Buchsen 4 3 2 1, POWER, USB, RS 232, ETHERNET. TM550 in Schildform mit roten Tasten E1 bis E4, Farbdisplay (Uhrzeit, Eingänge, letzte Zeiten, Statuszeile), ON, SHIFT, Pfeilkreuz mit OK. Rückseite mit RS 232, ETHERNET, Buchsen 1 bis 4, USB-C und DC. Klick auf die Ethernet-Buchse zieht bzw. steckt das Kabel
+- README zeigt Bilder der beiden Übungsgeräte, werden bei jedem Release neu aufgenommen
+
 ## v1.12.0 (22.11.2026)
 - ITS/Vola TM550 als Zeitmessgerät, über USB (COM-Port) und Ethernet (Port 7000). Die App erkennt das Gerät an der Seriennummer. Am TM550 empfohlen: Modus TIMING, Start E1, Ziel E4, NO IDENTIFICATION, Lauf offen, kurze Sperrzeit am Ziel
 - TM550: die App vergibt die Startnummern aus der Startreihenfolge (keine Vorladung möglich), vom Gerät gesperrte Doppelkontakte werden im Log gezeigt und nicht als Storno gewertet, fehlende Zeilen holt die App per Download des offenen Laufs

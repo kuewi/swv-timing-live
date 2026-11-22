@@ -1,6 +1,6 @@
 # SWV Timing Live (SWV Live-Ranking)
 
-![Oberfläche v1.12.0](docs/screenshots/ui_v1.12.0.png)
+![Oberfläche v1.13.0](docs/screenshots/ui_v1.13.0.png)
 
 
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des
@@ -28,18 +28,23 @@ das Gerät an der Seriennummer. Einstellung am TM550: Modus TIMING, Start E1, Zi
 Lauf offen, kurze Sperrzeit am Ziel. Die Startnummern vergibt die App aus der Startreihenfolge.
 Verlorene Zeilen holt sie per Download des offenen Laufs; der TM550 puffert bei Unterbruch nicht.
 
-### Reserve-Gerät
+### Hauptgerät und Reserve-Gerät
 
-Hauptgerät CP 545, Reserve TM550 (oder zweiter CP) an denselben Impulsgebern. Die App lernt den
-Uhrversatz aus gemeinsamen Impulsen, übernimmt Impulse, die dem Hauptgerät fehlen, und fällt bei
-Ausfall des Hauptgeräts auf die Reserve zurück. Beide Geräte brauchen dieselben Start- und Zielimpulse
-(Verteilung elektrisch mit ITS/TAG Heuer abklären).
+Beide Geräte haben ihre eigene Verbindung: Hauptgerät RS232, Ethernet oder USB, Reserve-Gerät keines,
+Ethernet oder USB. Möglich sind z.B. CP 545 über USB und TM550 über Ethernet, umgekehrt, oder beide über
+Ethernet (zwei Adressen im Netz 192.168.1.x an derselben Netzwerkkarte). Die IP der Reserve lässt sich aus
+der Suche wählen oder eintippen. Die App lernt den Uhrversatz aus gemeinsamen Impulsen, übernimmt Impulse,
+die dem Hauptgerät fehlen, und fällt bei Ausfall des Hauptgeräts auf die Reserve zurück. Beide Geräte
+brauchen dieselben Start- und Zielimpulse (Verteilung elektrisch mit ITS/TAG Heuer abklären).
 
 ### Üben
 
-Unter Simulator: «Üben: CP 545 mit Tastatur» bzw. «Üben: TM550» öffnet ein nachgebautes Gerät mit
-Display, Tastatur, Bananenbuchsen, Netzwerkkabel und Übungsfällen. Die App ist damit verbunden wie mit
-dem echten Gerät.
+![Simulator CP 545 v1.13.0](docs/screenshots/sim_cp545_v1.13.0.png)
+![Simulator TM550 v1.13.0](docs/screenshots/sim_tm550_v1.13.0.png)
+
+Unter Simulator: «Üben: CP 545 mit Tastatur» bzw. «Üben: TM550» öffnet ein nachgebautes Gerät
+(Vorderseite mit Display und Tastenfeld nach Foto, Rückseite mit Bananenbuchsen und Anschlüssen) und
+Übungsfälle. Die App ist damit verbunden wie mit dem echten Gerät.
 
 ## Schnittstelle für andere Programme
 
