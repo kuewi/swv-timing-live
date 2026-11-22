@@ -1,5 +1,13 @@
 # Änderungen
 
+## v1.12.0 (22.11.2026)
+- ITS/Vola TM550 als Zeitmessgerät, über USB (COM-Port) und Ethernet (Port 7000). Die App erkennt das Gerät an der Seriennummer. Am TM550 empfohlen: Modus TIMING, Start E1, Ziel E4, NO IDENTIFICATION, Lauf offen, kurze Sperrzeit am Ziel
+- TM550: die App vergibt die Startnummern aus der Startreihenfolge (keine Vorladung möglich), vom Gerät gesperrte Doppelkontakte werden im Log gezeigt und nicht als Storno gewertet, fehlende Zeilen holt die App per Download des offenen Laufs
+- Eingänge für Start und Ziel einstellbar (Zeitmessung, 1 bis 4)
+- Reserve-Gerät: CP 545 als Hauptgerät, TM550 (oder zweiter CP) als Reserve über Ethernet oder USB. Die App lernt den Uhrversatz aus gemeinsamen Impulsen, übernimmt Impulse, die dem Hauptgerät fehlen, und bei Ausfall des Hauptgeräts sofort alle Zeiten der Reserve. Warnung, wenn die Reserve einen Impuls nicht sieht oder der Versatz springt
+- Üben: CP 545 und TM550 als eigenes Fenster mit Display, Tastatur (Nr R 0, Nr R 0 ., Nr R E1 neue Nr Enter, E1 bis E4), Lauf-Menü, klickbaren Bananenbuchsen (Rechtsklick = Doppelkontakt), Netzwerkkabel ein/aus, Papierstreifen und Übungsfällen (Fehlstart, Kabel 10 s ab, Lauf neu öffnen, falsche Nummer, Doppelkontakt). Übungsprotokoll wird im Datenordner unter `training` gespeichert. Nachbau nach den Handbüchern, keine Original-Firmware
+- Fenstertitel zeigt das verbundene Gerät
+
 ## v1.11.0 (22.11.2026)
 - Version im Fenstertitel und neben dem Logo
 - Update-Prüfung: beim Start (abschaltbar unter «Daten») und mit «Jetzt nach Updates suchen». Neue Version mit Release-Text, auf Ja wird das Setup von GitHub geladen, mit SHA-256 geprüft und gestartet, die App schliesst sich. Ohne Installation: Hinweis mit Link zur Download-Seite. Abgelehnte Version wird 12 Stunden nicht erneut angeboten

@@ -1,13 +1,13 @@
 # SWV Timing Live (SWV Live-Ranking)
 
-![Oberfläche v1.11.0](docs/screenshots/ui_v1.11.0.png)
+![Oberfläche v1.12.0](docs/screenshots/ui_v1.12.0.png)
 
 
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des
-TAG Heuer Chronoprinter CP 545 und zeigt Live-Zeit, Zieleinlauf, Ranglisten pro Kategorie,
+TAG Heuer Chronoprinter CP 545 oder des ITS/Vola TM550 und zeigt Live-Zeit, Zieleinlauf, Ranglisten pro Kategorie,
 nächste Starter, Ereignis-Ticker und Statistik.
 
-## Verbindung zum CP 545
+## Verbindung zum Zeitmessgerät
 
 | Art | Anschluss | Funktion |
 | --- | --- | --- |
@@ -20,6 +20,26 @@ gesperrte Messpunkte, Nachholen fehlender Zeiten (`#RT`), Download eines Laufs (
 Reserve-CP und ein eingebauter Simulator. Statt Ethernet geht auch USB: der CP hängt dann direkt am PC
 (virtueller COM-Port) und wird gleich gesteuert. Jede Zeile des CP landet sofort in `rohdaten/`. Die Netzwerkkarte wird dafür auf 192.168.1.55 / 255.255.255.0 gestellt und
 beim Beenden wieder auf automatische Adresse (DHCP). Der CP hat ab 192.168.1.50.
+
+### TM550 (ITS/Vola)
+
+USB (FTDI, 9600 Baud) oder Ethernet (Port 7000, Adresse am Gerät unter Communication). Die App erkennt
+das Gerät an der Seriennummer. Einstellung am TM550: Modus TIMING, Start E1, Ziel E4, NO IDENTIFICATION,
+Lauf offen, kurze Sperrzeit am Ziel. Die Startnummern vergibt die App aus der Startreihenfolge.
+Verlorene Zeilen holt sie per Download des offenen Laufs; der TM550 puffert bei Unterbruch nicht.
+
+### Reserve-Gerät
+
+Hauptgerät CP 545, Reserve TM550 (oder zweiter CP) an denselben Impulsgebern. Die App lernt den
+Uhrversatz aus gemeinsamen Impulsen, übernimmt Impulse, die dem Hauptgerät fehlen, und fällt bei
+Ausfall des Hauptgeräts auf die Reserve zurück. Beide Geräte brauchen dieselben Start- und Zielimpulse
+(Verteilung elektrisch mit ITS/TAG Heuer abklären).
+
+### Üben
+
+Unter Simulator: «Üben: CP 545 mit Tastatur» bzw. «Üben: TM550» öffnet ein nachgebautes Gerät mit
+Display, Tastatur, Bananenbuchsen, Netzwerkkabel und Übungsfällen. Die App ist damit verbunden wie mit
+dem echten Gerät.
 
 ## Schnittstelle für andere Programme
 

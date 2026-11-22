@@ -73,7 +73,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.11.0"
+APP_VERSION = "1.12.0"
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -2566,11 +2566,15 @@ class SimCP:
     """Verhaelt sich wie der CP 545 in den Tests von Stefan: #WP 026 setzt die naechste Start- bzw.
     Zielnummer, #WC 013 wird mit AK R abgelehnt, #RT und #DL liefern gespeicherte Zeiten."""
 
-    def __init__(self, port=0, rs232=False, device="cp545", timing=True, bounce=False):
+    def __init__(self, port=0, rs232=False, device="cp545", timing=True, bounce=False, clock_offset=0.0):
         # device «tm550»: Verhalten wie Stefans TM550 (FW 1.18): Befehle nur mit Pruefsumme, Zeilen immer mit
         # Pruefsumme, keine Nummern, #WP/#RP 026 -> AK F, #RT -> «T?» + AK C + AK C, #DL nur mit offenem Lauf
         # (timing=True), kein Puffer, gesperrte Zielkontakte als TC (bounce=True)
         self.device, self.timing, self.bounce = device, timing, bounce
+        self.clock_offset = clock_offset  # Uhr des Geraets gegenueber dem PC (s), z.B. TM550 -281
+        self.offline = False      # Kabel gezogen
+        self.on_line = None       # jede gesendete Zeitzeile (Papierstreifen)
+        self.on_event = None      # Rueckmeldung fuer das Trainingsfenster: on_event(text)
         self.blocked = []         # TM550: gesperrte Kontakte (Eingang, Seq, Zeit)
         self.rs232 = rs232 or device == "tm550"   # Rahmen [Daten] TAB CS16
         self.pending = []         # wie der CP: ohne Verbindung puffern, beim Verbinden zuerst senden
@@ -2591,9 +2595,8 @@ class SimCP:
         self.alive = True
         threading.Thread(target=self._accept, daemon=True).start()
 
-    @staticmethod
-    def now_abs():
-        return local_abs()
+    def now_abs(self):
+        return local_abs() + self.clock_offset
 
     def fmt(self, typ, nr, seq, ch, abs_t):
         day, tod = divmod(abs_t, 86400)
@@ -2609,6 +2612,12 @@ class SimCP:
                 c, _a = self.sock.accept()
             except OSError:
                 return
+            if self.offline:  # Kabel gezogen: keine Verbindung moeglich
+                try:
+                    c.close()
+                except OSError:
+                    pass
+                continue
             with self.lock:
                 pending, self.pending = self.pending, []
             for line in pending:
@@ -2617,6 +2626,8 @@ class SimCP:
             threading.Thread(target=self._serve, args=(c,), daemon=True).start()
 
     def send(self, line, c=None):
+        if c is None and getattr(self, "on_line", None):
+            self.on_line(line)  # Papierstreifen im Trainingsfenster
         if c is None and self.drop_next and not line.startswith(("AK", "&P", "SN", "!T")):
             self.drop_next = False
             return  # simuliert eine verlorene Zeile
@@ -2780,6 +2791,87 @@ class SimCP:
 
     def replay_line(self, line):
         self.send(line)
+
+    # ---------- Bedienung wie an der Tastatur (Trainingsfenster) ---------- #
+    def note(self, text):
+        if self.on_event:
+            self.on_event(text)
+
+    def impulse(self, ch):
+        """Impuls an Eingang ch (Bananenbuchse oder Taste E1..E4)."""
+        if ch == CH_START:
+            nr = self.start()
+            self.note(f"Start Eingang {ch}" + (f" Nr {nr}" if nr else ""))
+        elif ch == CH_FINISH:
+            nr = self.finish()
+            self.note(f"Ziel Eingang {ch}" + (f" Nr {nr}" if nr else ""))
+        else:
+            with self.lock:
+                self.seq[ch] = self.seq.get(ch, 0) + 1
+                t = self.now_abs()
+                self.recs[(ch, self.seq[ch])] = ["TN", 0, t]
+                self.send(self.fmt("TN", 0, self.seq[ch], ch, t))
+            self.note(f"Impuls Eingang {ch}")
+
+    def double_contact(self, ch, gap=0.12):
+        """Prellen: zweiter Kontakt kurz nach dem ersten."""
+        self.impulse(ch)
+        if self.device == "tm550":
+            with self.lock:
+                seq = self.seq.get(ch, 0)
+                t = self.now_abs() + gap
+                self.blocked.append((ch, seq, t))
+                self.send(self.fmt("TC", 0, seq, ch, t))
+            self.note(f"Doppelkontakt Eingang {ch} (vom Gerät gesperrt)")
+        else:
+            threading.Timer(gap, lambda: self.impulse(ch)).start()
+
+    def cancel(self, nr, dsq=False):
+        """Nr R 0 (DNF) bzw. Nr R 0 . (DSQ): Startzeit stornieren."""
+        with self.lock:
+            st = next((x for x in self.course if x[0] == nr), None)
+            if st is None:
+                self.note(f"Nr {nr} ist nicht auf der Strecke")
+                return False
+            self.course.remove(st)
+            self.recs[(CH_START, st[2])][0] = "TC"
+            self.send(self.fmt("TC", nr, st[2], CH_START, st[1]))
+        self.note(f"Nr {nr} {'disqualifiziert' if dsq else 'ausgeschieden'} (R 0{'.' if dsq else ''})")
+        return True
+
+    def renumber(self, old, new):
+        """Alte Nr R E1 neue Nr Enter."""
+        with self.lock:
+            i = next((i for i, x in enumerate(self.course) if x[0] == old), None)
+            if i is None:
+                self.note(f"Nr {old} ist nicht auf der Strecke")
+                return False
+            nr, t, seq = self.course[i]
+            self.course[i] = (new, t, seq)
+            self.recs[(CH_START, seq)] = ["T*", new, t]
+            self.send(self.fmt("T-", old, seq, CH_START, t))
+            self.send(self.fmt("T*", new, seq, CH_START, t))
+        self.note(f"Nr {old} umnummeriert auf {new}")
+        return True
+
+    def close_run(self):
+        self.send(f"CL {self.run:02d}")
+        self.note(f"Lauf {self.run} geschlossen")
+
+    def open_run(self, same=False):
+        if not same:
+            self.run += 1
+        with self.lock:
+            self.seq = {CH_START: 0, CH_FINISH: 0}
+            self.recs, self.course, self.results, self.blocked = {}, [], [], []
+        self.send(f"OP {self.run:02d} TIMING" if self.device == "tm550" else f"OP {self.run:02d}  00  NET TIME")
+        self.note(f"Lauf {self.run} geöffnet")
+
+    def set_cable(self, connected):
+        self.offline = not connected
+        if not connected:
+            self.drop_clients()
+        self.note("Kabel eingesteckt" if connected else "Kabel gezogen")
 
     def drop_clients(self):
         for c in list(self.clients):
@@ -3188,6 +3280,8 @@ class LiveRankingApp:
         self.cp_lastseq = {}        # (geraet, lauf, eingang) -> letzte Seq
         self.cp_download = None     # Zeiten waehrend #DL
         self.reset_caps("cp545")
+        self.cp_b_device = None
+        self.backup_reset()
         self.cp_backlog = None      # alte Zeilen aus dem Puffer des CP direkt nach dem Verbinden
         self.cp_backlog_t = 0.0
         self.cp_backlog_again = False
@@ -4250,6 +4344,9 @@ class LiveRankingApp:
         self.sw_usb_ack = Switch(us, command=self.toggle_usb_ack, scale=self.ui_scale,
                                  on=self.settings["conn"]["usb_ack"])
         self.sw_usb_ack.grid(row=4, column=1, sticky="e")
+        self._label(us, "Reserve-Gerät (optional)").grid(row=7, column=0, columnspan=2, sticky="w")
+        self.cmb_usb_b = self._combo(us, state="readonly")
+        self.cmb_usb_b.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(2, 6))
         tools_u = tk.Frame(us, bg=PANEL)
         tools_u.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 6))
         tools_u.columnconfigure(0, weight=1)
@@ -4282,7 +4379,8 @@ class LiveRankingApp:
                                              "Modus TIMING, Start E1, Ziel E4, NO IDENTIFICATION, Lauf offen.",
                                         fg=MUTED, wraplength=wrap, justify="left")
         self.lbl_eth_hint.grid(row=7, column=0, columnspan=2, sticky="w", pady=(0, 6))
-        self._label(eth, "Reserve-CP (optional)").grid(row=4, column=0, columnspan=2, sticky="w")
+        self._label(eth, "Reserve-Gerät (optional)").grid(row=4, column=0, columnspan=2,
+                                                                             sticky="w")
         self.cmb_cp_b = self._combo(eth, state="readonly")
         self.cmb_cp_b.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(2, 6))
         tools = tk.Frame(eth, bg=PANEL)
@@ -6180,6 +6278,9 @@ class LiveRankingApp:
         self.cp_reconnected = False
         self.cp = CPSerialClient(port, baud, self.q, identity=port_identity(port), ack=c["usb_ack"])
         self.cp.start()
+        c["cp_ip_b"] = self.selected_backup()
+        self.save_settings()
+        self.start_backup(c["cp_ip_b"])
         self.set_conn_status(f"verbinde mit CP an {port} ...", GOLD)
         self.btn_connect.configure(text="Trennen", bg=DARK_RED)
 
@@ -6202,12 +6303,30 @@ class LiveRankingApp:
             self.cmb_cp.current(idx)
         else:
             self.cmb_cp.set(f"{want}  (zuletzt verwendet)" if want else "noch nicht gesucht")
-        main = self.settings["conn"]["cp_ip"]
-        opts = [(ip, info) for ip, info in self.cp_found if ip != main]
-        self.cmb_cp_b["values"] = ["(keiner)"] + [f"{ip}  {info}" for ip, info in opts]
-        want_b = self.settings["conn"]["cp_ip_b"]
-        idx = next((i + 1 for i, (ip, _i) in enumerate(opts) if ip == want_b), 0)
-        self.cmb_cp_b.current(idx)
+        self.fill_backup_combos()
+
+    def backup_options(self):
+        """[(ziel, anzeige)]: '' = keins, IP = Ethernet, 'usb:COMx' = USB."""
+        c = self.settings["conn"]
+        opts = [("", "(keines)")]
+        opts += [(ip, f"{ip}  {info}") for ip, info in self.cp_found if ip != c["cp_ip"]]
+        main_usb = c["usb_port"] if c["mode"] == "usb" else ""
+        opts += [(f"usb:{dev}", f"USB {label}") for label, dev in getattr(self, "port_map", {}).items()
+                 if dev != main_usb]
+        want = c["cp_ip_b"]
+        if want and want not in [o[0] for o in opts]:
+            opts.append((want, f"{want.replace('usb:', 'USB ')}  (zuletzt verwendet)"))
+        return opts
+
+    def fill_backup_combos(self):
+        opts = self.backup_options()
+        want = self.settings["conn"]["cp_ip_b"]
+        idx = next((i for i, (t, _l) in enumerate(opts) if t == want), 0)
+        for name in ("cmb_cp_b", "cmb_usb_b"):
+            cmb = getattr(self, name, None)
+            if cmb is not None:
+                cmb["values"] = [label for _t, label in opts]
+                cmb.current(idx)
 
     def selected_adapter(self):
         i = self.cmb_adapter.current()
@@ -6469,12 +6588,13 @@ class LiveRankingApp:
         if kind == "eth_line":
             self.handle_eth_line(payload, dev="B")
         elif kind == "eth_connected":
-            self.log(f"Reserve-CP {b.host} verbunden", tag="ok")
+            self.log(f"Reserve-Gerät {b.host} verbunden", tag="ok")
             self.backup_state = "verbunden"
+            b.send("#SN")
             self.refresh_conn_head()
         elif kind in ("eth_lost", "eth_retry", "eth_open_error"):
             if getattr(self, "backup_state", "") != "getrennt":
-                self.log(f"Reserve-CP {b.host} nicht erreichbar: {payload}", tag="warn")
+                self.log(f"Reserve-Gerät {b.host} nicht erreichbar: {payload}", tag="warn")
             self.backup_state = "getrennt"
             self.refresh_conn_head()
         elif kind == "eth_disconnected":
@@ -6484,24 +6604,134 @@ class LiveRankingApp:
 
     def refresh_conn_head(self):
         if self.cp is not None and self.cp.connected:
-            extra = f" · Reserve {getattr(self, 'backup_state', '')}" if self.cp_b is not None else ""
-            self.set_conn_status(f"CP {self.cp.host} verbunden{extra}", GREEN_TEXT)
+            extra = ""
+            if self.cp_b is not None:
+                off = getattr(self, "b_offset", None)
+                extra = f" · Reserve {getattr(self, 'backup_state', '')}" + (f", Versatz {off:+.2f} s"
+                                                                             if off is not None else "")
+            self.set_conn_status(f"{self.dev_name()} {self.cp.host} verbunden{extra}", GREEN_TEXT)
 
     def selected_backup(self):
-        i = self.cmb_cp_b.current() if hasattr(self, "cmb_cp_b") else -1
-        if i <= 0:
-            return ""
-        opts = [ip for ip, _info in self.cp_found if ip != self.settings["conn"]["cp_ip"]]
-        return opts[i - 1] if i - 1 < len(opts) else ""
+        name = "cmb_usb_b" if self.usb_mode() else "cmb_cp_b"
+        cmb = getattr(self, name, None)
+        i = cmb.current() if cmb is not None else -1
+        opts = self.backup_options()
+        return opts[i][0] if 0 <= i < len(opts) else ""
 
-    def start_backup(self, ip, port=None):
+    def start_backup(self, target, port=None):
+        """Reserve-Geraet: Ethernet (IP) oder USB ('usb:COMx'). Zeiten laufen zur Kontrolle mit; fehlt ein
+        Impuls beim Hauptgeraet oder ist es getrennt, uebernimmt die App die Zeit der Reserve (Uhr abgeglichen)."""
         self.stop_backup()
-        if not ip:
+        self.backup_reset()
+        if not target:
             return
-        self.cp_b = CPClient(ip, port or cp_ports()[1], self.q)
+        if target.startswith("usb:"):
+            dev = target[4:]
+            self.cp_b = CPSerialClient(dev, self.settings["conn"].get("usb_baud", 9600), self.q,
+                                       identity=port_identity(dev))
+            self.cp_b_device = None
+        else:
+            info = next((i for h, i in self.cp_found if h == target), "")
+            self.cp_b_device = "tm550" if "TM550" in (info or "") else ("cp545" if info else None)
+            tm = self.cp_b_device == "tm550"
+            self.cp_b = CPClient(target, port or (CP_SCAN_PORT if tm else cp_ports()[1]), self.q)
+            self.cp_b.checksum = tm
         self.backup_state = "verbinde"
         self.cp_b.start()
-        self.log(f"Reserve-CP {ip}: Zeiten werden mitgeschrieben und übernommen, solange der Haupt-CP fehlt")
+        self.log(f"Reserve-Gerät {target.replace('usb:', 'USB ')}: Zeiten laufen zur Kontrolle mit und werden "
+                 "übernommen, wenn das Hauptgerät eine Zeit nicht liefert oder getrennt ist")
+
+    # ---------------- Reserve: Uhrabgleich und Uebernahme ---------------- #
+    def backup_reset(self):
+        self.b_pend = []            # Reserve-Impulse ohne Gegenstueck: [rx, info]
+        self.a_pend = []            # Haupt-Impulse ohne Gegenstueck (nur wenn Reserve verbunden): [rx, info]
+        self.b_offsets = []         # Uhrversatz Reserve - Haupt aus Impulspaaren
+        self.b_offset = None
+        self.b_taken = 0
+        self._b_warn_t = 0.0
+
+    def backup_connected(self):
+        return self.cp_b is not None and self.cp_b.connected
+
+    def main_connected(self):
+        return self.cp is not None and self.cp.connected
+
+    def backup_corrected(self, info):
+        off = self.b_offset or 0.0
+        out = dict(info)
+        out["abs"] = info["abs"] - off
+        out["tod"] = out["abs"] % 86400
+        return out
+
+    def backup_time(self, info):
+        """Zeile vom Reserve-Geraet."""
+        if info["type"] not in ("TN", "T+", "T="):
+            if not self.main_connected():
+                self.on_cp_time(self.backup_corrected(info), "B")
+            return
+        now = time.time()
+        if not self.main_connected():
+            if self.b_taken == 0:
+                self.log("Hauptgerät getrennt: Zeiten des Reserve-Geräts werden übernommen"
+                         + ("" if self.b_offset is not None else " (Uhrversatz noch unbekannt, 0 angenommen)"),
+                         tag="warn")
+                self.add_ticker("Reserve-Gerät übernimmt die Zeitmessung", "warn")
+            self.b_taken += 1
+            self.on_cp_time(self.backup_corrected(info), "B")
+            return
+        # Gegenstueck beim Hauptgeraet? (gleicher Eingang, Eingang am PC innerhalb 2.5 s)
+        for i, (rx, a) in enumerate(self.a_pend):
+            if a["ch"] == info["ch"] and abs(now - rx) <= 2.5:
+                self.a_pend.pop(i)
+                self.backup_pair(a, info)
+                return
+        self.b_pend.append([now, info])
+
+    def backup_note_main(self, info):
+        """Live-Impuls vom Hauptgeraet: mit Reserve-Impuls paaren oder auf ihn warten."""
+        if not self.backup_connected() or info["type"] not in ("TN", "T+", "T="):
+            return
+        now = time.time()
+        for i, (rx, b) in enumerate(self.b_pend):
+            if b["ch"] == info["ch"] and abs(now - rx) <= 2.5:
+                self.b_pend.pop(i)
+                self.backup_pair(info, b)
+                return
+        self.a_pend.append([now, info])
+
+    def backup_pair(self, a, b):
+        off = b["abs"] - a["abs"]
+        if self.b_offset is not None and abs(off - self.b_offset) > 0.5:
+            self.log(f"Reserve-Gerät: Uhrversatz springt von {self.b_offset:+.3f} s auf {off:+.3f} s "
+                     "(Uhr verstellt?)", tag="warn")
+            self.b_offsets = []
+        self.b_offsets = (self.b_offsets + [off])[-15:]
+        vals = sorted(self.b_offsets)
+        first = self.b_offset is None
+        self.b_offset = vals[len(vals) // 2]
+        if first:
+            self.log(f"Reserve-Gerät: Uhrversatz {self.b_offset:+.3f} s gegenüber dem Hauptgerät", tag="ok")
+        DIAG.debug(f"Paar Eingang {a['ch']}: Versatz {off:+.4f} s, Median {self.b_offset:+.4f} s")
+        self.refresh_conn_head()
+
+    def backup_tick(self):
+        """Unpaarige Impulse auswerten (aus dem Ethernet-Takt aufgerufen)."""
+        now = time.time()
+        for rx, b in [x for x in self.b_pend if now - x[0] > 3.0]:
+            self.b_pend.remove([rx, b])
+            if self.main_connected():
+                tod = fmt_tod(self.backup_corrected(b)["abs"] % 86400)
+                self.log(f"Impuls {tod} auf Eingang {b['ch']} nur beim Reserve-Gerät: Zeit der Reserve übernommen",
+                         tag="warn")
+                self.add_ticker(f"Zeit {tod} vom Reserve-Gerät übernommen (Hauptgerät hat sie nicht)", "warn")
+            self.b_taken += 1
+            self.on_cp_time(self.backup_corrected(b), "B")
+        for rx, a in [x for x in self.a_pend if now - x[0] > 3.0]:
+            self.a_pend.remove([rx, a])
+            if self.backup_connected() and now - self._b_warn_t > 60:
+                self._b_warn_t = now
+                self.log(f"Reserve-Gerät hat den Impuls {fmt_tod(a['abs'] % 86400)} auf Eingang {a['ch']} nicht "
+                         "erhalten. Kabel und Eingänge der Reserve prüfen.", tag="warn")
 
     def stop_backup(self):
         if self.cp_b is not None:
@@ -6519,6 +6749,11 @@ class LiveRankingApp:
         self.cp_device = device
         self.cp_caps = {"preload": not tm, "rt": not tm, "dl": True, "ignore_nr": tm, "buffer": not tm,
                         "timeout": 4.0 if tm else CMD_TIMEOUT}
+        try:
+            self.root.title(f"SWV Live-Ranking v{APP_VERSION}  |  "
+                            + ("ITS TM550" if tm else "TAG Heuer CP 545"))
+        except (AttributeError, tk.TclError):
+            pass
 
     def dev_name(self):
         return self.DEVICE_LABEL.get(self.cp_device, "CP")
@@ -6778,7 +7013,7 @@ class LiveRankingApp:
             self._cp_next_pending = None
             if ok:
                 self.cp_next_start = want
-                if self.cp_b is not None and self.cp_b.connected:
+                if self.cp_b is not None and self.cp_b.connected and self.cp_b_device != "tm550":
                     DIAG.debug(f"CP B> #WP 026 {CH_START:02d} {want:04d}")
                     self.cp_b.send(f"#WP 026 {CH_START:02d} {want:04d}")  # Reserve gleich nummerieren
                 self.update_panels()
@@ -6957,6 +7192,10 @@ class LiveRankingApp:
         if info is None:
             return
         self.raw_log(dev, raw)
+        if dev == "B" and info["kind"] == "serial":
+            self.cp_b_device = "tm550" if "TM550" in info["type"].upper() else "cp545"
+            self.log(f"Reserve-Gerät: {info['type']} Nr {info['serial']} {info['version']}".strip(), tag="ok")
+            return
         if dev == "A" and self.cp_backlog is not None:
             if info["kind"] == "serial":
                 self.finish_backlog()
@@ -6993,11 +7232,12 @@ class LiveRankingApp:
                         self.cp_lastseq[k] = info["seq"]
                     self.on_cp_time(info, dev, recalled=True)
                 return
+            if dev == "B":
+                self.backup_time(info)
+                return
             self.check_seq_gap(info, dev)
-            if dev == "B" and self.cp is not None and self.cp.connected:
-                self.backup_seen[(info["ch"], round(info["abs"], 2))] = True
-                return  # Reserve: nur verwenden, solange der Haupt-CP fehlt
             self.on_cp_time(info, dev)
+            self.backup_note_main(info)
         elif info["kind"] == "result" and info["type"] == "RR" and dev == "A":
             self.on_cp_result(info)
         elif info["kind"] == "open" and dev == "A":
@@ -7184,7 +7424,7 @@ class LiveRankingApp:
         if typ.startswith("A"):
             typ = "T" + typ[1:]  # Antwort auf #RT / #DL wie eine normale Zeit behandeln
         ch, seq, cpn = t["ch"], t["seq"], t["nr"]
-        if dev == "A" and self.cp_caps["ignore_nr"]:
+        if (dev == "A" and self.cp_caps["ignore_nr"]) or (dev == "B" and self.cp_b_device == "tm550"):
             cpn = 0  # TM550: Nummern vom Geraet sind nur Zaehler, die App vergibt die Nummern
         key = (dev, self.cp_run, ch, seq)
         rec = self.cp_recs.get(key)
@@ -7283,7 +7523,7 @@ class LiveRankingApp:
             self.log(f"Startimpuls {fmt_tod(abs_t % 86400)} ungültig (Prellzeit)", tag="warn")
             return
         if cpn <= 0:
-            nxt = self.next_starters(1) if not self.cp_caps["preload"] else []
+            nxt = self.next_starters(1) if (not self.cp_caps["preload"] or key[0] == "B") else []
             if nxt:
                 # TM550: Nummer aus der Startreihenfolge der App. Kommt eine verlorene, fruehere Startzeit
                 # nachtraeglich (Download), werden die Nummern der spaeteren, noch fahrenden Starts nachgeschoben.
@@ -7581,6 +7821,7 @@ class LiveRankingApp:
         now = time.time()
         if self.cp_backlog is not None and now - self.cp_backlog_t > 3:
             self.finish_backlog()
+        self.backup_tick()
         if self.cp.connected:
             if now - self.cp_last_hb > HEARTBEAT_S and self.cp_inflight is None and not self.cp_cmds:
                 self.cp_last_hb = now
@@ -7633,6 +7874,10 @@ class LiveRankingApp:
         self.sw_sim_auto.grid(row=0, column=1, sticky="e")
         self._button(win, "Log abspielen ...", self.sim_replay_dialog).grid(row=4, column=0, columnspan=2,
                                                                          sticky="ew", pady=(8, 0))
+        self._button(win, "Üben: CP 545 mit Tastatur", lambda: self.open_trainer("cp545")).grid(
+            row=8, column=0, sticky="ew", padx=(0, 3), pady=(10, 0))
+        self._button(win, "Üben: TM550", lambda: self.open_trainer("tm550")).grid(
+            row=8, column=1, sticky="ew", padx=(3, 0), pady=(10, 0))
         self.var_sim_speed = tk.StringVar(value="5")
         Segmented(win, (("1", "1×"), ("5", "5×"), ("20", "20×")), self.var_sim_speed, font=self.f_side_bold,
                   scale=self.ui_scale).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
@@ -7644,6 +7889,288 @@ class LiveRankingApp:
         win.protocol("WM_DELETE_WINDOW", win.destroy)
         self._place(win, narrow=True)
         return win
+
+    # ================================================================== #
+    # Trainingsfenster: Geraet mit Display, Tastatur und Bananenbuchsen (nach den Handbuechern nachgebaut,
+    # keine Original-Firmware). Die App ist mit dem Simulator wie mit einem echten Geraet verbunden.
+    # ================================================================== #
+    def open_trainer(self, device="cp545"):
+        import collections
+        if getattr(self, "trainer", None) is not None and self.trainer.winfo_exists():
+            self.trainer.destroy()
+        if self.sim is None or self.sim.device != device:
+            if self.sim is not None:
+                self.sim.close()
+            self.sim = SimCP(device=device)
+            self.log(f"Simulator {self.DEVICE_LABEL[device]} gestartet (127.0.0.1:{self.sim.port})", tag="ok")
+        if self.settings["conn"]["mode"] != "ethernet":
+            self.var_conn.set("ethernet")
+            self.on_conn_mode_change()
+            self.conn_seg.redraw()
+        if self.cp is None or self.cp.host != "127.0.0.1" or self.cp.port != self.sim.port:
+            self.disconnect_all()
+            self.reset_caps(device)
+            self.connect_cp("127.0.0.1", self.sim.port)
+            self.cp.checksum = device == "tm550"
+        sim = self.sim
+        tq = self._trainer_q = collections.deque()
+        sim.on_event = lambda text: tq.append(("note", text))
+        sim.on_line = lambda line: tq.append(("line", line))
+        self.tr = {"buf": "", "state": "", "nr": None, "new": "", "device": device, "log": []}
+        name = self.DEVICE_LABEL[device]
+        win = self.trainer = self._toplevel(f"Üben: {name} (nachgebaut)")
+        body_bg = "#2B2D31" if device == "cp545" else "#1E2A3A"
+        mono = ("Consolas", int(13 * self.ui_scale), "bold")
+        left = tk.Frame(win, bg=body_bg, padx=12, pady=12)
+        left.grid(row=0, column=0, sticky="nsew")
+        right = tk.Frame(win, bg=PANEL, padx=10)
+        right.grid(row=0, column=1, sticky="nsew")
+        win.columnconfigure(1, weight=1)
+        win.rowconfigure(0, weight=1)
+        tk.Label(left, text=("TAG Heuer  CHRONOPRINTER 545" if device == "cp545" else "ITS CHRONO  TM550"),
+                 bg=body_bg, fg="#C9CED6", font=self.f_side_bold).pack(anchor="w")
+        disp_bg, disp_fg = ("#0F2410", "#9BF59B") if device == "cp545" else ("#0B1530", "#E8F0FF")
+        self.tr_disp = tk.Label(left, text="", bg=disp_bg, fg=disp_fg, font=mono, justify="left", anchor="w",
+                                width=26, height=5, padx=10, pady=8, relief="sunken", bd=3)
+        self.tr_disp.pack(fill="x", pady=(8, 10))
+        keys = tk.Frame(left, bg=body_bg)
+        keys.pack()
+
+        def key(parent, label, r, c, cmd=None, w=4, color="#3B3F46"):
+            b = tk.Button(parent, text=label, width=w, font=self.f_side_bold, bg=color, fg="white",
+                          activebackground=BLUE, activeforeground="white", relief="raised", bd=2,
+                          command=cmd or (lambda: self.trainer_key(label)))
+            b.grid(row=r, column=c, padx=3, pady=3, sticky="ew")
+            return b
+
+        if device == "cp545":
+            for i, lab in enumerate(("7", "8", "9", "4", "5", "6", "1", "2", "3", ".", "0", "C")):
+                key(keys, lab, i // 3, i % 3)
+            for r, lab in enumerate(("R", "E1", "E4", "Enter")):
+                key(keys, lab, r, 3, color="#4B5563" if lab != "Enter" else "#1D6F42")
+            key(keys, "F", 4, 0, color="#6B4E16")
+            key(keys, "E2", 4, 1)
+            key(keys, "E3", 4, 2)
+            key(keys, "Papier", 4, 3, cmd=lambda: self.trainer_paper("—" * 14))
+        else:
+            key(keys, "▲", 0, 1)
+            key(keys, "◀", 1, 0)
+            key(keys, "OK", 1, 1, color="#1D6F42")
+            key(keys, "▶", 1, 2)
+            key(keys, "▼", 2, 1)
+            for i, lab in enumerate(("E1", "E2", "E3", "E4")):
+                key(keys, lab, 3 + i // 2, i % 2 * 2, color="#4B5563")
+        # Rueckseite: Bananenbuchsen und Anschluesse
+        tk.Label(left, text="Rückseite: Eingänge (Klick = Impuls, Rechtsklick = Doppelkontakt)", bg=body_bg,
+                 fg="#C9CED6", font=self.f_side).pack(anchor="w", pady=(12, 4))
+        jacks = tk.Frame(left, bg=body_bg)
+        jacks.pack(anchor="w")
+        colors = {1: "#2E7D32", 2: "#F9A825", 3: "#1565C0", 4: "#C62828"}
+        for ch in (1, 2, 3, 4):
+            cv = tk.Canvas(jacks, width=46, height=58, bg=body_bg, highlightthickness=0, cursor="hand2")
+            cv.create_oval(6, 6, 40, 40, fill="#111", outline="#888", width=2)
+            cv.create_oval(15, 15, 31, 31, fill=colors[ch], outline="")
+            cv.create_text(23, 51, text=str(ch), fill="white", font=self.f_side_bold)
+            cv.pack(side="left", padx=4)
+            cv.bind("<Button-1>", lambda e, c=ch: self.trainer_do(lambda: sim.impulse(c), f"Buchse {c}"))
+            cv.bind("<Button-3>", lambda e, c=ch: self.trainer_do(lambda: sim.double_contact(c),
+                                                                 f"Buchse {c} Doppelkontakt"))
+        conn = tk.Frame(left, bg=body_bg)
+        conn.pack(anchor="w", pady=(10, 0))
+        tk.Label(conn, text="Netzwerkkabel", bg=body_bg, fg="#C9CED6", font=self.f_side).pack(side="left")
+        self.tr_cable = Switch(conn, command=self.trainer_cable, scale=self.ui_scale, on=True)
+        self.tr_cable.pack(side="left", padx=(8, 0))
+        # rechts: Papierstreifen / Protokoll, Uebungsfaelle
+        tk.Label(right, text="Papierstreifen" if device == "cp545" else "Meldungen", bg=PANEL, fg=TEXT,
+                 font=self.f_side_bold).pack(anchor="w")
+        self.tr_paper = tk.Text(right, width=38, height=16, bg="#FFFDF5" if device == "cp545" else PANEL2,
+                                fg="#222" if device == "cp545" else TEXT, font=("Consolas", int(10 * self.ui_scale)),
+                                relief="flat", padx=6, pady=4)
+        self.tr_paper.pack(fill="both", expand=True, pady=(4, 8))
+        tk.Label(right, text="Übungsfälle", bg=PANEL, fg=TEXT, font=self.f_side_bold).pack(anchor="w")
+        sc = tk.Frame(right, bg=PANEL)
+        sc.pack(fill="x")
+        sc.columnconfigure(0, weight=1)
+        sc.columnconfigure(1, weight=1)
+        cases = (("Fehlstart", self.trainer_case_falsestart), ("Kabel 10 s ab", self.trainer_case_cable),
+                 ("Lauf neu öffnen", self.trainer_case_reopen), ("Falsche Nummer", self.trainer_case_wrongnr),
+                 ("Doppelkontakt Ziel", lambda: self.trainer_do(lambda: sim.double_contact(CH_FINISH),
+                                                                "Doppelkontakt Ziel")),
+                 ("Protokoll speichern", self.trainer_save))
+        for i, (lab, cmd) in enumerate(cases):
+            self._button(sc, lab, cmd).grid(row=i // 2, column=i % 2, sticky="ew", padx=2, pady=2)
+        self.tr_hint = tk.Label(right, text=("CP: Nr R 0 = ausgeschieden, Nr R 0 . = disqualifiziert, "
+                                             "Nr R E1 neue Nr Enter = umnummerieren, Nr Enter = nächste "
+                                             "Startnummer, F = Lauf.") if device == "cp545" else
+                                ("TM550: E1 Start, E4 Ziel. OK öffnet das Menü (Lauf öffnen/schliessen). "
+                                 "Nummern vergibt die App."), bg=PANEL, fg=MUTED, font=self.f_side,
+                                wraplength=int(300 * self.ui_scale), justify="left")
+        self.tr_hint.pack(anchor="w", pady=(8, 0))
+        win.protocol("WM_DELETE_WINDOW", self.trainer_close)
+        self._place(win)
+        self.trainer_poll()
+        self.trainer_log(f"Übung {name} begonnen")
+        return win
+
+    def trainer_log(self, text):
+        line = f"{time.strftime('%H:%M:%S')}  {text}"
+        self.tr["log"].append(line)
+        DIAG.info(f"Übung: {text}")
+
+    def trainer_paper(self, text):
+        if getattr(self, "tr_paper", None) is not None and self.tr_paper.winfo_exists():
+            self.tr_paper.insert("end", text + "\n")
+            self.tr_paper.see("end")
+
+    def trainer_do(self, fn, label):
+        self.trainer_log(label)
+        fn()
+
+    def trainer_poll(self):
+        win = getattr(self, "trainer", None)
+        if win is None or not win.winfo_exists():
+            return
+        while self._trainer_q:
+            kind, text = self._trainer_q.popleft()
+            if kind == "line":
+                info = parse_thcom(text)
+                if info and info["kind"] == "time":
+                    nr = f"{info['nr']:>4}" if info["nr"] else "    "
+                    self.trainer_paper(f"{info['type']} {nr} {info['seq']:>3} {info['ch']} "
+                                       f"{fmt_tod(info['abs'] % 86400)}")
+                elif info and info["kind"] in ("open", "close"):
+                    self.trainer_paper(("OPEN " if info["kind"] == "open" else "CLOSE ") + f"RUN {info['run']:02d}")
+                elif text.startswith("RR"):
+                    self.trainer_paper(text)
+            else:
+                self.trainer_log(text)
+                self.tr["last"] = text
+        sim = self.sim
+        if sim is not None:
+            tod = (sim.now_abs()) % 86400
+            st = self.tr["state"]
+            entry = self.tr["buf"]
+            if st == "R":
+                entry = f"{self.tr['nr']} R {self.tr['buf']}"
+            elif st == "RE1":
+                entry = f"{self.tr['nr']} R E1 {self.tr['new']}"
+            nxt = sim.next.get(CH_START) if sim.device == "cp545" else None
+            lines = [f"RUN {sim.run:02d}  {'NET TIME' if sim.device == 'cp545' else 'TIMING'}",
+                     f"{fmt_tod(tod)[:10]}",
+                     f"> {entry}" if entry else (f"NEXT {nxt}" if nxt else "READY"),
+                     (self.tr.get("last") or "")[:26],
+                     "OFFLINE" if sim.offline else f"ONLINE  {len(sim.clients)} PC"]
+            self.tr_disp.configure(text="\n".join(lines))
+        win.after(200, self.trainer_poll)
+
+    def trainer_key(self, k):
+        sim, t = self.sim, self.tr
+        if sim is None:
+            return
+        self.trainer_log(f"Taste {k}")
+        if k in ("▲", "▼", "◀", "▶", "OK", "F"):
+            return self.trainer_menu()
+        if k == "C":
+            t.update(buf="", state="", nr=None, new="")
+            return
+        if t["state"] == "RE1":
+            if k.isdigit():
+                t["new"] += k
+            elif k == "Enter" and t["new"]:
+                sim.renumber(t["nr"], int(t["new"]))
+                t.update(buf="", state="", nr=None, new="")
+            return
+        if t["state"] == "R":
+            if k == "E1":
+                t["state"] = "RE1"
+            elif k == "0":
+                t["buf"] = "0"
+                nr = t["nr"]
+                self.root.after(1200, lambda: self._trainer_r0(nr))
+            elif k == "." and t["buf"] == "0":
+                sim.cancel(t["nr"], dsq=True)
+                t.update(buf="", state="", nr=None)
+            return
+        if k.isdigit():
+            t["buf"] = (t["buf"] + k)[-4:]
+        elif k == "R" and t["buf"]:
+            t.update(state="R", nr=int(t["buf"]), buf="")
+        elif k in ("E1", "E2", "E3", "E4"):
+            sim.impulse(int(k[1]))
+        elif k == "Enter" and t["buf"] and sim.device == "cp545":
+            sim.next[CH_START] = int(t["buf"])
+            sim.note(f"Nächste Startnummer {t['buf']}")
+            t["buf"] = ""
+
+    def _trainer_r0(self, nr):
+        t = self.tr
+        if t["state"] == "R" and t["nr"] == nr and t["buf"] == "0":
+            self.sim.cancel(nr)
+            t.update(buf="", state="", nr=None)
+
+    def trainer_menu(self):
+        sim = self.sim
+        menu = self._menu()
+        menu.add_command(label="Lauf schliessen", command=lambda: self.trainer_do(sim.close_run, "Lauf schliessen"))
+        menu.add_command(label="Neuen Lauf öffnen", command=lambda: self.trainer_do(sim.open_run, "Lauf öffnen"))
+        menu.add_command(label="Lauf mit gleicher Nummer neu öffnen",
+                         command=lambda: self.trainer_do(lambda: sim.open_run(same=True), "Lauf neu öffnen"))
+        x, y = self.trainer.winfo_pointerxy()
+        menu.tk_popup(x, y)
+
+    def trainer_cable(self):
+        on = not self.tr_cable.on
+        self.tr_cable.set(on)
+        self.trainer_do(lambda: self.sim.set_cable(on), "Kabel " + ("ein" if on else "aus"))
+
+    def trainer_case_falsestart(self):
+        sim = self.sim
+        self.trainer_do(lambda: sim.impulse(CH_START), "Übungsfall Fehlstart: Start ausgelöst, ohne Boot")
+        self.trainer_paper("→ Fehlstart: am Gerät Nr R 0 eingeben (CP) bzw. in der App DNF")
+
+    def trainer_case_cable(self):
+        self.trainer_do(lambda: self.sim.set_cable(False), "Übungsfall: Kabel 10 s ab")
+        self.tr_cable.set(False)
+
+        def back():
+            if self.sim is not None:
+                self.sim.set_cable(True)
+            if getattr(self, "tr_cable", None) is not None and self.tr_cable.winfo_exists():
+                self.tr_cable.set(True)
+        self.root.after(10000, back)
+
+    def trainer_case_reopen(self):
+        sim = self.sim
+        self.trainer_do(lambda: (sim.close_run(), sim.open_run(same=True)), "Übungsfall: Lauf neu geöffnet")
+
+    def trainer_case_wrongnr(self):
+        sim = self.sim
+        if sim.device == "cp545":
+            wrong = (sim.next.get(CH_START) or 1) + 7
+            sim.next[CH_START] = wrong
+            self.trainer_do(lambda: sim.impulse(CH_START), f"Übungsfall: Start mit falscher Nummer {wrong}")
+            self.trainer_paper("→ korrigieren: falsche Nr R E1 richtige Nr Enter")
+        else:
+            self.trainer_paper("→ TM550: Nummern vergibt die App, dort Nummer ändern")
+
+    def trainer_save(self):
+        folder = os.path.join(self.data_path, "training")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"uebung_{time.strftime('%Y%m%d_%H%M%S')}.txt")
+        paper = self.tr_paper.get("1.0", "end").strip() if getattr(self, "tr_paper", None) else ""
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("Übungsprotokoll\n\n" + "\n".join(self.tr["log"]) + "\n\nPapierstreifen / Meldungen\n"
+                     + paper + "\n\nApp-Log\n" + "".join(line for line, _t, _f in self.log_lines[-300:]))
+        self.log(f"Übungsprotokoll gespeichert: {path}", tag="ok")
+        self.open_folder(path)
+        return path
+
+    def trainer_close(self):
+        if self.sim is not None:
+            self.sim.on_event = self.sim.on_line = None
+            if self.sim.offline:
+                self.sim.set_cable(True)
+        self.trainer.destroy()
 
     def sim_status(self, text):
         if getattr(self, "lbl_sim", None) is not None and self.lbl_sim.winfo_exists():
@@ -7852,6 +8379,8 @@ class LiveRankingApp:
                 want = self.settings["conn"]["usb_port"]
                 match = next((label for label, dev in self.port_map.items() if dev == want), None)
                 self.cmb_usb.set(match or (values[0] if values else want))
+        if hasattr(self, "cmb_usb_b"):
+            self.fill_backup_combos()
 
     def toggle_connection(self):
         if self.usb_mode():
