@@ -1,5 +1,15 @@
 # Änderungen
 
+## v1.14.0 (22.11.2026)
+Aus dem Gerätetest vom 22.11.2026:
+- TM550: Knopf «Lauf öffnen (TM550)» öffnet einen Lauf über die Verbindung (`#WC 002`). «Lauf vom Gerät laden» ohne offenen Lauf bietet das direkt an. Der CP 545 öffnet keinen Lauf auf Befehl, dort erscheint ein Hinweis
+- Download (`#DL`) nur noch mit offenem Lauf, am CP auch nicht mehr ersatzweise Lauf 1
+- Beantwortet das Gerät keine Befehle mehr, schickt aber weiter Zeiten, meldet die App das einmal mit Abhilfe (Gerät aus und ein, beim CP danach Ethernet einschalten). Zeiten werden weiter übernommen
+- Uhr von Haupt- und Reservegerät wird gegen den PC geprüft. Ab 60 s Abweichung Warnung im Log und Ticker
+- Hinweis an allen Stellen, dass Ethernet am CP nach jedem Einschalten neu eingeschaltet werden muss (Suche ohne Fund, Verbindungsabbruch, Verbindung abgewiesen, Hinweistext)
+- Simulator und Übungsgerät: Befehle wie am echten Gerät (`#WC 001/002/012`, `#SLR/#SLA/#SLC`, `#PL` druckt auf den Papierstreifen), Übungsfall «Gerät neu gestartet» (CP: Ethernet aus, im F-Menü wieder einschalten)
+- `fernbefehle_test.ps1`: `-Nur A,G` für einzelne Gruppen, `#DL` nur mit offenem Lauf, neue Gruppe G (Lauf über Startliste bzw. `#WC 002 nn` öffnen). Anleitung mit Testergebnissen ergänzt
+
 ## v1.13.1 (22.11.2026)
 - Zeitzeilen ohne Stunden oder Minuten werden erkannt (Gerät auf 00:00 synchronisiert, z.B. `TN         1  1        4.30700   365`), bisher verworfen
 - Resultatzeilen (RR/GR) mit angehängtem Feld werden gelesen. IR (Zwischenzeit), DR (Differenz Parallelstart) und VE (Geschwindigkeit) erscheinen im Log mit Namen. Zeitzeilen mit negativem Statuscode (skiFFS) zählen nicht als Impuls

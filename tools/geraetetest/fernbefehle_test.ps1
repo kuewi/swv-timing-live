@@ -10,15 +10,18 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
+#   Nur einzelne Gruppen: ... -Nur A,G
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
     [string]$Ip = "",
     [int]$Port = 0,
     [string]$Com = "",
     [int]$Baud = 9600,
-    [switch]$Alles          # alle Gruppen ohne Rueckfrage
+    [switch]$Alles,         # alle Gruppen ohne Rueckfrage
+    [string[]]$Nur = @()    # nur diese Gruppen, z.B. -Nur A,G
 )
 
+$Nur = @($Nur | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if (-not $Ip -and -not $Com) { $Ip = $(if ($Device -eq "tm550") { "192.168.1.51" } else { "192.168.1.50" }) }
 if ($Port -eq 0) { $Port = $(if ($Device -eq "tm550") { 7000 } else { 13500 }) }
 $UseCs = ($Device -eq "tm550")          # TM550 antwortet nur auf Befehle mit Pruefsumme
@@ -109,6 +112,10 @@ function Send-Cmd([string]$cmd, [int]$WaitMs = $Wait, [int]$MaxMs = 15000, [stri
     return $lines
 }
 function Ask($title) {
+    $id = ($title.Trim() -split "\s+")[0]
+    if ($Nur.Count -and -not ($Nur | Where-Object { $_.ToUpper() -eq $id.ToUpper() -or $_.ToUpper() -eq $id.Substring(0, 1).ToUpper() })) {
+        return $false
+    }
     if ($Alles) { Log "=== $title ==="; return $true }
     Write-Host ""
     $a = Read-Host "$title  ausfuehren? (j/n)"
@@ -149,7 +156,8 @@ if (Ask "D  Resultate auslesen: #WC 012 (erwartet DS ... RR ... DE), danach #DL 
     $run = ""
     $rp = Send-Cmd "#RP 003"
     foreach ($l in $rp) { if ($l -match "^&P\s*003\s+(\d+)") { $run = $Matches[1] } }
-    if ($run) { [void](Send-Cmd ("#DL " + $run.PadLeft(2, "0")) 4000 30000 "^DE\s") }
+    if ($run -and [int]$run -gt 0) { [void](Send-Cmd ("#DL " + $run.PadLeft(2, "0")) 4000 30000 "^DE\s") }
+    else { Log "Kein Lauf offen: #DL wird nicht gesendet" }
 }
 
 # E: Startliste im Geraet
@@ -169,6 +177,27 @@ if (Ask "E  Startliste: #SLR, #SLA 0101, #SLA 0102, #SLA 0103, #SLC, dann 3 Star
     Log ("Startnummern in den Impulsen: " + $(if ($nrs.Count) { $nrs -join ", " } else { "keine Impulse" }))
     $script:summary += ("{0,-22} {1}" -f "Startliste wirkt", $(if ($nrs -match "^0*101$") { "JA (101 kam)" } else { "nein: " + ($nrs -join ",") }))
     if (Ask "E2 Startliste im Geraet wieder loeschen (#SLR)") { [void](Send-Cmd "#SLR") }
+}
+
+# G: Lauf ueber Startliste oeffnen (CP 545 oeffnete beim #SLC einen Lauf), sonst #WC 002 mit Laufnummer
+if (Ask "G  Lauf oeffnen: Lauf schliessen, nur #SLR + #SLC, Laufnummer pruefen, sonst #WC 002 mit Nummer") {
+    $open = ""; $next = ""
+    foreach ($l in (Send-Cmd "#RP 003")) { if ($l -match "^&P\s*003\s+(\d+)\s+(\d+)") { $open = $Matches[1]; $next = $Matches[2] } }
+    if ($open -and [int]$open -gt 0) {
+        Log "Lauf $open ist offen, wird mit #WC 001 geschlossen"
+        [void](Send-Cmd "#WC 001")
+        foreach ($l in (Send-Cmd "#RP 003")) { if ($l -match "^&P\s*003\s+(\d+)\s+(\d+)") { $open = $Matches[1]; $next = $Matches[2] } }
+    }
+    [void](Send-Cmd "#SLR")
+    [void](Send-Cmd "#SLC")
+    foreach ($l in (Send-Cmd "#RP 003")) { if ($l -match "^&P\s*003\s+(\d+)\s+(\d+)") { $open = $Matches[1]; $next = $Matches[2] } }
+    $script:summary += ("{0,-22} {1}" -f "Lauf nach #SLC", $(if ($open -and [int]$open -gt 0) { "offen: $open" } else { "kein Lauf" }))
+    if (-not ($open -and [int]$open -gt 0) -and $next) {
+        [void](Send-Cmd ("#WC 002 " + $next.PadLeft(2, "0")))
+        foreach ($l in (Send-Cmd "#RP 003")) { if ($l -match "^&P\s*003\s+(\d+)") { $open = $Matches[1] } }
+        $script:summary += ("{0,-22} {1}" -f "Lauf nach #WC 002 nn", $(if ($open -and [int]$open -gt 0) { "offen: $open" } else { "kein Lauf" }))
+    }
+    Log "Bitte am Geraet notieren: welcher Lauf ist offen, wurde etwas gedruckt?"
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen

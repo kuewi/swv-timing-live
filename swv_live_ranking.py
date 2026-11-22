@@ -73,7 +73,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.13.1"
+APP_VERSION = "1.14.0"
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -2607,6 +2607,9 @@ class SimCP:
         self.device, self.timing, self.bounce = device, timing, bounce
         self.clock_offset = clock_offset  # Uhr des Geraets gegenueber dem PC (s), z.B. TM550 -281
         self.offline = False      # Kabel gezogen
+        self.eth_off = False      # CP neu gestartet: Ethernet am Geraet noch nicht eingeschaltet
+        self.run_open = True
+        self.startlist = []
         self.on_line = None       # jede gesendete Zeitzeile (Papierstreifen)
         self.on_event = None      # Rueckmeldung fuer das Trainingsfenster: on_event(text)
         self.blocked = []         # TM550: gesperrte Kontakte (Eingang, Seq, Zeit)
@@ -2646,7 +2649,7 @@ class SimCP:
                 c, _a = self.sock.accept()
             except OSError:
                 return
-            if self.offline:  # Kabel gezogen: keine Verbindung moeglich
+            if self.offline or self.eth_off:  # Kabel gezogen / Ethernet am CP aus: keine Verbindung moeglich
                 try:
                     c.close()
                 except OSError:
@@ -2721,7 +2724,22 @@ class SimCP:
         elif p[:2] == ["#RP", "001"]:
             self.send("&P 001 2", c)
         elif p[:2] == ["#RP", "003"]:
-            self.send(f"&P 003 {self.run:02d} {self.run + 1:02d}", c)
+            self.send(f"&P 003 {self.run if self.run_open else 0:02d} {self.run + 1:02d}", c)
+        elif t.startswith("#WC 001"):
+            self.close_run()
+        elif t.startswith("#WC 002") or t.startswith("#WC 012"):
+            self.send("AK F" if t.startswith("#WC 002") else "AK R", c)  # am CP 545 VB08 getestet
+            return
+        elif p[0] == "#PL":
+            self.note("Druck: " + t[3:].strip())
+            if self.on_line:
+                self.on_line("PL " + t[3:].strip())
+        elif p[0] == "#SLR":
+            self.startlist = []
+        elif p[0] == "#SLA" and len(p) >= 2:
+            self.startlist.append(int(p[1]))
+        elif p[0] == "#SLC":
+            self.open_run()  # CP 545 oeffnete dabei einen neuen Lauf (Test 22.11.2026)
         elif p[:2] == ["#RP", "026"]:
             ch = int(p[2])
             self.send(f"&P 026 {ch:02d} {self.next.get(ch) or 0:04d}", c)
@@ -2746,7 +2764,7 @@ class SimCP:
         self.send("AK C", c)
 
     def _cmd_tm550(self, t, p, c):
-        run = self.run if self.timing else 0
+        run = self.run if self.timing and self.run_open else 0
         if t == "#SN":
             self.send("SN 00059 TM550 1.18", c)
         elif t == "#ID":
@@ -2760,6 +2778,31 @@ class SimCP:
             day = int(self.now_abs() // 86400)
             self.send(f"T?           00  0:00:00.00000 {day:5d}", c)
             self.send("AK C", c)
+        elif t.startswith("#WC 001"):
+            if self.run_open and self.timing:
+                self.close_run()
+        elif t.startswith("#WC 002"):
+            if not self.timing:
+                self.send("AK F", c)
+                return
+            if self.run_open:
+                self.close_run()
+            self.open_run(same=not self.recs)  # leerer Lauf behaelt seine Nummer (Test 22.11.2026)
+        elif t.startswith("#WC 012"):
+            self.send("DS 01", c)
+            for (ch, seq), r in sorted(self.recs.items(), key=lambda x: x[1][2]):
+                self.send(self.fmt("A" + r[0][1], 0, seq, ch, r[2]), c)
+            self.send("DE 01", c)
+            return  # ohne AK
+        elif p[0] == "#PL":
+            self.send("PL TO BE IMPLEMENTED", c)
+            self.send("AK R", c)
+            return
+        elif p[0] in ("#SLR", "#SLA", "#SLC"):
+            pass  # angenommen, ohne Wirkung bei NO IDENTIFICATION
+        elif p[0] == "#!T":
+            self.send("AK R", c)
+            return
         elif p[0] == "#DL":
             self.send(f"DS {run:02d}", c)
             if run:
@@ -2889,17 +2932,29 @@ class SimCP:
         return True
 
     def close_run(self):
+        self.run_open = False
         self.send(f"CL {self.run:02d}")
         self.note(f"Lauf {self.run} geschlossen")
 
     def open_run(self, same=False):
         if not same:
             self.run += 1
+        self.run_open = True
         with self.lock:
             self.seq = {CH_START: 0, CH_FINISH: 0}
             self.recs, self.course, self.results, self.blocked = {}, [], [], []
         self.send(f"OP {self.run:02d} TIMING" if self.device == "tm550" else f"OP {self.run:02d}  00  NET TIME")
         self.note(f"Lauf {self.run} geöffnet")
+
+    def restart(self):
+        """CP aus und wieder ein: Verbindungen weg, Ethernet bleibt aus, bis es am Geraet eingeschaltet wird."""
+        self.eth_off = self.device == "cp545"
+        self.drop_clients()
+        self.note("Gerät neu gestartet" + (", Ethernet aus" if self.eth_off else ""))
+
+    def enable_ethernet(self):
+        self.eth_off = False
+        self.note("Ethernet eingeschaltet")
 
     def set_cable(self, connected):
         self.offline = not connected
@@ -4392,6 +4447,8 @@ class LiveRankingApp:
         self._button(tools_u, "Lauf vom CP laden", self.cp_download_run).grid(row=0, column=0, sticky="ew",
                                                                                padx=(0, 3))
         self._button(tools_u, "Simulator", self.open_simulator).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        self._button(tools_u, "Lauf öffnen (TM550)", self.cp_open_run).grid(row=1, column=0, columnspan=2,
+                                                                          sticky="ew", pady=(4, 0))
         self._label(us, "CP 545 oder TM550 per USB-Kabel direkt am PC (TM550: «USB Serial Port»). Die App "
                         "steuert ihn wie über Ethernet und erkennt das Gerät selbst. Erscheint "
                         "beim Einstecken kein neuer COM-Port, erkennt Windows den CP nicht (Treiber prüfen). "
@@ -4406,7 +4463,8 @@ class LiveRankingApp:
         self._button(eth, "Suchen", lambda: self.start_eth_job(connect=False)).grid(
             row=3, column=1, sticky="e", padx=(6, 0), pady=(2, 6))
         self.lbl_eth_hint = self._label(eth, f"PC erhält {PC_IP}, der CP hat ab {CP_NET}{CP_FIRST}. "
-                                             "Ethernet am CP einschalten (F › Einstellungen › Ethernet). "
+                                             "Ethernet am CP nach jedem Einschalten wieder einschalten "
+                                             "(F › Einstellungen › Ethernet). "
                                              "Ohne Adminrechte im Betrieb: in Windows bei der Netzwerkkarte "
                                              f"unter IPv4 › Alternative Konfiguration {PC_IP} / {PC_MASK} "
                                              "eintragen. TM550 (ITS/Vola): am Gerät IP 192.168.1.51 einstellen, "
@@ -4420,6 +4478,8 @@ class LiveRankingApp:
         self._button(tools, "Lauf vom CP laden", self.cp_download_run).grid(row=0, column=0, sticky="ew",
                                                                              padx=(0, 3))
         self._button(tools, "Simulator", self.open_simulator).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        self._button(tools, "Lauf öffnen (TM550)", self.cp_open_run).grid(row=1, column=0, columnspan=2,
+                                                                        sticky="ew", pady=(4, 0))
         # Reserve-Geraet: eigene Verbindung, unabhaengig von der Art des Hauptgeraets
         bk = self.frm_bk = tk.Frame(b, bg=PANEL)
         bk.columnconfigure(0, weight=1)
@@ -6602,8 +6662,9 @@ class LiveRankingApp:
         if not connect:
             return
         if not found:
-            put("eth_fail", "Kein CP gefunden. Ethernet am CP eingeschaltet (F › Einstellungen › Ethernet)? "
-                            "Kabel eingesteckt?")
+            put("eth_fail", "Kein Gerät gefunden. Am CP 545 muss Ethernet nach jedem Einschalten wieder "
+                            "eingeschaltet werden (F › Einstellungen › Ethernet). Kabel eingesteckt? "
+                            "TM550: IP und Port 7000 unter Communication › Ethernet prüfen.")
             return
         others = [f[0] for f in found if f[0] != avoid] or [found[0][0]]
         ip = want if want != avoid and any(f[0] == want for f in found) else others[0]
@@ -6677,7 +6738,8 @@ class LiveRankingApp:
                 if not self.eth_job_connect:
                     self.eth_job = None
                     if self.cp is None:
-                        self.set_conn_status(f"{len(payload)} CP gefunden" if payload else "kein CP gefunden",
+                        self.set_conn_status(f"{len(payload)} Gerät(e) gefunden" if payload else
+                                             "kein Gerät gefunden: Ethernet am CP nach Einschalten wieder aktivieren",
                                              MUTED if payload else GOLD)
             elif kind == "eth_fail":
                 self.eth_job = None
@@ -6704,6 +6766,10 @@ class LiveRankingApp:
             self.on_cp_connected(payload)
         elif kind == "eth_open_error":
             self.log(f"CP {self.cp.host}: {payload}", tag="error")
+            if self.cp.link != "usb" and not getattr(self, "_eth_on_told", False):
+                self._eth_on_told = True
+                self.log("Wurde der CP aus- und eingeschaltet? Dann Ethernet am CP wieder einschalten "
+                         "(F › Einstellungen › Ethernet).", tag="warn")
             self.set_conn_status(f"CP {self.cp.host} nicht erreichbar, neuer Versuch ...", RED)
         elif kind == "eth_retry":
             self.set_conn_status(f"CP {self.cp.host} getrennt, verbinde neu ...", RED)
@@ -6713,6 +6779,9 @@ class LiveRankingApp:
                          f"| zuletzt empfangen vor {now - self.cp_last_rx:.1f} s: {getattr(self, '_diag_rx', None)!r}")
             self.cp_inflight, self.cp_cmds = None, []
             self.log(f"Verbindung zum CP {self.cp.host} unterbrochen: {payload}", tag="error")
+            if self.cp.link != "usb":
+                self.log("Kommt die Verbindung nicht zurück: CP neu gestartet? Ethernet am CP wieder einschalten "
+                         "(F › Einstellungen › Ethernet).", tag="warn")
             self.add_ticker("Verbindung zum CP 545 unterbrochen, verbinde neu", "warn")
             self.set_conn_status(f"CP {self.cp.host} getrennt, verbinde neu ...", RED)
         elif kind == "eth_disconnected":
@@ -7012,6 +7081,11 @@ class LiveRankingApp:
             how = f"USB, {self.cp.baud} Bd" if self.cp.link == "usb" else f"Ethernet, Port {self.cp.port}"
             self.log(f"Verbunden mit CP {ip} ({how})", tag="ok")
         self.cp_cmds, self.cp_inflight = [], None
+        self._eth_on_told = False
+        self.cp_noanswer = 0
+        self._noanswer_told = False
+        self._clock_told = {}
+        self._clock_prev = {}
         # Der CP schickt zuerst alles, was er seit dem letzten Abholen gepuffert hat, erst dann die Antwort
         # auf #SN. Diese Zeilen werden gesammelt und nicht als neue Impulse behandelt.
         self.cp_backlog, self.cp_backlog_t, self.cp_backlog_again = [], time.time(), take_buffer
@@ -7054,7 +7128,7 @@ class LiveRankingApp:
                 if not getattr(self, "_tm_norun_told", False):
                     self._tm_norun_told = True
                     self.log("TM550: kein Lauf offen. Zeiten kommen trotzdem, verlorene Zeiten lassen sich aber nur "
-                             "mit offenem Lauf (Modus TIMING) nachladen.", tag="warn")
+                             "mit offenem Lauf (Modus TIMING) nachladen. Knopf «Lauf öffnen» öffnet einen.", tag="warn")
             else:
                 self.log("CP: kein Lauf offen. Am CP einen Lauf öffnen (NET TIME).", tag="warn")
 
@@ -7102,6 +7176,20 @@ class LiveRankingApp:
 
     def cp_resolve(self, ok, info=None, reason=""):
         cmd, self.cp_inflight = self.cp_inflight, None
+        if ok or info is not None:
+            self.cp_noanswer = 0
+        elif reason == "keine Antwort":
+            self.cp_noanswer = getattr(self, "cp_noanswer", 0) + 1
+            if (self.cp_noanswer >= 3 and time.time() - self.cp_last_rx < 120
+                    and not getattr(self, "_noanswer_told", False)):
+                self._noanswer_told = True
+                msg = (f"{self.dev_name()} beantwortet keine Befehle mehr, Zeiten kommen aber weiter und werden "
+                       "übernommen. Nummern vorladen und Nachholen gehen nicht. Abhilfe in einer Pause: Gerät aus- "
+                       "und einschalten" + (", danach Ethernet am CP wieder einschalten." if self.cp_device == "cp545"
+                                             else "."))
+                self.log(msg, tag="error")
+                self.add_ticker(f"{self.dev_name()} antwortet nicht auf Befehle", "warn")
+                DIAG.warning(f"Befehle ohne Antwort: {cmd['text']!r}")
         if cmd["expect"] != "ack" or self.cp_device == "tm550":
             # nachfolgendes AK der Abfrage abwarten; TM550 quittiert manche Befehle doppelt (AK F + AK C)
             self.cp_hold_until = time.time() + (0.6 if self.cp_device == "tm550" else 0.3)
@@ -7403,6 +7491,8 @@ class LiveRankingApp:
                 if self.cp_inflight is not None:  # CP ist noch am Senden: Befehl nicht als verloren werten
                     self.cp_inflight["deadline"] = max(self.cp_inflight["deadline"], now + CMD_TIMEOUT)
                 return
+        if info["kind"] == "time" and not info.get("answer") and info["type"] in ("TN", "T+", "T="):
+            self.check_device_clock(info, dev)
         quiet = info["kind"] in ("ack", "param", "serial", "sync")
         if info["kind"] == "note":
             text = f"{text}  ({info['label']}, wird nicht ausgewertet)"
@@ -7584,15 +7674,68 @@ class LiveRankingApp:
         if self.cp is None or not self.cp.connected:
             messagebox.showinfo("Lauf vom CP laden", "Zuerst über Ethernet mit dem CP verbinden.")
             return
-        if self.cp_device == "tm550" and not self.cp_run:
-            messagebox.showinfo("Lauf vom Gerät laden", "Am TM550 ist kein Lauf offen. Laden geht nur im Modus TIMING "
-                                                        "mit offenem Lauf.")
+        if not self.cp_run:
+            if self.cp_device == "tm550":
+                if messagebox.askyesno("Lauf vom Gerät laden", "Am TM550 ist kein Lauf offen. Laden geht nur mit "
+                                                              "offenem Lauf (Modus TIMING).\n\nJetzt am TM550 einen "
+                                                              "Lauf öffnen?"):
+                    self.cp_open_run(ask=False)
+            else:
+                messagebox.showinfo("Lauf vom CP laden", "Am CP ist kein Lauf offen. Am CP einen Lauf öffnen "
+                                                         "(NET TIME), dann erneut laden.")
             return
-        run = self.cp_run or 1
+        run = self.cp_run
         self.log(f"Lauf {run} wird vom {self.dev_name()} geladen (#DL)", tag="ok")
         self.cp_query(f"#DL {run:02d}", "ack",
                       on_fail=lambda r: messagebox.showerror("Lauf vom CP laden", f"Der CP hat den Download nicht "
                                                                                  f"bestätigt ({r})."))
+
+    def check_device_clock(self, info, dev):
+        """Uhr des Geraets gegen den PC: zwei Zeilen hintereinander mit gleicher Abweichung ueber 60 s -> Warnung,
+        einmal pro Verbindung. Gepufferte Zeilen beim Verbinden laufen nicht hierher."""
+        diff = info["abs"] - local_abs()
+        if not hasattr(self, "_clock_prev"):
+            self._clock_prev, self._clock_told = {}, {}
+        prev = self._clock_prev.get(dev)
+        self._clock_prev[dev] = diff
+        if abs(diff) <= 60 or prev is None or abs(prev - diff) > 5 or self._clock_told.get(dev):
+            return
+        self._clock_told[dev] = True
+        name = self.dev_name() if dev == "A" else ("Reserve " + self.DEVICE_LABEL.get(self.cp_b_device or "cp545",
+                                                                                       "Gerät"))
+        a = abs(diff)
+        if a >= 86400:
+            amount = f"{a / 86400:.0f} Tage"
+        elif a >= 3600:
+            amount = f"{int(a // 3600)} h {int(a % 3600 // 60)} min"
+        else:
+            amount = f"{int(a // 60)} min {int(a % 60)} s"
+        msg = (f"Uhr {name} geht {amount} {'vor' if diff > 0 else 'nach'} (gegenüber dem PC). Laufzeiten stimmen, "
+               "Startzeiten und Uhrzeit im Ranking nicht. In einer Pause Datum und Uhrzeit am Gerät stellen.")
+        self.log(msg, tag="warn")
+        self.add_ticker(f"Uhr {name} falsch gestellt", "warn")
+
+    def cp_open_run(self, ask=True):
+        """TM550: Lauf aus der App oeffnen (#WC 002, am Geraet getestet). Der CP 545 lehnt das ab (AK F)."""
+        if self.cp is None or not self.cp.connected:
+            messagebox.showinfo("Lauf öffnen", "Zuerst mit dem Gerät verbinden.")
+            return
+        if self.cp_device != "tm550":
+            messagebox.showinfo("Lauf öffnen", "Der CP 545 öffnet keinen Lauf auf Befehl. Am CP einen Lauf öffnen "
+                                               "(NET TIME).")
+            return
+        if self.cp_run:
+            messagebox.showinfo("Lauf öffnen", f"Am TM550 ist Lauf {self.cp_run} bereits offen.")
+            return
+        if ask and not messagebox.askyesno("Lauf öffnen", "Am TM550 einen neuen Lauf öffnen?"):
+            return
+        self.log("TM550: Lauf wird geöffnet (#WC 002)", tag="ok")
+
+        def done(_info):
+            self.cp_query("#RP 003", ("param", "003"), on_ok=self._on_run)
+
+        self.cp_query("#WC 002", "ack", on_ok=done,
+                      on_fail=lambda r: self.log(f"TM550: Lauf nicht geöffnet ({r})", tag="error"))
 
     def process_download(self, items):
         """Alle Zeiten eines Laufs aus dem Speicher des CP: nur Neues uebernehmen, in Zeitfolge."""
@@ -8149,6 +8292,7 @@ class LiveRankingApp:
                  ("Lauf neu öffnen", self.trainer_case_reopen), ("Falsche Nummer", self.trainer_case_wrongnr),
                  ("Doppelkontakt Ziel", lambda: self.trainer_do(lambda: sim.double_contact(CH_FINISH),
                                                                 "Doppelkontakt Ziel")),
+                 ("Gerät neu gestartet", self.trainer_case_restart),
                  ("Protokoll speichern", self.trainer_save))
         for i, (lab, cmd) in enumerate(cases):
             self._button(sc, lab, cmd).grid(row=i // 2, column=i % 2, sticky="ew", padx=2, pady=2)
@@ -8347,8 +8491,8 @@ class LiveRankingApp:
                                                             info["abs"] % 86400)])[-5:]
                 elif info and info["kind"] in ("open", "close"):
                     self.trainer_paper(("OPEN " if info["kind"] == "open" else "CLOSE ") + f"RUN {info['run']:02d}")
-                elif text.startswith("RR"):
-                    self.trainer_paper(text)
+                elif text.startswith(("RR", "PL ")):
+                    self.trainer_paper(text[3:] if text.startswith("PL ") else text)
             else:
                 self.trainer_log(text)
                 self.tr["last"] = text
@@ -8467,6 +8611,11 @@ class LiveRankingApp:
         menu.add_command(label="Neuen Lauf öffnen", command=lambda: self.trainer_do(sim.open_run, "Lauf öffnen"))
         menu.add_command(label="Lauf mit gleicher Nummer neu öffnen",
                          command=lambda: self.trainer_do(lambda: sim.open_run(same=True), "Lauf neu öffnen"))
+        if sim.device == "cp545":
+            menu.add_separator()
+            menu.add_command(label=("Einstellungen › Ethernet einschalten" if sim.eth_off else
+                                    "Einstellungen › Ethernet (ist eingeschaltet)"),
+                             command=lambda: self.trainer_do(sim.enable_ethernet, "Ethernet am CP eingeschaltet"))
         x, y = self.trainer.winfo_pointerxy()
         menu.tk_popup(x, y)
 
@@ -8490,6 +8639,14 @@ class LiveRankingApp:
             if getattr(self, "tr_cable", None) is not None and self.tr_cable.winfo_exists():
                 self.tr_cable.set(True)
         self.root.after(10000, back)
+
+    def trainer_case_restart(self):
+        sim = self.sim
+        self.trainer_do(sim.restart, "Übungsfall: Gerät aus und wieder ein")
+        if sim.device == "cp545":
+            self.trainer_paper("→ Ethernet ist aus: F › Einstellungen › Ethernet einschalten")
+        else:
+            self.trainer_paper("→ TM550 verbindet wieder, Uhrzeit am Gerät prüfen")
 
     def trainer_case_reopen(self):
         sim = self.sim

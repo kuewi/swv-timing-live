@@ -1,6 +1,6 @@
 # SWV Timing Live (SWV Live-Ranking)
 
-![Oberfläche v1.13.1](docs/screenshots/ui_v1.13.1.png)
+![Oberfläche v1.14.0](docs/screenshots/ui_v1.14.0.png)
 
 
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des
@@ -19,14 +19,16 @@ die Zielimpulse selbst zu (wie SkiPro). Dazu kommen Prellzeit und Mindestfahrzei
 gesperrte Messpunkte, Nachholen fehlender Zeiten (`#RT`), Download eines Laufs (`#DL`), ein
 Reserve-CP und ein eingebauter Simulator. Statt Ethernet geht auch USB: der CP hängt dann direkt am PC
 (virtueller COM-Port) und wird gleich gesteuert. Jede Zeile des CP landet sofort in `rohdaten/`. Die Netzwerkkarte wird dafür auf 192.168.1.55 / 255.255.255.0 gestellt und
-beim Beenden wieder auf automatische Adresse (DHCP). Der CP hat ab 192.168.1.50.
+beim Beenden wieder auf automatische Adresse (DHCP). Der CP hat ab 192.168.1.50. Ethernet am CP ist nach jedem Einschalten wieder aus und muss neu eingeschaltet werden
+(F › Einstellungen › Ethernet).
 
 ### TM550 (ITS/Vola)
 
 USB (FTDI, 9600 Baud) oder Ethernet (Port 7000, Adresse am Gerät unter Communication). Die App erkennt
 das Gerät an der Seriennummer. Einstellung am TM550: Modus TIMING, Start E1, Ziel E4, NO IDENTIFICATION,
 Lauf offen, kurze Sperrzeit am Ziel. Die Startnummern vergibt die App aus der Startreihenfolge.
-Verlorene Zeilen holt sie per Download des offenen Laufs; der TM550 puffert bei Unterbruch nicht.
+Verlorene Zeilen holt sie per Download des offenen Laufs; der TM550 puffert bei Unterbruch nicht. Ist kein Lauf offen,
+öffnet «Lauf öffnen (TM550)» einen über die Verbindung.
 
 ### Gerätetests
 
@@ -45,8 +47,8 @@ brauchen dieselben Start- und Zielimpulse (Verteilung elektrisch mit ITS/TAG Heu
 
 ### Üben
 
-![Simulator CP 545 v1.13.1](docs/screenshots/sim_cp545_v1.13.1.png)
-![Simulator TM550 v1.13.1](docs/screenshots/sim_tm550_v1.13.1.png)
+![Simulator CP 545 v1.14.0](docs/screenshots/sim_cp545_v1.14.0.png)
+![Simulator TM550 v1.14.0](docs/screenshots/sim_tm550_v1.14.0.png)
 
 Unter Simulator: «Üben: CP 545 mit Tastatur» bzw. «Üben: TM550» öffnet ein nachgebautes Gerät
 (Vorderseite mit Display und Tastenfeld nach Foto, Rückseite mit Bananenbuchsen und Anschlüssen) und
