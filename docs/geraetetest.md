@@ -104,12 +104,18 @@ Das Skript fragt jede Gruppe mit `j`/`n` ab. Alle mit `j` beantworten.
 | E Startliste | Startliste 101, 102, 103 ins Gerät | Gelb erscheint die Aufforderung: innerhalb 30 s **3 Start-Impulse** auslösen (Taste 1 oder Buchse 1). Zeigt das Display die Nummern 101, 102, 103? |
 | E2 | Startliste wieder löschen | mit `j` bestätigen |
 | G Lauf öffnen | Lauf schliessen, nur Startliste löschen und abschliessen (`#SLR`, `#SLC`), sonst `#WC 002` mit Laufnummer | Ist danach ein Lauf offen, welche Nummer? |
+| H App-Befehle | nächste Startnummer 150 vorladen und zurücklesen, Zeit nachfragen (`#RT`) | gelbe Aufforderung: 1 Start- und 1 Ziel-Impuls. Startet Nr 150? |
 | F Format | 10 s zuhören | 1 Start- und 1 Ziel-Impuls auslösen |
 
 Einzelne Gruppen: `-Nur G` oder `-Nur A,G` anhängen.
 
 Am Ende steht die Zusammenfassung, z.B. `#WC 002  AK C`. Die Logdatei heisst
 `fernbefehle_cp545_<Datum>.txt` und liegt im Ordner aus Schritt 1.
+
+### Andere Zeitmessart am CP (z.B. PTB Sequentiel 1-4)
+
+Am CP die Zeitmessart umstellen und den Test mit `-Nur A,D,H,F` wiederholen. Dabei notieren, was am
+Display und auf dem Papier erscheint. Danach wieder auf NET TIME und einen Lauf öffnen.
 
 ## 7. Test TM550 über Ethernet
 
@@ -174,6 +180,9 @@ gezeigt hat).
 | `#WC 002` Lauf öffnen | AK F, öffnet nicht | öffnet (OP nn TIMING), leerer Lauf behält die Nummer |
 | `#WC 012` | AK R | DS 01 … AN/AC … DE 01, ohne AK |
 | `#SLR/#SLA/#SLC` | AK C, `#SLC` öffnete einen neuen Lauf, Nummern nicht übernommen | AK C, ohne Wirkung bei NO IDENTIFICATION |
+| Lauf öffnen über Startliste | 2. Versuch mit leerer Liste: kein Lauf | |
+| Startliste mit AT START | | ohne Wirkung, Impulse ohne Nummer |
+| Tagesfeld der Zeitzeilen | Tage ab 1.1.2000, stimmt | stimmt nicht mit dem Datum am Display überein (9793 statt 9822) |
 | `#DL nn` | einmal ohne Antwort, danach keine Befehle mehr bis Neustart (Ursache unklar), nach Neustart normal | DS … DE |
 
 ## Wenn etwas nicht geht

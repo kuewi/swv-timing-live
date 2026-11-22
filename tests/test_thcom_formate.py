@@ -25,4 +25,11 @@ check("DR benannt", P("DR 0012 0013    00:00:00.41200")["kind"] == "note")
 i = P("TN 0013 0003 04 00:00:00.00000 -0003")
 check("Statuszeile kein Impuls", i["kind"] == "note")
 check("Eingang 12", P("TN    1    1 12  9:05:01.00000  6994")["ch"] == 12)
+i = P("TC           04 23:00:46.34000  9793")
+check("TC ohne Zählnummer benannt, kein Impuls", i["kind"] == "note" and "ohne Zuordnung" in i["label"])
+import time as _t
+lt = _t.localtime(); tod = lt.tm_hour * 3600 + lt.tm_min * 60
+today = m.day_from_pc(tod)
+check("Tag vom PC", today == int(m.local_abs() // 86400))
+check("Mitternacht: Uhrzeit 12 h+ voraus = Vortag", m.day_from_pc((tod + 13 * 3600) % 86400) in (today - 1, today))
 print(f"{sum(ok)}/{len(ok)} OK"); sys.exit(0 if all(ok) else 1)

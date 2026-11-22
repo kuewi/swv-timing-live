@@ -69,6 +69,16 @@ S.enable_ethernet(); pump(10)
 check("nach Ethernet ein wieder verbunden", app.cp is not None and app.cp.connected and S.clients)
 app.disconnect_all(); pump(1); S.close()
 
+# TM550 mit falschem Tagesfeld (-29 Tage): keine Uhr-Warnung, Zeiten mit PC-Tag
+S = m.SimCP(device="tm550")
+app.reset_caps("tm550"); app.connect_cp("127.0.0.1", S.port); app.cp.checksum = True; pump(6)
+n_before = logs().count("Uhr TM550")
+S.start(); pump(1.5); S.start(); pump(1.5)
+check("TM550 Tagesfeld falsch: keine Uhr-Warnung", logs().count("Uhr TM550") == n_before)
+S.clock_offset = -200; S.start(); pump(1.5); S.start(); pump(1.5)
+check("TM550 Uhr 3 min nach: Warnung", "Uhr TM550 geht 3 min" in logs())
+app.disconnect_all(); pump(1); S.close()
+
 # Simulator-Befehle wie am Geraet
 T = m.SimCP(device="tm550"); C = m.SimCP()
 check("CP #SLC öffnet Lauf", (C._cmd("#SLC", None), C.run)[1] == 2 and C.run_open)

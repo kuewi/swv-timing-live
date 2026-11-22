@@ -10,7 +10,7 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
-#   Nur einzelne Gruppen: ... -Nur A,G
+#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H F)
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
     [string]$Ip = "",
@@ -198,6 +198,25 @@ if (Ask "G  Lauf oeffnen: Lauf schliessen, nur #SLR + #SLC, Laufnummer pruefen, 
         $script:summary += ("{0,-22} {1}" -f "Lauf nach #WC 002 nn", $(if ($open -and [int]$open -gt 0) { "offen: $open" } else { "kein Lauf" }))
     }
     Log "Bitte am Geraet notieren: welcher Lauf ist offen, wurde etwas gedruckt?"
+}
+
+# H: was die App im Betrieb braucht: naechste Startnummer vorladen (#WP 026), Zeit nachfragen (#RT)
+if (Ask "H  App-Befehle: #RP 026 01, #WP 026 01 0150, #RP 026 01, dann 2 Impulse, #RT der ersten Zeit") {
+    [void](Send-Cmd "#RP 026 01")
+    [void](Send-Cmd "#WP 026 01 0150")
+    $back = Send-Cmd "#RP 026 01"
+    $script:summary += ("{0,-22} {1}" -f "Vorladen 150", $(if ($back -match "0150") { "zurueckgelesen" } else { "nicht bestaetigt" }))
+    Write-Host ""
+    Write-Host "Jetzt innerhalb 20 s 1 Start- und 1 Ziel-Impuls ausloesen." -ForegroundColor Yellow
+    $imp = Collect 20000 20000
+    $first = $imp | Where-Object { $_ -match "^T[N+=] " } | Select-Object -First 1
+    if ($first) {
+        $nr = $first.Substring(3, 4).Trim()
+        $script:summary += ("{0,-22} {1}" -f "Nummer beim Start", $(if ($nr) { $nr } else { "(leer)" }))
+        if ($first -match "^T. .{4} +(\d+) +M?(\d+)") {
+            [void](Send-Cmd ("#RT " + $Matches[1].PadLeft(4, "0") + " " + $Matches[2].PadLeft(2, "0")))
+        }
+    } else { Log "Keine Impulse erhalten" }
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen

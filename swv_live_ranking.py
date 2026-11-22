@@ -73,7 +73,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.14.0"
+APP_VERSION = "1.14.1"
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -2224,6 +2224,7 @@ _RE_TIME = re.compile(r"^([TA][N\-\*\+=C]|TI)\s+(\d*)\s+(\d+)\s+(M?)(\d+)\s+"
                       r"(?:(?P<h>\d{1,2}):(?P<m>\d{2}):(?P<s>\d{2}(?:\.\d+)?)|(?:(?P<m2>\d{1,2}):)?(?P<s2>\d{1,2}\.\d+))"
                       r"(?:\s+(?P<day>-?\d+))?(?=\s|$)")
 _RE_NOTE = re.compile(r"^(IR|DR|VE)\s")
+_RE_TC_NOSEQ = re.compile(r"^TC\s+M?\d{1,2}\s+\d{1,2}:\d{2}:\d{2}")  # TM550: gesperrter Kontakt ohne Zaehlnummer
 NOTE_LABEL = {"IR": "Zwischenzeit", "DR": "Differenz Parallelstart", "VE": "Geschwindigkeit"}
 _RE_DS = re.compile(r"^DS\s+(\d+)")
 _RE_DE = re.compile(r"^DE\s+(\d+)")
@@ -2282,6 +2283,8 @@ def parse_thcom(raw):
     m = _RE_AK.match(t)
     if m:
         return {"kind": "ack", "code": m.group(1)}
+    if _RE_TC_NOSEQ.match(t):
+        return {"kind": "note", "label": "gesperrter Kontakt ohne Zuordnung", "text": t}
     m = _RE_NOTE.match(t)
     if m:
         return {"kind": "note", "label": NOTE_LABEL[m.group(1)], "text": t}
@@ -2312,6 +2315,18 @@ def trunc_secs(value, digits):
 def local_tod():
     lt = time.localtime()
     return lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec + (time.time() % 1)
+
+
+def day_from_pc(tod):
+    """Tag fuer eine Uhrzeit des Geraets aus dem PC-Datum: liegt die Uhrzeit mehr als 12 h vor bzw. nach der
+    PC-Uhrzeit, gehoert sie zum Vortag bzw. Folgetag (Mitternacht)."""
+    now = local_abs()
+    day, pc_tod = divmod(now, 86400)
+    if tod - pc_tod > 43200:
+        day -= 1
+    elif pc_tod - tod > 43200:
+        day += 1
+    return int(day)
 
 
 def local_abs():
@@ -2606,6 +2621,7 @@ class SimCP:
         # (timing=True), kein Puffer, gesperrte Zielkontakte als TC (bounce=True)
         self.device, self.timing, self.bounce = device, timing, bounce
         self.clock_offset = clock_offset  # Uhr des Geraets gegenueber dem PC (s), z.B. TM550 -281
+        self.day_shift = -29 if device == "tm550" else 0  # TM550 22.11.2026: Tagesfeld 9793 statt 9822
         self.offline = False      # Kabel gezogen
         self.eth_off = False      # CP neu gestartet: Ethernet am Geraet noch nicht eingeschaltet
         self.run_open = True
@@ -2640,6 +2656,7 @@ class SimCP:
         h, r = divmod(tod, 3600)
         m, sec = divmod(r, 60)
         if self.device == "tm550":
+            day += self.day_shift  # echtes Geraet: Tagesfeld weicht vom Datum ab
             return f"{typ} {'':4} {seq:4d} {ch:02d} {int(h):2d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
         return f"{typ} {nr:4d} {seq:4d} M{ch} {int(h):02d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
 
@@ -7476,6 +7493,10 @@ class LiveRankingApp:
                 self.cp_inflight["deadline"] = max(self.cp_inflight["deadline"], time.time() + self.cp_caps["timeout"])
         if info is None:
             return
+        if info["kind"] == "time" and (self.cp_device if dev == "A" else self.cp_b_device) == "tm550":
+            # TM550: Tagesfeld ist kein verlaessliches Datum (Display 22.11.2026, Zeilen Tag 9793), Tag vom PC
+            info["day"] = day_from_pc(info["tod"])
+            info["abs"] = info["day"] * 86400 + info["tod"]
         self.raw_log(dev, raw)
         if dev == "B" and info["kind"] == "serial":
             self.cp_b_device = "tm550" if "TM550" in info["type"].upper() else "cp545"
