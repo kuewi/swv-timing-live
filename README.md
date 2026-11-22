@@ -47,6 +47,8 @@ Die Browser-Anzeige (nur lokales Netz, mit Schlüssel) bietet zusätzlich eine A
 `/api/v1/live`, `/api/v1/results`, `/api/v1/course`, `/api/v1/startlist`, `/api/v1/events` und
 den WebSocket `/ws` (`&stream=all` für alles in einer Nachricht). Übersicht unter `/api?key=…`.
 
+Pläne für die API und die Anbindung ans Onlinetool: [docs/plaene_api_onlinetool.md](docs/plaene_api_onlinetool.md).
+
 ## Start und Build
 
 - Python 3.9 oder neuer, `pip install pyserial`
