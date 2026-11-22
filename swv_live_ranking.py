@@ -73,7 +73,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.14.1"
+APP_VERSION = "1.15.0"
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -2226,7 +2226,7 @@ _RE_TIME = re.compile(r"^([TA][N\-\*\+=C]|TI)\s+(\d*)\s+(\d+)\s+(M?)(\d+)\s+"
 _RE_NOTE = re.compile(r"^(IR|DR|VE)\s")
 _RE_TC_NOSEQ = re.compile(r"^TC\s+M?\d{1,2}\s+\d{1,2}:\d{2}:\d{2}")  # TM550: gesperrter Kontakt ohne Zaehlnummer
 NOTE_LABEL = {"IR": "Zwischenzeit", "DR": "Differenz Parallelstart", "VE": "Geschwindigkeit"}
-_RE_DS = re.compile(r"^DS\s+(\d+)")
+_RE_DS = re.compile(r"^DS\s+(\d+)(?:\s+\d+\s+(.*))?")
 _RE_DE = re.compile(r"^DE\s+(\d+)")
 RAW_DIR = "rohdaten"
 EPOCH_2000 = datetime.date(2000, 1, 1)
@@ -2270,7 +2270,7 @@ def parse_thcom(raw):
                 "abs": day * 86400 + tod, "answer": m.group(1).startswith("A"), "text": t}
     m = _RE_DS.match(t)
     if m:
-        return {"kind": "dlstart", "run": int(m.group(1))}
+        return {"kind": "dlstart", "run": int(m.group(1)), "mode": (m.group(2) or "").strip()}
     m = _RE_DE.match(t)
     if m:
         return {"kind": "dlend", "run": int(m.group(1))}
@@ -2625,6 +2625,7 @@ class SimCP:
         self.offline = False      # Kabel gezogen
         self.eth_off = False      # CP neu gestartet: Ethernet am Geraet noch nicht eingeschaltet
         self.run_open = True
+        self.mode = "NET TIME"    # CP: Zeitmessart; nur NET TIME mit Lauf nimmt Startnummern an
         self.startlist = []
         self.on_line = None       # jede gesendete Zeitzeile (Papierstreifen)
         self.on_event = None      # Rueckmeldung fuer das Trainingsfenster: on_event(text)
@@ -2658,7 +2659,8 @@ class SimCP:
         if self.device == "tm550":
             day += self.day_shift  # echtes Geraet: Tagesfeld weicht vom Datum ab
             return f"{typ} {'':4} {seq:4d} {ch:02d} {int(h):2d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
-        return f"{typ} {nr:4d} {seq:4d} M{ch} {int(h):02d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
+        nrs = f"{nr:4d}" if nr else "    "  # CP ohne Nummer: Feld leer
+        return f"{typ} {nrs} {seq:4d} M{ch} {int(h):02d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
 
     def _accept(self):
         while self.alive:
@@ -2759,15 +2761,20 @@ class SimCP:
             self.open_run()  # CP 545 oeffnete dabei einen neuen Lauf (Test 22.11.2026)
         elif p[:2] == ["#RP", "026"]:
             ch = int(p[2])
-            self.send(f"&P 026 {ch:02d} {self.next.get(ch) or 0:04d}", c)
+            val = 0 if (self.run_open and "NET" not in self.mode) else (self.next.get(ch) or 0)
+            self.send(f"&P 026 {ch:02d} {val:04d}", c)
         elif p[:2] == ["#WP", "026"] and len(p) >= 4:
-            self.next[int(p[2])] = int(p[3])
+            if not self.run_open:
+                self.send("AK F", c)  # ohne Lauf abgelehnt
+                return
+            if "NET" in self.mode:
+                self.next[int(p[2])] = int(p[3])  # andere Zeitmessart: AK C, aber ohne Wirkung
         elif p[0] == "#RT" and len(p) >= 3:
             r = self.recs.get((int(p[2]), int(p[1])))
             if r:
                 self.send(self.fmt("A" + r[0][1], r[1], int(p[1]), int(p[2]), r[2]), c)
         elif p[0] == "#DL":
-            self.send(f"DS {self.run:02d}  00  NET TIME", c)
+            self.send(f"DS {self.run:02d}  00  {self.mode}", c)
             for (ch, seq), r in sorted(self.recs.items(), key=lambda x: x[1][2]):
                 self.send(self.fmt("A" + r[0][1], r[1], seq, ch, r[2]), c)
             self.send(f"DE {self.run:02d}", c)
@@ -2832,8 +2839,12 @@ class SimCP:
             return
         self.send("AK C", c)
 
+    def numbered(self):
+        """CP vergibt Startnummern nur in NET TIME mit offenem Lauf (Test 22.11.2026)."""
+        return self.device == "cp545" and self.run_open and "NET" in self.mode
+
     def start(self):
-        if self.device == "tm550":
+        if self.device == "tm550" or not self.numbered():
             with self.lock:
                 self.seq[CH_START] += 1
                 t = self.now_abs()
@@ -2851,14 +2862,14 @@ class SimCP:
             return nr
 
     def finish(self):
-        if self.device == "tm550":
+        if self.device == "tm550" or not self.numbered():
             with self.lock:
                 t = self.now_abs()
                 self.seq[CH_FINISH] += 1
                 seq = self.seq[CH_FINISH]
                 self.recs[(CH_FINISH, seq)] = ["TN", 0, t]
                 self.send(self.fmt("TN", 0, seq, CH_FINISH, t))
-                if self.bounce:  # zweiter Kontakt in der Sperrzeit
+                if self.bounce and self.device == "tm550":  # zweiter Kontakt in der Sperrzeit
                     self.blocked.append((CH_FINISH, seq, t + 0.11))
                     self.send(self.fmt("TC", 0, seq, CH_FINISH, t + 0.11))
                 return None
@@ -2960,7 +2971,7 @@ class SimCP:
         with self.lock:
             self.seq = {CH_START: 0, CH_FINISH: 0}
             self.recs, self.course, self.results, self.blocked = {}, [], [], []
-        self.send(f"OP {self.run:02d} TIMING" if self.device == "tm550" else f"OP {self.run:02d}  00  NET TIME")
+        self.send(f"OP {self.run:02d} TIMING" if self.device == "tm550" else f"OP {self.run:02d}  00  {self.mode}")
         self.note(f"Lauf {self.run} geöffnet")
 
     def restart(self):
@@ -7032,6 +7043,7 @@ class LiveRankingApp:
         Befehle nur mit Pruefsumme, Antworten bis 2 s, puffert nicht bei Unterbruch."""
         tm = device == "tm550"
         self.cp_device = device
+        self.cp_mode = ""
         self.cp_caps = {"preload": not tm, "rt": not tm, "dl": True, "ignore_nr": tm, "buffer": not tm,
                         "timeout": 4.0 if tm else CMD_TIMEOUT}
         try:
@@ -7115,6 +7127,35 @@ class LiveRankingApp:
         self.start_eth_tick()
         self.apply_show_settings()
 
+    def cp_note_mode(self, mode):
+        """Zeitmessart des CP aus OP- bzw. DS-Zeile. Nur NET TIME nimmt vorgeladene Startnummern an
+        (Test 22.11.2026: PTB SEQUENTIEL 1-4 bestaetigt #WP 026, liest aber 0000 zurueck)."""
+        mode = (mode or "").strip()
+        if not mode or self.cp_device != "cp545":
+            return
+        self.cp_mode = mode
+        if "NET" in mode.upper():
+            self.cp_set_preload(True, f"Zeitmessart {mode}")
+        else:
+            self.cp_set_preload(False, f"Zeitmessart {mode}")
+
+    def cp_set_preload(self, on, why):
+        """Startnummern im CP vorladen ein/aus. Aus: die App nummeriert die Starts aus der Startreihenfolge
+        (wie beim TM550). Meldung nur beim Wechsel."""
+        if self.cp_device != "cp545" or bool(self.cp_caps.get("preload")) == bool(on):
+            return
+        self.cp_caps["preload"] = bool(on)
+        self.cp_next_start = None
+        self._cp_next_pending = None
+        if on:
+            self.log(f"CP nimmt wieder Startnummern an ({why}): nächste Nummer wird vorgeladen", tag="ok")
+            self.root.after(50, lambda: self.cp_sync_next("Zeitmessart"))
+        else:
+            self.log(f"CP vergibt keine Startnummern ({why}). Die App nummeriert die Starts aus der "
+                     "Startreihenfolge. Für Nummern vom CP: Zeitmessart NET TIME und Lauf offen.", tag="warn")
+            self.add_ticker("Startnummern vergibt die App (CP ohne NET TIME / Lauf)", "warn")
+        self.update_panels()
+
     def _sn_retry(self, reason):
         """Keine Antwort auf #SN ohne Pruefsumme: TM550 versteht Befehle nur mit Pruefsumme."""
         if self.cp is None or getattr(self.cp, "checksum", True) or reason != "keine Antwort":
@@ -7139,6 +7180,9 @@ class LiveRankingApp:
         if run and run != self.cp_run:
             self.cp_run = run
             self.log(f"CP: Lauf {run} offen")
+        if run and self.cp_device == "cp545" and not self.cp_caps["preload"] \
+                and "NET" in (getattr(self, "cp_mode", "") or "NET").upper():
+            self.cp_set_preload(True, f"Lauf {run} offen")
         elif not run:
             self.cp_run = 0
             if self.cp_device == "tm550":
@@ -7148,6 +7192,7 @@ class LiveRankingApp:
                              "mit offenem Lauf (Modus TIMING) nachladen. Knopf «Lauf öffnen» öffnet einen.", tag="warn")
             else:
                 self.log("CP: kein Lauf offen. Am CP einen Lauf öffnen (NET TIME).", tag="warn")
+                self.cp_set_preload(False, "kein Lauf offen")
 
     def _on_next_unread(self, reason):
         if reason == "keine Antwort" and self.cp_readback:
@@ -7258,6 +7303,12 @@ class LiveRankingApp:
         text = f"#WP {param} {inp:02d} {nr:04d}"
 
         def failed(reason):
+            if reason in ("vom CP abgelehnt", "CP meldet 0"):
+                # CP nimmt keine Nummer an (kein Lauf offen bzw. Zeitmessart ohne Nummern): nicht wiederholen
+                DIAG.info(f"#WP {param} {nr}: {reason}")
+                if on_done:
+                    on_done(False, reason)
+                return
             if attempt < 3:
                 self.log(f"CP: {label} Nr {nr} nicht bestätigt ({reason}), neuer Versuch", tag="warn")
                 self.root.after(300, lambda: self.cp_write_param(param, inp, nr, label, on_done, attempt + 1))
@@ -7265,7 +7316,7 @@ class LiveRankingApp:
                 self.log(f"CP: {label} Nr {nr} nach 3 Versuchen nicht gesetzt ({reason})", tag="error")
                 self.add_ticker(f"CP: {label} Nr {nr} nicht gesetzt, am CP prüfen", "warn")
                 if on_done:
-                    on_done(False)
+                    on_done(False, reason)
 
         def read_ok(info):
             try:
@@ -7311,8 +7362,12 @@ class LiveRankingApp:
             return
         self._cp_next_pending = want
 
-        def done(ok):
+        def done(ok, why=""):
             self._cp_next_pending = None
+            if not ok and why in ("vom CP abgelehnt", "CP meldet 0"):
+                self.cp_set_preload(False, "Startnummer vorladen abgelehnt" if why == "vom CP abgelehnt"
+                                    else "Startnummer vom CP nicht übernommen")
+                return
             if ok:
                 self.cp_next_start = want
                 if self.cp_b is not None and self.cp_b.connected and self.cp_b_device != "tm550":
@@ -7369,7 +7424,7 @@ class LiveRankingApp:
             return
         self._cp_finish_pending = target
 
-        def done(ok):
+        def done(ok, _why=""):
             self._cp_finish_pending = None
             if ok:
                 self.cp_finish_want = target
@@ -7523,6 +7578,8 @@ class LiveRankingApp:
                 self.cp_check_reply(info)
             return
         if info["kind"] == "dlstart":
+            if dev == "A" and info.get("mode") and info["run"] == self.cp_run:
+                self.cp_note_mode(info["mode"])
             if dev == "A":
                 self.cp_download = []
                 self.log(f"Download Lauf {info['run']} vom CP läuft ...")
@@ -7558,14 +7615,14 @@ class LiveRankingApp:
             self.cp_run = info["run"]
             self.finish_override = self.cp_finish_want = None
             self.log(f"CP: Lauf {info['run']} geöffnet ({info['mode'] or '?'})", tag="ok")
-            if info["mode"] and "NET" not in info["mode"].upper() and "START" not in info["mode"].upper():
-                self.log(f"CP-Modus {info['mode']}: erwartet wird NET TIME (Start Eingang 1, Ziel Eingang 4)",
-                         tag="warn")
+            self.cp_note_mode(info["mode"])
             self.course_changed()
         elif info["kind"] == "close" and dev == "A":
             self.cp_closed_runs.add(info["run"])
             self.finish_override = None
             self.log(f"CP: Lauf {info['run']} geschlossen", tag="warn")
+            if info["run"] == self.cp_run:
+                self.cp_set_preload(False, "kein Lauf offen")
             self.course_changed()
 
     def archive_run(self, run, why):

@@ -183,6 +183,9 @@ gezeigt hat).
 | Lauf öffnen über Startliste | 2. Versuch mit leerer Liste: kein Lauf | |
 | Startliste mit AT START | | ohne Wirkung, Impulse ohne Nummer |
 | Tagesfeld der Zeitzeilen | Tage ab 1.1.2000, stimmt | stimmt nicht mit dem Datum am Display überein (9793 statt 9822) |
+| Startnummer vorladen `#WP 026` | nur NET TIME mit Lauf. Ohne Lauf AK F, PTB SEQUENTIEL 1-4 mit Lauf AK C aber Zurücklesen 0000 | AK F |
+| Zeile ohne NET TIME / Lauf | ohne Startnummer, keine RR | ohne Startnummer |
+| `#RT` Zeit nachfragen | in allen Zeitmessarten, auch ohne Lauf | nicht brauchbar |
 | `#DL nn` | einmal ohne Antwort, danach keine Befehle mehr bis Neustart (Ursache unklar), nach Neustart normal | DS … DE |
 
 ## Wenn etwas nicht geht

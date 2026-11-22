@@ -1,5 +1,10 @@
 # Änderungen
 
+## v1.15.0 (22.11.2026)
+- CP 545: Startnummern lädt die App nur noch vor, wenn der CP sie annimmt. Laut Gerätetest geht das nur in der Zeitmessart NET TIME mit offenem Lauf. Ohne Lauf lehnt der CP ab (AK F), in PTB SEQUENTIEL 1-4 bestätigt er, übernimmt aber nichts (Zurücklesen 0000). In diesen Fällen schaltet die App das Vorladen für die Verbindung ab, meldet das einmal und nummeriert die Starts aus der Startreihenfolge wie beim TM550. Bisher kam bei jedem Start nach drei Versuchen «nicht gesetzt»
+- Die Zeitmessart liest die App aus der Lauf-Meldung des CP (OP bzw. DS). Öffnet am CP ein Lauf in NET TIME, lädt sie wieder vor
+- Simulator: CP mit Zeitmessart und ohne offenen Lauf wie am Gerät (keine Nummern, keine Laufzeiten vom CP)
+
 ## v1.14.1 (22.11.2026)
 - TM550: Das Tagesfeld in den Zeitzeilen ist kein verlässliches Datum (Display 22.11.2026, Zeilen Tag 9793 = 24.10.2026, früher auch 189). Die App nimmt beim TM550 als Haupt- und Reservegerät den Tag vom PC-Datum beim Empfang, über Mitternacht anhand der Uhrzeit. Die Uhrprüfung vergleicht beim TM550 damit nur die Uhrzeit, der Reserve-Versatz springt nicht mehr
 - Gesperrter Kontakt ohne Zählnummer (`TC           04 …`, TM550 mit AT START) erscheint im Log benannt und zählt nicht als Impuls
