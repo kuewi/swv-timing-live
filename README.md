@@ -1,6 +1,6 @@
 # SWV Timing Live (SWV Live-Ranking)
 
-![Oberfläche v1.10.1](docs/screenshots/ui_v1.10.1.png)
+![Oberfläche v1.11.0](docs/screenshots/ui_v1.11.0.png)
 
 
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des

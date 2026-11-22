@@ -47,6 +47,8 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 import urllib.parse
+import urllib.request
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from tkinter import filedialog, ttk
 from tkinter import messagebox as _tkmsg
@@ -71,7 +73,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.10.1"
+APP_VERSION = "1.11.0"
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -235,6 +237,7 @@ DEFAULT_SETTINGS = {
     "conn": {"mode": "rs232", "cp_ip": "", "cp_ip_b": "", "adapter": "",
              "usb_port": "", "usb_baud": 9600, "usb_ack": False},
     "net_restore": {"pending": False, "adapter": ""},
+    "updates": {"check": True, "last_check": 0, "declined": "", "declined_at": 0},
 }
 
 SHOW_LABELS = [
@@ -278,6 +281,65 @@ def resource_dirs():
 DATA_FOLDER_NAME = "SWV Live-Ranking"
 LOG_DIR = "logs"
 REPORT_DIR = "fehlerberichte"
+
+
+UPDATE_API = "https://api.github.com/repos/kuewi/swv-timing-live/releases/latest"
+UPDATE_HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com",
+                "api.github.com")
+
+
+def parse_version(text):
+    nums = re.findall(r"\d+", str(text or ""))
+    return tuple(int(n) for n in nums[:4]) if nums else ()
+
+
+def _https_allowed(url):
+    u = urllib.parse.urlparse(url)
+    return u.scheme == "https" and (u.hostname or "").lower() in UPDATE_HOSTS
+
+
+def fetch_latest_release(url=UPDATE_API, timeout=8):
+    """Neuestes Release von GitHub: {'version','tag','body','html_url','setup','setup_url','sums_url'}."""
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
+                                               "User-Agent": f"SWV-Live-Ranking/{APP_VERSION}"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    assets = {a.get("name", ""): a.get("browser_download_url", "") for a in data.get("assets", [])}
+    setup = next((n for n in assets if n.startswith("SWV_LiveRanking_Setup_") and n.endswith(".exe")), None)
+    return {"version": parse_version(data.get("tag_name")), "tag": data.get("tag_name", ""),
+            "body": data.get("body") or "", "html_url": data.get("html_url", ""), "setup": setup,
+            "setup_url": assets.get(setup, "") if setup else "", "sums_url": assets.get("SHA256SUMS.txt", "")}
+
+
+def download_file(url, path, progress=None, timeout=30):
+    if not _https_allowed(url):
+        raise ValueError(f"Download nur von GitHub über HTTPS erlaubt: {url}")
+    req = urllib.request.Request(url, headers={"User-Agent": f"SWV-Live-Ranking/{APP_VERSION}"})
+    h = hashlib.sha256()
+    with urllib.request.urlopen(req, timeout=timeout) as resp, open(path + ".part", "wb") as fh:
+        if not _https_allowed(resp.geturl()):
+            raise ValueError(f"Umleitung auf fremden Server: {resp.geturl()}")
+        total = int(resp.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            fh.write(chunk)
+            h.update(chunk)
+            done += len(chunk)
+            if progress:
+                progress(done, total)
+    os.replace(path + ".part", path)
+    return h.hexdigest()
+
+
+def fetch_text(url, timeout=10):
+    if not _https_allowed(url):
+        raise ValueError(f"nur GitHub über HTTPS erlaubt: {url}")
+    req = urllib.request.Request(url, headers={"User-Agent": f"SWV-Live-Ranking/{APP_VERSION}"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="replace")
 
 
 def documents_dir():
@@ -3074,6 +3136,8 @@ class LiveRankingApp:
         self.update_ziel_info()
         self.update_window_title()
         self.report_missing_modules()
+        if getattr(sys, "frozen", False):  # nur die gebaute App prueft beim Start (nicht Tests und Entwicklung)
+            self.root.after(4000, lambda: self.check_updates(manual=False))
         if self.settings["conn"]["mode"] == "ethernet":
             self.refresh_adapters()
         elif self.settings["net_restore"].get("pending"):
@@ -3092,7 +3156,7 @@ class LiveRankingApp:
     # Fenster / Stil
     # ================================================================== #
     def setup_window(self):
-        self.root.title(APP_TITLE)
+        self.root.title(f"SWV Live-Ranking v{APP_VERSION}  |  TAG Heuer CP 545")
         self.root.configure(bg=BG)
         self.root.minsize(1000, 600)
         try:
@@ -3294,6 +3358,162 @@ class LiveRankingApp:
     def narrow_wrap(self):
         """Umbruchbreite fuer Text in schmalen Fenstern."""
         return self.side_w - int(70 * self.ui_scale)
+
+    # ================================================================== #
+    # Updates: GitHub-Releases (nur ausgehend, nur auf Rueckfrage)
+    # ================================================================== #
+    def toggle_update_check(self):
+        u = self.settings["updates"]
+        u["check"] = not u["check"]
+        self.sw_updates.set(u["check"])
+        self.save_settings()
+
+    def installed_build(self):
+        """True, wenn die App aus dem Installer stammt (dann kann das Setup sie ersetzen)."""
+        if not getattr(sys, "frozen", False):
+            return False
+        exe = os.path.normcase(os.path.abspath(sys.executable))
+        roots = [os.environ.get(v, "") for v in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432")]
+        return any(r and exe.startswith(os.path.normcase(os.path.abspath(r)) + os.sep) for r in roots)
+
+    def check_updates(self, manual=False):
+        u = self.settings["updates"]
+        if not manual and (not u["check"] or time.time() - u.get("last_check", 0) < 1800):
+            return
+        if getattr(self, "_update_busy", False):
+            return
+        self._update_busy = True
+        if manual:
+            self.log("Suche nach Updates ...", tag="ok")
+
+        def work():
+            try:
+                info = fetch_latest_release()
+                self.q.put(("update_info", (info, manual), None))
+            except Exception as exc:
+                self.q.put(("update_error", (str(exc), manual), None))
+
+        threading.Thread(target=work, daemon=True, name="Update-Pruefung").start()
+
+    def handle_update_event(self, kind, payload):
+        if kind == "update_error":
+            self._update_busy = False
+            err, manual = payload
+            DIAG.info(f"Update-Prüfung fehlgeschlagen: {err}")
+            if manual:
+                messagebox.showwarning("Updates", f"Keine Verbindung zu GitHub.\n{err}")
+            return
+        if kind == "update_info":
+            info, manual = payload
+            self._update_busy = False
+            u = self.settings["updates"]
+            u["last_check"] = time.time()
+            self.save_settings()
+            DIAG.info(f"Update-Prüfung: neueste {info['tag']}, installiert v{APP_VERSION}")
+            if not info["version"] or info["version"] <= parse_version(APP_VERSION):
+                if manual:
+                    messagebox.showinfo("Updates", f"Version {APP_VERSION} ist aktuell.")
+                return
+            if not manual and u.get("declined") == info["tag"] and time.time() - u.get("declined_at", 0) < 12 * 3600:
+                return
+            self.offer_update(info)
+            return
+        if kind == "update_progress":
+            done, total = payload
+            step = done * 4 // total if total else 0
+            if step > getattr(self, "_update_step", -1):
+                self._update_step = step
+                self.log(f"Update wird geladen: {done * 100 // total if total else 0} % "
+                         f"({done // 1024 // 1024} MB)", tag="ok")
+            return
+        if kind == "update_ready":
+            self._update_busy = False
+            self.launch_setup(payload)
+            return
+        if kind == "update_failed":
+            self._update_busy = False
+            self.log(f"Update nicht geladen: {payload}", tag="error")
+            messagebox.showerror("Update", f"Das Update konnte nicht geladen werden:\n{payload}")
+
+    def offer_update(self, info):
+        notes = info["body"].strip()
+        if len(notes) > 900:
+            notes = notes[:900].rsplit("\n", 1)[0] + "\n..."
+        installed = self.installed_build()
+        if not installed or not info["setup_url"]:
+            text = (f"Version {info['tag'].lstrip('v')} ist verfügbar (installiert: {APP_VERSION}).\n\n{notes}\n\n"
+                    "Diese App wurde nicht mit dem Installer installiert und kann sich nicht selbst ersetzen. "
+                    "Download-Seite öffnen?")
+            if messagebox.askyesno("Neue Version", text):
+                import webbrowser
+                webbrowser.open(info["html_url"])
+            else:
+                self._decline_update(info)
+            return
+        text = f"Version {info['tag'].lstrip('v')} ist verfügbar (installiert: {APP_VERSION}).\n\n{notes}\n\nJetzt aktualisieren?"
+        if self.cp is not None and self.cp.connected:
+            text += ("\n\nAchtung: der CP ist verbunden. Die App wird für das Update geschlossen. Zeiten puffert der "
+                     "CP und die App holt sie nach dem Neustart nach.")
+        if not messagebox.askyesno("Neue Version", text):
+            self._decline_update(info)
+            return
+        self.download_update(info)
+
+    def _decline_update(self, info):
+        u = self.settings["updates"]
+        u["declined"], u["declined_at"] = info["tag"], time.time()
+        self.save_settings()
+        DIAG.info(f"Update {info['tag']} abgelehnt")
+
+    def download_update(self, info):
+        self._update_busy = True
+        self._update_step = -1
+        folder = os.path.join(self.data_path, "updates")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, info["setup"])
+        self.log(f"Lade {info['setup']} ...", tag="ok")
+
+        def work():
+            try:
+                want = None
+                if info["sums_url"]:
+                    for line in fetch_text(info["sums_url"]).splitlines():
+                        parts = line.strip().split()
+                        if len(parts) >= 2 and parts[-1].lstrip("*") == info["setup"]:
+                            want = parts[0].lower()
+                if not want:
+                    raise ValueError("keine Prüfsumme zum Setup im Release (SHA256SUMS.txt)")
+                last = [0.0]
+
+                def prog(done, total):
+                    if time.time() - last[0] > 0.3:
+                        last[0] = time.time()
+                        self.q.put(("update_progress", (done, total), None))
+
+                got = download_file(info["setup_url"], path, prog)
+                if got.lower() != want:
+                    os.remove(path)
+                    raise ValueError("Prüfsumme stimmt nicht, Datei verworfen")
+                self.q.put(("update_ready", path, None))
+            except Exception as exc:
+                self.q.put(("update_failed", str(exc), None))
+
+        threading.Thread(target=work, daemon=True, name="Update-Download").start()
+
+    def launch_setup(self, path):
+        """Setup starten (Windows fragt nach Adminrechten) und die App schliessen."""
+        DIAG.warning(f"Update: starte {path}")
+        self.log("Update geladen und geprüft. Die App wird geschlossen, das Setup startet.", tag="ok")
+        if IS_WINDOWS:
+            try:
+                import ctypes
+                r = ctypes.windll.shell32.ShellExecuteW(None, "open", path, "/SILENT /SP- /NOCANCEL", None, 1)
+                if r <= 32:
+                    raise OSError(f"ShellExecute {r}")
+            except Exception as exc:
+                messagebox.showerror("Update", f"Setup nicht gestartet: {exc}\n{path}")
+                return
+        self.root.after(500, self.on_close)
 
     # ================================================================== #
     # Diagnose: Programmfehler, Bedienung, Fehlerberichte
@@ -3752,6 +3972,7 @@ class LiveRankingApp:
             # weisses Feld, damit Rot und Blau auch im dunklen Design gut lesbar sind
             tk.Label(head, image=self.logo_img, bg="#FFFFFF", bd=0, padx=int(8 * self.ui_scale),
                      pady=int(4 * self.ui_scale)).pack(side="left")
+        tk.Label(head, text=f"v{APP_VERSION}", bg=BG, fg=MUTED, font=self.f_side).pack(side="left", padx=(8, 0))
         self.btn_pin = self._button(head, "", self.toggle_sidebar_pin)
         self.btn_pin.pack(side="right")
         pin = tk.Frame(side, bg=BG)
@@ -4171,6 +4392,15 @@ class LiveRankingApp:
         self.lbl_count.grid(row=5, column=0, sticky="w", pady=(4, 0))
         self._label(b, f"Daten, Logs und Fehlerberichte: {self.data_path}", fg=MUTED, wraplength=wrap,
                     justify="left").grid(row=6, column=0, sticky="w", pady=(4, 0))
+        upd = tk.Frame(b, bg=PANEL)
+        upd.grid(row=7, column=0, sticky="ew", pady=(8, 0))
+        upd.columnconfigure(0, weight=1)
+        self._label(upd, "Beim Start nach Updates suchen").grid(row=0, column=0, sticky="w")
+        self.sw_updates = Switch(upd, command=self.toggle_update_check, scale=self.ui_scale,
+                                 on=self.settings["updates"]["check"])
+        self.sw_updates.grid(row=0, column=1, sticky="e")
+        self._button(b, "Jetzt nach Updates suchen", lambda: self.check_updates(manual=True)).grid(
+            row=8, column=0, sticky="ew", pady=(6, 0))
 
         # Log
         logbox = RoundedPanel(side, fill=PANEL, radius=int(12 * self.ui_scale), fit_height=True)
@@ -4364,7 +4594,8 @@ class LiveRankingApp:
 
     def update_window_title(self):
         label = self.event_label()
-        self.root.title(f"{APP_TITLE}  |  {label}" if label else APP_TITLE)
+        base = f"SWV Live-Ranking v{APP_VERSION}  |  TAG Heuer CP 545"
+        self.root.title(f"{base}  |  {label}" if label else base)
         if hasattr(self, "lbl_event_head"):
             avail = self.wrap_w - self.f_side_head.measure("⌄  Wettkampf") - int(14 * self.ui_scale)
             if label:
@@ -5710,6 +5941,9 @@ class LiveRankingApp:
         try:
             while True:
                 kind, payload, reader = self.q.get_nowait()
+                if kind.startswith("update_"):
+                    self.handle_update_event(kind, payload)
+                    continue
                 if kind.startswith(("eth_", "net_")):
                     self.handle_eth_event(kind, payload, reader)
                     continue

@@ -45,6 +45,12 @@ jobs:
           if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y }
           & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" installer\swv_live_ranking.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Pruefsummen und Release-Text
+        shell: pwsh
+        run: |
+          Get-ChildItem dist\*.exe | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
+          Get-Content dist\SHA256SUMS.txt
+          python tools/release_notes.py "${{ steps.ver.outputs.version }}" release_notes.md
       - uses: actions/upload-artifact@v4
         with:
           name: SWV_LiveRanking-${{ steps.ver.outputs.version }}
@@ -61,4 +67,5 @@ jobs:
           files: |
             dist/SWV_LiveRanking_Setup_${{ steps.ver.outputs.version }}.exe
             dist/SWV_LiveRanking.exe
-          generate_release_notes: true
+            dist/SHA256SUMS.txt
+          body_path: release_notes.md

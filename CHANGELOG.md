@@ -1,5 +1,10 @@
 # Änderungen
 
+## v1.11.0 (22.11.2026)
+- Version im Fenstertitel und neben dem Logo
+- Update-Prüfung: beim Start (abschaltbar unter «Daten») und mit «Jetzt nach Updates suchen». Neue Version mit Release-Text, auf Ja wird das Setup von GitHub geladen, mit SHA-256 geprüft und gestartet, die App schliesst sich. Ohne Installation: Hinweis mit Link zur Download-Seite. Abgelehnte Version wird 12 Stunden nicht erneut angeboten
+- Release enthält `SHA256SUMS.txt`, Release-Text kommt aus dem CHANGELOG
+
 ## v1.10.1 (21.11.2026)
 - Fehlerbericht ad4f: Lauf am CP geschlossen und mit derselben Nummer wieder geöffnet (Zählung beginnt wieder bei 1): die bisherigen Zeiten werden als eigene Runde abgelegt, neue Zeiten wieder verarbeitet, Resultate bleiben. Erkennung auch, wenn dieselbe Zählnummer mit neuer Uhrzeit kommt
 - Wechsel Ethernet ↔ USB oder neues Verbinden in derselben Sitzung: Zeiten, die der CP in der Zwischenzeit gepuffert hat, werden nachgetragen
