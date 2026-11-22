@@ -1,6 +1,6 @@
 # SWV Timing Live (SWV Live-Ranking)
 
-![Oberfläche v1.15.0](docs/screenshots/ui_v1.15.0.png)
+![Oberfläche v1.16.0](docs/screenshots/ui_v1.16.0.png)
 
 
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des
@@ -42,14 +42,15 @@ Rückfrage, nur ausserhalb eines Rennens). Anleitung Schritt für Schritt: [docs
 Beide Geräte haben ihre eigene Verbindung: Hauptgerät RS232, Ethernet oder USB, Reserve-Gerät keines,
 Ethernet oder USB. Möglich sind z.B. CP 545 über USB und TM550 über Ethernet, umgekehrt, oder beide über
 Ethernet (zwei Adressen im Netz 192.168.1.x an derselben Netzwerkkarte). Die IP der Reserve lässt sich aus
-der Suche wählen oder eintippen. Die App lernt den Uhrversatz aus gemeinsamen Impulsen, übernimmt Impulse,
+der Suche wählen oder eintippen. Haupt- und Reserve-Gerät haben je einen eigenen Verbinden-Knopf; wird das
+Hauptgerät getrennt, liefert die Reserve alle Zeiten. Die App lernt den Uhrversatz aus gemeinsamen Impulsen, übernimmt Impulse,
 die dem Hauptgerät fehlen, und fällt bei Ausfall des Hauptgeräts auf die Reserve zurück. Beide Geräte
 brauchen dieselben Start- und Zielimpulse (Verteilung elektrisch mit ITS/TAG Heuer abklären).
 
 ### Üben
 
-![Simulator CP 545 v1.15.0](docs/screenshots/sim_cp545_v1.15.0.png)
-![Simulator TM550 v1.15.0](docs/screenshots/sim_tm550_v1.15.0.png)
+![Simulator CP 545 v1.16.0](docs/screenshots/sim_cp545_v1.16.0.png)
+![Simulator TM550 v1.16.0](docs/screenshots/sim_tm550_v1.16.0.png)
 
 Unter Simulator: «Üben: CP 545 mit Tastatur» bzw. «Üben: TM550» öffnet ein nachgebautes Gerät
 (Vorderseite mit Display und Tastenfeld nach Foto, Rückseite mit Bananenbuchsen und Anschlüssen) und

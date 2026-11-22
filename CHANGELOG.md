@@ -1,5 +1,12 @@
 # Änderungen
 
+## v1.16.0 (23.11.2026)
+- Verbindung: eigener Knopf «Reserve verbinden» / «Reserve trennen» mit Zustand im Block Reserve-Gerät. Der Knopf des Hauptgeräts verbindet nur noch das Hauptgerät. Wird das Hauptgerät getrennt, bleibt die Reserve verbunden und liefert alle Zeiten. Eine Änderung der Reserve-Auswahl verbindet nicht mehr von selbst
+- CP 545 druckt bei einem Vereinswechsel eine Zeile auf den Papierstreifen, z.B. `> RC Rheinfelden (12)`, sobald das letzte Boot des bisherigen Vereins gestartet ist (beim Verbinden vor dem ersten Start auch für den ersten Verein). Umlaute umgeschrieben, auf 24 Zeichen gekürzt, nie doppelt. Schalter «Vereinswechsel auf CP drucken» unter Zeitmessung. Auch ein CP als Reserve druckt, der TM550 nicht
+- Update-Prüfung: Zertifikat von GitHub wird mit der Windows-Prüfung kontrolliert (truststore), Rückfall auf die Zertifikate aus certifi. Behebt «CERTIFICATE_VERIFY_FAILED». Schlägt die Prüfung fehl, bietet die App die Release-Seite im Browser an
+- Zeitmessung: Hinweistext und Knopf überlappten die Schalter Start/Ziel sperren
+- `fernbefehle_test.ps1`: Gruppe I für die Präzision (#RP/#WP 001)
+
 ## v1.15.0 (22.11.2026)
 - CP 545: Startnummern lädt die App nur noch vor, wenn der CP sie annimmt. Laut Gerätetest geht das nur in der Zeitmessart NET TIME mit offenem Lauf. Ohne Lauf lehnt der CP ab (AK F), in PTB SEQUENTIEL 1-4 bestätigt er, übernimmt aber nichts (Zurücklesen 0000). In diesen Fällen schaltet die App das Vorladen für die Verbindung ab, meldet das einmal und nummeriert die Starts aus der Startreihenfolge wie beim TM550. Bisher kam bei jedem Start nach drei Versuchen «nicht gesetzt»
 - Die Zeitmessart liest die App aus der Lauf-Meldung des CP (OP bzw. DS). Öffnet am CP ein Lauf in NET TIME, lädt sie wieder vor

@@ -39,6 +39,7 @@ import queue
 import re
 import secrets
 import socket
+import ssl
 import string
 import subprocess
 import sys
@@ -73,7 +74,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.15.0"
+APP_VERSION = "1.16.0"
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -233,7 +234,7 @@ DEFAULT_SETTINGS = {
     "sidebar_pinned": True,
     "cats_auto": True,
     "timing": {"prell_start_ms": 300, "prell_finish_ms": 300, "min_run_s": 0, "lock_start": False,
-               "lock_finish": False, "ch_start": 1, "ch_finish": 4},
+               "lock_finish": False, "ch_start": 1, "ch_finish": 4, "print_club": True},
     "conn": {"mode": "rs232", "device": "cp545", "cp_ip": "", "cp_ip_b": "", "backup_mode": "", "adapter": "",
              "usb_port": "", "usb_baud": 9600, "usb_ack": False},
     "net_restore": {"pending": False, "adapter": ""},
@@ -288,6 +289,65 @@ UPDATE_HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.g
                 "api.github.com")
 
 
+_SSL_CTX = []
+
+
+def _ssl_contexts():
+    """Zertifikatspruefung fuer GitHub: zuerst die von Windows (truststore, laedt fehlende Stammzertifikate wie
+    der Browser nach), dann Python mit den Zertifikaten aus certifi. Pruefung wird nie abgeschaltet."""
+    if not _SSL_CTX:
+        try:
+            import truststore
+            _SSL_CTX.append(("windows", truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)))
+        except Exception:
+            pass
+        ctx = ssl.create_default_context()
+        try:
+            import certifi
+            ctx.load_verify_locations(certifi.where())
+            name = "python+certifi"
+        except Exception:
+            name = "python"
+        _SSL_CTX.append((name, ctx))
+    return list(_SSL_CTX)
+
+
+def _is_cert_error(exc):
+    reason = getattr(exc, "reason", exc)
+    return isinstance(reason, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(exc)
+
+
+def _urlopen(req, timeout):
+    """urlopen mit dem ersten Zertifikatspruefer, der klappt."""
+    last = None
+    for name, ctx in _ssl_contexts():
+        try:
+            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+        except Exception as exc:
+            if not _is_cert_error(exc):
+                raise
+            last = exc
+            DIAG.info(f"Zertifikat mit {name} nicht prüfbar: {exc}")
+    raise last
+
+
+CP_PRINT_WIDTH = 24  # Zeichen pro Zeile am CP-Drucker (Annahme, am Geraet pruefen)
+
+
+def cp_print_text(club, count):
+    """Zeile fuer den CP-Drucker: nur ASCII, Umlaute umschreiben, auf Druckbreite kuerzen."""
+    t = str(club)
+    for a, b in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("Ä", "Ae"), ("Ö", "Oe"), ("Ü", "Ue"), ("ß", "ss"),
+                 ("é", "e"), ("è", "e"), ("à", "a"), ("ç", "c")):
+        t = t.replace(a, b)
+    t = "".join(ch for ch in t if 32 <= ord(ch) < 127 and ch not in "#\t").strip()
+    tail = f" ({count})"
+    room = CP_PRINT_WIDTH - 2 - len(tail)
+    if len(t) > room:
+        t = t[:max(1, room)].rstrip()
+    return f"> {t}{tail}"
+
+
 def parse_version(text):
     nums = re.findall(r"\d+", str(text or ""))
     return tuple(int(n) for n in nums[:4]) if nums else ()
@@ -302,7 +362,7 @@ def fetch_latest_release(url=UPDATE_API, timeout=8):
     """Neuestes Release von GitHub: {'version','tag','body','html_url','setup','setup_url','sums_url'}."""
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
                                                "User-Agent": f"SWV-Live-Ranking/{APP_VERSION}"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _urlopen(req, timeout) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     assets = {a.get("name", ""): a.get("browser_download_url", "") for a in data.get("assets", [])}
     setup = next((n for n in assets if n.startswith("SWV_LiveRanking_Setup_") and n.endswith(".exe")), None)
@@ -316,7 +376,7 @@ def download_file(url, path, progress=None, timeout=30):
         raise ValueError(f"Download nur von GitHub über HTTPS erlaubt: {url}")
     req = urllib.request.Request(url, headers={"User-Agent": f"SWV-Live-Ranking/{APP_VERSION}"})
     h = hashlib.sha256()
-    with urllib.request.urlopen(req, timeout=timeout) as resp, open(path + ".part", "wb") as fh:
+    with _urlopen(req, timeout) as resp, open(path + ".part", "wb") as fh:
         if not _https_allowed(resp.geturl()):
             raise ValueError(f"Umleitung auf fremden Server: {resp.geturl()}")
         total = int(resp.headers.get("Content-Length") or 0)
@@ -338,7 +398,7 @@ def fetch_text(url, timeout=10):
     if not _https_allowed(url):
         raise ValueError(f"nur GitHub über HTTPS erlaubt: {url}")
     req = urllib.request.Request(url, headers={"User-Agent": f"SWV-Live-Ranking/{APP_VERSION}"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _urlopen(req, timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
 
@@ -3694,7 +3754,17 @@ class LiveRankingApp:
             err, manual = payload
             DIAG.info(f"Update-Prüfung fehlgeschlagen: {err}")
             if manual:
-                messagebox.showwarning("Updates", f"Keine Verbindung zu GitHub.\n{err}")
+                page = "https://github.com/kuewi/swv-timing-live/releases"
+                if "CERTIFICATE_VERIFY_FAILED" in err:
+                    text = ("Das Zertifikat von GitHub lässt sich auf diesem PC nicht prüfen (Windows-Zertifikate "
+                            "unvollständig oder ein Virenschutz prüft verschlüsselte Verbindungen). Aus Sicherheit "
+                            "wird nichts geladen.")
+                else:
+                    text = f"Keine Verbindung zu GitHub ({err})."
+                if messagebox.askyesno("Updates", f"{text}\n\nRelease-Seite im Browser öffnen und die neue Version "
+                                                  "dort herunterladen?"):
+                    import webbrowser
+                    webbrowser.open(page)
             return
         if kind == "update_info":
             info, manual = payload
@@ -4542,8 +4612,12 @@ class LiveRankingApp:
                                            "fehlen oder wenn es ausfällt. Beide Geräte an dieselben "
                                            "Start- und Zielgeber.", fg=MUTED, wraplength=wrap, justify="left")
         self.lbl_bk_hint.grid(row=3, column=0, sticky="w", pady=(0, 6))
+        self.lbl_bk_state = self._label(bk, "nicht verbunden", fg=MUTED)
+        self.lbl_bk_state.grid(row=4, column=0, sticky="w", pady=(0, 4))
+        self.btn_bk = self._button(bk, "Reserve verbinden", self.toggle_backup, GREEN)
+        self.btn_bk.grid(row=5, column=0, sticky="ew", pady=(0, 8))
         self.btn_connect = self._button(b, "Verbinden", self.toggle_connection, GREEN)
-        self.btn_connect.grid(row=5, column=0, sticky="ew")
+        self.btn_connect.grid(row=4, column=0, sticky="ew", pady=(0, 10))
         self.show_conn_frames()
         self.fill_eth_combos()
         self.set_conn_status("nicht verbunden", MUTED)
@@ -4571,11 +4645,18 @@ class LiveRankingApp:
             sw = Switch(b, command=lambda k=key: self.toggle_lock(k), scale=self.ui_scale, on=ts[key])
             sw.grid(row=i, column=1, sticky="e", pady=(int(5 * self.ui_scale), 0))
             self.timing_switches[key] = sw
+        r = len(rows) + 2
+        self._label(b, "Vereinswechsel auf CP drucken").grid(row=r, column=0, sticky="w",
+                                                             pady=(int(5 * self.ui_scale), 0))
+        self.sw_print_club = Switch(b, command=self.toggle_print_club, scale=self.ui_scale,
+                                    on=ts.get("print_club", True))
+        self.sw_print_club.grid(row=r, column=1, sticky="e", pady=(int(5 * self.ui_scale), 0))
         self._label(b, "Gilt bei Ethernet und USB. Gesperrte und ungültige Impulse erscheinen unter «Auf "
-                       "Fahrstrecke» und lassen sich dort zuordnen.", fg=MUTED, wraplength=wrap,
-                    justify="left").grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+                       "Fahrstrecke» und lassen sich dort zuordnen. Vereinswechsel: der CP 545 druckt vor dem "
+                       "ersten Boot eines neuen Vereins eine Zeile (TM550 hat keinen Drucker).", fg=MUTED,
+                    wraplength=wrap, justify="left").grid(row=r + 1, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self._button(b, "Resultate aus Rohzeiten neu berechnen", self.ask_recompute).grid(
-            row=6, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+            row=r + 2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         # Startliste
         b = self._section(side, "Startliste", "startliste")
@@ -4780,6 +4861,13 @@ class LiveRankingApp:
         self._set(self.lbl_conn_head, text=text, fg=color)
 
     # ---------------- Zeitmessung ---------------- #
+    def toggle_print_club(self):
+        ts = self.settings["timing"]
+        ts["print_club"] = not ts.get("print_club", True)
+        self.sw_print_club.set(ts["print_club"])
+        self.save_settings()
+        self.log("Vereinswechsel auf CP drucken: " + ("ein" if ts["print_club"] else "aus"), tag="ok")
+
     def save_timing(self):
         ts = self.settings["timing"]
         for key, e in self.timing_entries.items():
@@ -6374,7 +6462,38 @@ class LiveRankingApp:
                     and self.settings["online"]["mode"] == "online" and self.settings["online"]["auto_startlist"]:
                 self.request_startlist_update("Vereinswechsel" if club_change else "Startblock-Wechsel")
             self.last_club, self.last_block = club, block
+        self.print_next_club(nr)
         self.update_panels()
+
+    def print_next_club(self, nr):
+        """Gehoert das naechste Boot in der Startreihenfolge zu einem anderen Verein als das eben gestartete,
+        druckt der CP 545 eine Zeile als Ueberschrift vor dessen Start (#PL, am CP getestet)."""
+        if not self.settings["timing"].get("print_club", True) or not self.eth_mode():
+            return
+        nxt = self.next_starters(1)
+        if not nxt:
+            return
+        cur, new = self.participants.get(nr), self.participants.get(nxt[0])
+        if not new or not new.get("verein"):
+            return
+        club = new.get("vnr") or new["verein"]
+        if cur and (cur.get("vnr") or cur.get("verein") or "") == club:
+            return
+        done = self.__dict__.setdefault("_club_printed", set())
+        if (nxt[0], club) in done:
+            return
+        done.add((nxt[0], club))
+        count = sum(1 for p in self.participants.values() if p.get("verein") == new["verein"])
+        text = cp_print_text(new["verein"], count)
+        sent = False
+        if self.cp is not None and self.cp.connected and self.cp_device == "cp545":
+            self.cp_query(f"#PL {text}", "ack")
+            sent = True
+        if self.cp_b is not None and self.cp_b.connected and self.cp_b_device == "cp545":
+            self.cp_b.send(f"#PL {text}")
+            sent = True
+        if sent:
+            self.log(f"CP druckt: {text}", tag="ok")
 
     # ================================================================== #
     # Verbindungsart RS232 / Ethernet
@@ -6407,7 +6526,7 @@ class LiveRankingApp:
         if mode == "rs232":
             self.frm_bk.grid_remove()
         else:
-            self.frm_bk.grid(row=4, column=0, sticky="ew")
+            self.frm_bk.grid(row=5, column=0, sticky="ew")
         for f, key in ((self.frm_bk_eth, "ethernet"), (self.frm_bk_usb, "usb")):
             if key == bk:
                 f.grid(row=2, column=0, sticky="ew")
@@ -6445,7 +6564,6 @@ class LiveRankingApp:
         self.cp_reconnected = False
         self.cp = CPSerialClient(port, baud, self.q, identity=port_identity(port), ack=c["usb_ack"])
         self.cp.start()
-        self.connect_backup()
         self.set_conn_status(f"verbinde mit CP an {port} ...", GOLD)
         self.btn_connect.configure(text="Trennen", bg=DARK_RED)
 
@@ -6481,7 +6599,8 @@ class LiveRankingApp:
             opts = [(f"usb:{dev}", label) for label, dev in getattr(self, "port_map", {}).items()
                     if dev != main_usb]
         want = c["cp_ip_b"]
-        if want and want.startswith("usb:") == (kind == "usb") and want not in [o[0] for o in opts]:
+        main = c["cp_ip"] if c["mode"] == "ethernet" else ("usb:" + c["usb_port"] if c["mode"] == "usb" else "")
+        if want and want != main and want.startswith("usb:") == (kind == "usb") and want not in [o[0] for o in opts]:
             opts.append((want, f"{want.replace('usb:', '')}  (zuletzt verwendet)"))
         return opts
 
@@ -6517,12 +6636,42 @@ class LiveRankingApp:
         self.on_backup_target_change()
 
     def on_backup_target_change(self):
-        """Reserve geaendert: laeuft das Hauptgeraet, gleich neu verbinden."""
+        """Reserve-Auswahl merken. Verbunden wird nur mit dem Knopf «Reserve verbinden»."""
         target = self.selected_backup()
-        if target == (self.settings["conn"]["cp_ip_b"] if self.cp_b is not None else None):
+        if self.cp_b is None and getattr(self, "_bk_job", None) is None:
+            self.settings["conn"]["cp_ip_b"] = target
+            self.save_settings()
+
+    def toggle_backup(self):
+        """Eigener Knopf fuer das Reserve-Geraet, unabhaengig vom Hauptgeraet."""
+        if self.cp_b is not None or getattr(self, "_bk_job", None) is not None:
+            self._bk_job = None
+            self.stop_backup()
+            self.backup_reset()
+            self.backup_state = ""
+            self.log("Reserve-Gerät getrennt", tag="warn")
+            self.refresh_conn_head()
             return
-        if self.cp is not None:
-            self.connect_backup()
+        if not self.selected_backup():
+            messagebox.showinfo("Reserve-Gerät", "Zuerst Ethernet oder USB wählen und die IP-Adresse bzw. den "
+                                                 "COM-Port des Reserve-Geräts angeben.")
+            return
+        self.connect_backup()
+        self.start_eth_tick()
+        self.refresh_conn_head()
+
+    def refresh_bk_button(self):
+        btn = getattr(self, "btn_bk", None)
+        if btn is None:
+            return
+        busy = self.cp_b is not None or getattr(self, "_bk_job", None) is not None
+        btn.configure(text="Reserve trennen" if busy else "Reserve verbinden", bg=DARK_RED if busy else GREEN)
+        state = getattr(self, "backup_state", "") if busy else "nicht verbunden"
+        name = self.DEVICE_LABEL.get(self.cp_b_device or "", "") if busy else ""
+        off = getattr(self, "b_offset", None) if busy else None
+        self.lbl_bk_state.configure(
+            text=" ".join(x for x in (name, state) if x) + (f", Versatz {off:+.2f} s" if off is not None else ""),
+            fg=GREEN_TEXT if state == "verbunden" else (MUTED if not busy else GOLD))
 
     def selected_adapter(self):
         i = self.cmb_adapter.current()
@@ -6727,8 +6876,6 @@ class LiveRankingApp:
             elif kind == "eth_bk_go":
                 self._bk_job = None
                 ip, info = payload
-                if self.cp is None:
-                    return
                 if info and not any(h == ip for h, _i in self.cp_found):
                     self.cp_found = sorted(self.cp_found + [(ip, info)])
                     self.fill_backup_combos()
@@ -6814,10 +6961,13 @@ class LiveRankingApp:
             self.set_conn_status(f"CP {self.cp.host} getrennt, verbinde neu ...", RED)
         elif kind == "eth_disconnected":
             self.cp = None
-            self.stop_backup()
             self.stop_eth_tick()
             self.set_connected(False, "nicht verbunden")
             self.log(f"Verbindung zum CP {payload} getrennt", tag="warn")
+            if self.cp_b is not None:
+                self.log("Reserve-Gerät bleibt verbunden und liefert jetzt alle Zeiten", tag="warn")
+                self.start_eth_tick()
+                self.refresh_conn_head()
             self.apply_show_settings()
 
     def handle_backup_event(self, kind, payload):
@@ -6840,13 +6990,17 @@ class LiveRankingApp:
             self.refresh_conn_head()
 
     def refresh_conn_head(self):
+        extra = ""
+        if self.cp_b is not None or getattr(self, "_bk_job", None) is not None:
+            off = getattr(self, "b_offset", None)
+            extra = f"Reserve {getattr(self, 'backup_state', '')}" + (f", Versatz {off:+.2f} s"
+                                                                       if off is not None else "")
         if self.cp is not None and self.cp.connected:
-            extra = ""
-            if self.cp_b is not None:
-                off = getattr(self, "b_offset", None)
-                extra = f" · Reserve {getattr(self, 'backup_state', '')}" + (f", Versatz {off:+.2f} s"
-                                                                             if off is not None else "")
-            self.set_conn_status(f"{self.dev_name()} {self.cp.host} verbunden{extra}", GREEN_TEXT)
+            self.set_conn_status(f"{self.dev_name()} {self.cp.host} verbunden" + (f" · {extra}" if extra else ""),
+                                 GREEN_TEXT)
+        elif self.cp is None and extra:
+            self.set_conn_status(f"Hauptgerät getrennt · {extra}", GOLD)
+        self.refresh_bk_button()
 
     def selected_backup(self):
         """Ziel des Reserve-Geraets: '' (keines), IP oder 'usb:COMx'."""
@@ -7089,8 +7243,6 @@ class LiveRankingApp:
         self.cp = CPClient(ip, port or cp_ports()[1], self.q)
         self.cp.checksum = device == "tm550"
         self.cp.start()
-        if port is None:
-            self.connect_backup()
         self.set_conn_status(f"verbinde mit CP {ip} ...", GOLD)
         self.btn_connect.configure(text="Trennen", bg=DARK_RED)
 
@@ -7124,6 +7276,8 @@ class LiveRankingApp:
                       on_fail=self._on_next_unread)
         self.cp_query("#RP 001", ("param", "001"), on_ok=self._on_prec)
         self.cp_query("#!T", "sync")
+        if not self.cp_recs and self.last_start_nr is None:  # noch kein Start: Ueberschrift fuer den ersten Verein
+            self.root.after(2500, lambda: self.print_next_club(None))
         self.start_eth_tick()
         self.apply_show_settings()
 
@@ -8236,6 +8390,12 @@ class LiveRankingApp:
     def eth_tick(self):
         self._eth_tick_job = None
         if self.cp is None:
+            if self.cp_b is not None:  # nur Reserve verbunden
+                self.backup_tick()
+                if self.course:
+                    self.update_eth_live()
+                    self.update_course_panel()
+                self._eth_tick_job = self.root.after(250, self.eth_tick)
             return
         self.cp_timeout_check()
         now = time.time()

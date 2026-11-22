@@ -105,6 +105,7 @@ Das Skript fragt jede Gruppe mit `j`/`n` ab. Alle mit `j` beantworten.
 | E2 | Startliste wieder löschen | mit `j` bestätigen |
 | G Lauf öffnen | Lauf schliessen, nur Startliste löschen und abschliessen (`#SLR`, `#SLC`), sonst `#WC 002` mit Laufnummer | Ist danach ein Lauf offen, welche Nummer? |
 | H App-Befehle | nächste Startnummer 150 vorladen und zurücklesen, Zeit nachfragen (`#RT`) | gelbe Aufforderung: 1 Start- und 1 Ziel-Impuls. Startet Nr 150? |
+| I Präzision | Präzision lesen, nacheinander 1, 2 und 3 schreiben, zurücklesen, danach alter Wert | nach jeder gelben Aufforderung 1 Impuls auslösen. Ändert sich die Anzahl Stellen am Display und auf dem Papier? |
 | F Format | 10 s zuhören | 1 Start- und 1 Ziel-Impuls auslösen |
 
 Einzelne Gruppen: `-Nur G` oder `-Nur A,G` anhängen.
@@ -116,6 +117,10 @@ Am Ende steht die Zusammenfassung, z.B. `#WC 002  AK C`. Die Logdatei heisst
 
 Am CP die Zeitmessart umstellen und den Test mit `-Nur A,D,H,F` wiederholen. Dabei notieren, was am
 Display und auf dem Papier erscheint. Danach wieder auf NET TIME und einen Lauf öffnen.
+
+### Präzision
+
+`-Nur I` am CP 545 und am TM550. Prüft, ob die App die Präzision am Gerät einstellen kann.
 
 ## 7. Test TM550 über Ethernet
 

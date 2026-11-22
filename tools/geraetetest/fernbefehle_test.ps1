@@ -10,7 +10,7 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
-#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H F)
+#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F)
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
     [string]$Ip = "",
@@ -217,6 +217,24 @@ if (Ask "H  App-Befehle: #RP 026 01, #WP 026 01 0150, #RP 026 01, dann 2 Impulse
             [void](Send-Cmd ("#RT " + $Matches[1].PadLeft(4, "0") + " " + $Matches[2].PadLeft(2, "0")))
         }
     } else { Log "Keine Impulse erhalten" }
+}
+
+# I: Praezision lesen und schreiben (#RP/#WP 001), danach urspruenglichen Wert zurueck
+if (Ask "I  Praezision: #RP 001, #WP 001 mit 1, 2, 3 (je 1 Impuls ausloesen), dann zurueck auf den alten Wert") {
+    $orig = ""
+    foreach ($l in (Send-Cmd "#RP 001")) { if ($l -match "^&P\s*001\s+(\S+)") { $orig = $Matches[1] } }
+    $script:summary += ("{0,-22} {1}" -f "Praezision vorher", $(if ($orig) { $orig } else { "nicht lesbar" }))
+    foreach ($v in @("1", "2", "3")) {
+        [void](Send-Cmd "#WP 001 $v")
+        $now = ""
+        foreach ($l in (Send-Cmd "#RP 001")) { if ($l -match "^&P\s*001\s+(\S+)") { $now = $Matches[1] } }
+        Write-Host ""
+        Write-Host "Praezision $v gesendet: jetzt innerhalb 10 s 1 Impuls ausloesen." -ForegroundColor Yellow
+        $imp = Collect 10000 10000
+        $line = $imp | Where-Object { $_ -match "^T[N+=] " } | Select-Object -First 1
+        $script:summary += ("{0,-22} {1}" -f "Praezision $v", ("gelesen " + $(if ($now) { $now } else { "-" }) + ", Zeile: " + $(if ($line) { (Visible $line) } else { "kein Impuls" })))
+    }
+    if ($orig) { [void](Send-Cmd "#WP 001 $orig"); [void](Send-Cmd "#RP 001") }
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen
