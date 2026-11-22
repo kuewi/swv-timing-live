@@ -73,7 +73,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.13.0"
+APP_VERSION = "1.13.1"
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -2219,12 +2219,17 @@ HEARTBEAT_S = 15
 HEARTBEAT_LOST_S = 30
 SERIAL_SILENCE_S = 5        # RS232: so lange ohne Laufzeit waehrend eines Laufs = Abbruch
 
-_RE_TIME = re.compile(r"^([TA][N\-\*\+=C]|TI)\s+(\d*)\s+(\d+)\s+(M?)(\d+)\s+(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)\s*(\d*)")
+# Zeitfeld: HH:MM:SS.FFFFF, nach Synchronisation auf 00:00 auch M:SS.FFFFF oder S.FFFFF (ohne fuehrende Teile)
+_RE_TIME = re.compile(r"^([TA][N\-\*\+=C]|TI)\s+(\d*)\s+(\d+)\s+(M?)(\d+)\s+"
+                      r"(?:(?P<h>\d{1,2}):(?P<m>\d{2}):(?P<s>\d{2}(?:\.\d+)?)|(?:(?P<m2>\d{1,2}):)?(?P<s2>\d{1,2}\.\d+))"
+                      r"(?:\s+(?P<day>-?\d+))?(?=\s|$)")
+_RE_NOTE = re.compile(r"^(IR|DR|VE)\s")
+NOTE_LABEL = {"IR": "Zwischenzeit", "DR": "Differenz Parallelstart", "VE": "Geschwindigkeit"}
 _RE_DS = re.compile(r"^DS\s+(\d+)")
 _RE_DE = re.compile(r"^DE\s+(\d+)")
 RAW_DIR = "rohdaten"
 EPOCH_2000 = datetime.date(2000, 1, 1)
-_RE_RR = re.compile(r"^(RR|GR)\s+(\d+)\s+(\d+)\s+([\d:.]+)\s*$")
+_RE_RR = re.compile(r"^(RR|GR)\s+(\d+)\s+(\d+)\s+([\d:.]+)(?:\s+-?\d+)?\s*$")  # skiFFS haengt einen Tag an
 _RE_OP = re.compile(r"^OP\s+(\d+)(?:\s+T?\s*\d+(?=\s|$))?\s*(.*)$")  # CP: «OP 01  00  NET TIME», TM550: «OP 02 TIMING»
 _RE_CL = re.compile(r"^CL\s+(\d+)")
 _RE_AK = re.compile(r"^AK\s*([CFR])")
@@ -2248,9 +2253,15 @@ def parse_thcom(raw):
         return None
     m = _RE_TIME.match(t)
     if m:
-        h, mi, sec = int(m.group(6)), int(m.group(7)), float(m.group(8))
+        if m.group("h") is not None:
+            h, mi, sec = int(m.group("h")), int(m.group("m")), float(m.group("s"))
+        else:
+            h, mi, sec = 0, int(m.group("m2") or 0), float(m.group("s2"))
         tod = h * 3600 + mi * 60 + sec
-        day = int(m.group(9)) if m.group(9) else None
+        day = int(m.group("day")) if m.group("day") else None
+        if day is not None and day < 0:
+            # Status statt Zeit (z.B. skiFFS: 00:00:00.00000 -0003 = DNF), kein Impuls
+            return {"kind": "note", "label": f"Statuszeile (Code {day})", "text": t}
         if day is None:  # ohne Tagesangabe: heute
             day = (datetime.date.today() - EPOCH_2000).days
         return {"kind": "time", "type": m.group(1), "nr": int(m.group(2) or 0), "seq": int(m.group(3)),
@@ -2271,6 +2282,9 @@ def parse_thcom(raw):
     m = _RE_AK.match(t)
     if m:
         return {"kind": "ack", "code": m.group(1)}
+    m = _RE_NOTE.match(t)
+    if m:
+        return {"kind": "note", "label": NOTE_LABEL[m.group(1)], "text": t}
     m = _RE_PAR.match(t)
     if m:
         return {"kind": "param", "id": m.group(1), "values": m.group(2).split()}
@@ -7390,6 +7404,8 @@ class LiveRankingApp:
                     self.cp_inflight["deadline"] = max(self.cp_inflight["deadline"], now + CMD_TIMEOUT)
                 return
         quiet = info["kind"] in ("ack", "param", "serial", "sync")
+        if info["kind"] == "note":
+            text = f"{text}  ({info['label']}, wird nicht ausgewertet)"
         self.log(("CP " if dev == "A" else "CP Reserve ") + text, focus=False, tag=None if not quiet else "test")
         if quiet:
             if dev == "A":

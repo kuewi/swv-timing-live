@@ -1,5 +1,10 @@
 # Änderungen
 
+## v1.13.1 (22.11.2026)
+- Zeitzeilen ohne Stunden oder Minuten werden erkannt (Gerät auf 00:00 synchronisiert, z.B. `TN         1  1        4.30700   365`), bisher verworfen
+- Resultatzeilen (RR/GR) mit angehängtem Feld werden gelesen. IR (Zwischenzeit), DR (Differenz Parallelstart) und VE (Geschwindigkeit) erscheinen im Log mit Namen. Zeitzeilen mit negativem Statuscode (skiFFS) zählen nicht als Impuls
+- `tools/geraetetest/`: PowerShell-Skripte für Gerätetests, neu `fernbefehle_test.ps1` (Lauf öffnen/schliessen, Resultate auslesen, Startliste im Gerät, Druckzeile)
+
 ## v1.13.0 (22.11.2026)
 - Verbindung: Hauptgerät und Reserve-Gerät je mit eigener Verbindungsart. Hauptgerät RS232, Ethernet oder USB, Reserve keines, Ethernet oder USB. Damit CP 545 über USB und TM550 über Ethernet, umgekehrt oder beide über Ethernet. Netzwerkkarte erscheint, sobald eines der Geräte Ethernet nutzt, und wird auch für eine Reserve über Ethernet vorbereitet. IP der Reserve aus der Suche oder eingetippt, die App fragt das Gerät ab (CP 545 oder TM550). Reserve lässt sich während des Betriebs wechseln. Die Suche wählt als Hauptgerät nie die Adresse der Reserve
 - Üben: CP 545 und TM550 nach Fotos nachgebaut. CP 545 hochkant mit Papierstreifen, Display, Tasten E1 bis E4, Zahlenblock 7-8-9 oben, * 0 R, ⇧ F C links, ▲ ↵ ▼ rechts, grüne Kanaltasten 1 bis 4 mit roter LED. Rückseite mit Buchsen 4 3 2 1, POWER, USB, RS 232, ETHERNET. TM550 in Schildform mit roten Tasten E1 bis E4, Farbdisplay (Uhrzeit, Eingänge, letzte Zeiten, Statuszeile), ON, SHIFT, Pfeilkreuz mit OK. Rückseite mit RS 232, ETHERNET, Buchsen 1 bis 4, USB-C und DC. Klick auf die Ethernet-Buchse zieht bzw. steckt das Kabel

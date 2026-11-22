@@ -1,6 +1,6 @@
 # SWV Timing Live (SWV Live-Ranking)
 
-![Oberfläche v1.13.0](docs/screenshots/ui_v1.13.0.png)
+![Oberfläche v1.13.1](docs/screenshots/ui_v1.13.1.png)
 
 
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des
@@ -28,6 +28,12 @@ das Gerät an der Seriennummer. Einstellung am TM550: Modus TIMING, Start E1, Zi
 Lauf offen, kurze Sperrzeit am Ziel. Die Startnummern vergibt die App aus der Startreihenfolge.
 Verlorene Zeilen holt sie per Download des offenen Laufs; der TM550 puffert bei Unterbruch nicht.
 
+### Gerätetests
+
+`tools/geraetetest/` enthält PowerShell-Skripte, um ein Gerät ohne die App zu prüfen: `tm550_test.ps1`
+(Netz, Ports, Befehle) und `fernbefehle_test.ps1` (Fernbefehle an CP 545 und TM550, jede Gruppe mit
+Rückfrage, nur ausserhalb eines Rennens).
+
 ### Hauptgerät und Reserve-Gerät
 
 Beide Geräte haben ihre eigene Verbindung: Hauptgerät RS232, Ethernet oder USB, Reserve-Gerät keines,
@@ -39,8 +45,8 @@ brauchen dieselben Start- und Zielimpulse (Verteilung elektrisch mit ITS/TAG Heu
 
 ### Üben
 
-![Simulator CP 545 v1.13.0](docs/screenshots/sim_cp545_v1.13.0.png)
-![Simulator TM550 v1.13.0](docs/screenshots/sim_tm550_v1.13.0.png)
+![Simulator CP 545 v1.13.1](docs/screenshots/sim_cp545_v1.13.1.png)
+![Simulator TM550 v1.13.1](docs/screenshots/sim_tm550_v1.13.1.png)
 
 Unter Simulator: «Üben: CP 545 mit Tastatur» bzw. «Üben: TM550» öffnet ein nachgebautes Gerät
 (Vorderseite mit Display und Tastenfeld nach Foto, Rückseite mit Bananenbuchsen und Anschlüssen) und
