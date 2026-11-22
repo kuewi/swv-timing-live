@@ -32,7 +32,7 @@ Verlorene Zeilen holt sie per Download des offenen Laufs; der TM550 puffert bei 
 
 `tools/geraetetest/` enthält PowerShell-Skripte, um ein Gerät ohne die App zu prüfen: `tm550_test.ps1`
 (Netz, Ports, Befehle) und `fernbefehle_test.ps1` (Fernbefehle an CP 545 und TM550, jede Gruppe mit
-Rückfrage, nur ausserhalb eines Rennens).
+Rückfrage, nur ausserhalb eines Rennens). Anleitung Schritt für Schritt: [docs/geraetetest.md](docs/geraetetest.md).
 
 ### Hauptgerät und Reserve-Gerät
 

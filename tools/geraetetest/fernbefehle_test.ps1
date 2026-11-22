@@ -8,7 +8,7 @@
 # Start (PowerShell im Ordner dieses Skripts):
 #   CP 545 Ethernet:  powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Ip 192.168.1.50
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
-#   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.20
+#   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
@@ -19,7 +19,7 @@ param(
     [switch]$Alles          # alle Gruppen ohne Rueckfrage
 )
 
-if (-not $Ip -and -not $Com) { $Ip = $(if ($Device -eq "tm550") { "192.168.1.20" } else { "192.168.1.50" }) }
+if (-not $Ip -and -not $Com) { $Ip = $(if ($Device -eq "tm550") { "192.168.1.51" } else { "192.168.1.50" }) }
 if ($Port -eq 0) { $Port = $(if ($Device -eq "tm550") { 7000 } else { 13500 }) }
 $UseCs = ($Device -eq "tm550")          # TM550 antwortet nur auf Befehle mit Pruefsumme
 $Wait = $(if ($Device -eq "tm550") { 3000 } else { 1500 })   # ms ohne neue Daten bis "fertig"

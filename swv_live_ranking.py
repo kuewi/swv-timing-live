@@ -4409,7 +4409,7 @@ class LiveRankingApp:
                                              "Ethernet am CP einschalten (F › Einstellungen › Ethernet). "
                                              "Ohne Adminrechte im Betrieb: in Windows bei der Netzwerkkarte "
                                              f"unter IPv4 › Alternative Konfiguration {PC_IP} / {PC_MASK} "
-                                             "eintragen. TM550 (ITS/Vola): am Gerät IP 192.168.1.20 einstellen, "
+                                             "eintragen. TM550 (ITS/Vola): am Gerät IP 192.168.1.51 einstellen, "
                                              "Modus TIMING, Start E1, Ziel E4, NO IDENTIFICATION, Lauf offen.",
                                         fg=MUTED, wraplength=wrap, justify="left")
         self.lbl_eth_hint.grid(row=7, column=0, columnspan=2, sticky="w", pady=(0, 6))
