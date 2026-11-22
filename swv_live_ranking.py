@@ -233,8 +233,8 @@ DEFAULT_SETTINGS = {
     "sidebar_pinned": True,
     "cats_auto": True,
     "timing": {"prell_start_ms": 300, "prell_finish_ms": 300, "min_run_s": 0, "lock_start": False,
-               "lock_finish": False},
-    "conn": {"mode": "rs232", "cp_ip": "", "cp_ip_b": "", "adapter": "",
+               "lock_finish": False, "ch_start": 1, "ch_finish": 4},
+    "conn": {"mode": "rs232", "device": "cp545", "cp_ip": "", "cp_ip_b": "", "adapter": "",
              "usb_port": "", "usb_baud": 9600, "usb_ack": False},
     "net_restore": {"pending": False, "adapter": ""},
     "updates": {"check": True, "last_check": 0, "declined": "", "declined_at": 0},
@@ -2205,7 +2205,7 @@ _RE_DE = re.compile(r"^DE\s+(\d+)")
 RAW_DIR = "rohdaten"
 EPOCH_2000 = datetime.date(2000, 1, 1)
 _RE_RR = re.compile(r"^(RR|GR)\s+(\d+)\s+(\d+)\s+([\d:.]+)\s*$")
-_RE_OP = re.compile(r"^OP\s+(\d+)\s+(T?)\s*(\d+)\s*(.*)$")
+_RE_OP = re.compile(r"^OP\s+(\d+)(?:\s+T?\s*\d+(?=\s|$))?\s*(.*)$")  # CP: «OP 01  00  NET TIME», TM550: «OP 02 TIMING»
 _RE_CL = re.compile(r"^CL\s+(\d+)")
 _RE_AK = re.compile(r"^AK\s*([CFR])")
 _RE_PAR = re.compile(r"^&P\s*(\d{3})\s*(.*)$")
@@ -2256,7 +2256,7 @@ def parse_thcom(raw):
         return {"kind": "param", "id": m.group(1), "values": m.group(2).split()}
     m = _RE_OP.match(t)
     if m:
-        return {"kind": "open", "run": int(m.group(1)), "mode": m.group(4).strip()}
+        return {"kind": "open", "run": int(m.group(1)), "mode": m.group(2).strip()}
     m = _RE_CL.match(t)
     if m:
         return {"kind": "close", "run": int(m.group(1))}
@@ -2288,12 +2288,24 @@ def local_abs():
     return day * 86400 + lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec + (now % 1)
 
 
+def apply_channels(timing):
+    """Start- und Zieleingang aus den Einstellungen (Standard 1 und 4)."""
+    global CH_START, CH_FINISH
+    try:
+        a, b = int(timing.get("ch_start", 1)), int(timing.get("ch_finish", 4))
+    except (TypeError, ValueError):
+        return
+    if a in (1, 2, 3, 4) and b in (1, 2, 3, 4) and a != b:
+        CH_START, CH_FINISH = a, b
+
+
 def cp_hosts():
     """Adressen fuer die CP-Suche. SWV_CP_HOSTS (z.B. '127.0.0.1') nur fuer Tests."""
     env = os.environ.get("SWV_CP_HOSTS", "").strip()
     if env:
         return [h.strip() for h in env.split(",") if h.strip()]
-    return [f"{CP_NET}{i}" for i in range(CP_FIRST, CP_LAST + 1)]
+    # CP 545 ab .50, TM550 empfohlen .20 (Werkseinstellung ITS .101)
+    return [f"{CP_NET}{i}" for i in list(range(CP_FIRST, CP_LAST + 1)) + [20, 101]]
 
 
 def cp_ports():
@@ -2308,19 +2320,23 @@ def probe_cp(host, port, timeout=0.6):
     """Ein CP auf host? Antwort auf #SN als Text, sonst None."""
     try:
         with socket.create_connection((host, port), timeout=timeout) as sk:
-            sk.settimeout(1.2)
+            sk.settimeout(0.5)
             sk.sendall(b"#SN\r\n")
-            buf, end = b"", time.time() + 1.5
+            buf, end, cs_sent = b"", time.time() + 4.0, False
             while time.time() < end:
+                if not cs_sent and time.time() > end - 3.0:
+                    # TM550 beantwortet Befehle nur mit Pruefsumme
+                    sk.sendall(b"#SN\t" + thcom_cs16(b"#SN").encode() + b"\r\n")
+                    cs_sent = True
                 try:
                     chunk = sk.recv(512)
                 except socket.timeout:
-                    break
+                    continue
                 if not chunk:
                     break
                 buf += chunk
                 for line in buf.split(b"\n"):
-                    info = parse_thcom(line.decode("latin-1", "replace"))
+                    info = parse_thcom(split_serial_frame(line.decode("latin-1", "replace"))[0])
                     if info and info["kind"] == "serial":
                         return f"{info['type']} Nr {info['serial']}" + (f" {info['version']}" if info["version"] else "")
             return "CP (ohne Kennung)" if buf else "CP"
@@ -2362,7 +2378,10 @@ class CPClient(threading.Thread):
         self.link = "eth"
 
     def send(self, text):
-        self.out.put((text.rstrip("\r\n") + "\r\n").encode("latin-1", "replace"))
+        data = text.rstrip("\r\n").encode("latin-1", "replace")
+        if getattr(self, "checksum", False):  # TM550: Befehle nur mit Pruefsumme
+            data += b"\t" + thcom_cs16(data).encode("ascii")
+        self.out.put(data + b"\r\n")
 
     def stop(self):
         self.stop_event.set()
@@ -2485,6 +2504,11 @@ class CPSerialClient(CPClient):
                     break
                 continue
             first = False
+            try:
+                ser.dtr = True   # TM550 (FTDI) sendet nur mit DTR/RTS
+                ser.rts = True
+            except Exception:
+                pass
             self.host = dev
             if self.identity is None:
                 self.identity = port_identity(dev)
@@ -2542,8 +2566,13 @@ class SimCP:
     """Verhaelt sich wie der CP 545 in den Tests von Stefan: #WP 026 setzt die naechste Start- bzw.
     Zielnummer, #WC 013 wird mit AK R abgelehnt, #RT und #DL liefern gespeicherte Zeiten."""
 
-    def __init__(self, port=0, rs232=False):
-        self.rs232 = rs232        # Rahmen wie am RS232/USB-Anschluss: [Daten] TAB CS16
+    def __init__(self, port=0, rs232=False, device="cp545", timing=True, bounce=False):
+        # device «tm550»: Verhalten wie Stefans TM550 (FW 1.18): Befehle nur mit Pruefsumme, Zeilen immer mit
+        # Pruefsumme, keine Nummern, #WP/#RP 026 -> AK F, #RT -> «T?» + AK C + AK C, #DL nur mit offenem Lauf
+        # (timing=True), kein Puffer, gesperrte Zielkontakte als TC (bounce=True)
+        self.device, self.timing, self.bounce = device, timing, bounce
+        self.blocked = []         # TM550: gesperrte Kontakte (Eingang, Seq, Zeit)
+        self.rs232 = rs232 or device == "tm550"   # Rahmen [Daten] TAB CS16
         self.pending = []         # wie der CP: ohne Verbindung puffern, beim Verbinden zuerst senden
         self.lock = threading.RLock()
         self.clients = []
@@ -2566,11 +2595,12 @@ class SimCP:
     def now_abs():
         return local_abs()
 
-    @staticmethod
-    def fmt(typ, nr, seq, ch, abs_t):
+    def fmt(self, typ, nr, seq, ch, abs_t):
         day, tod = divmod(abs_t, 86400)
         h, r = divmod(tod, 3600)
         m, sec = divmod(r, 60)
+        if self.device == "tm550":
+            return f"{typ} {'':4} {seq:4d} {ch:02d} {int(h):2d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
         return f"{typ} {nr:4d} {seq:4d} M{ch} {int(h):02d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
 
     def _accept(self):
@@ -2591,8 +2621,9 @@ class SimCP:
             self.drop_next = False
             return  # simuliert eine verlorene Zeile
         if c is None and not self.clients:
-            with self.lock:
-                self.pending.append(line)
+            if self.device != "tm550":   # der TM550 puffert nicht
+                with self.lock:
+                    self.pending.append(line)
             return
         data = line.encode("latin-1")
         if self.rs232:
@@ -2617,6 +2648,8 @@ class SimCP:
                 line, buf = buf.split(b"\n", 1)
                 text = line.decode("latin-1")
                 if self.rs232:
+                    if self.device == "tm550" and "\t" not in text:
+                        continue  # TM550: Befehle ohne Pruefsumme bleiben unbeantwortet
                     text, ok = split_serial_frame(text)
                     if not ok:
                         self.send("AK F", c)
@@ -2632,6 +2665,8 @@ class SimCP:
         p = t.split()
         if not p:
             return
+        if self.device == "tm550":
+            return self._cmd_tm550(t, p, c)
         if t == "#SN":
             self.send("SN 00000 CP545 SIMULATOR", c)
         elif t == "#!T":
@@ -2665,7 +2700,41 @@ class SimCP:
             return
         self.send("AK C", c)
 
+    def _cmd_tm550(self, t, p, c):
+        run = self.run if self.timing else 0
+        if t == "#SN":
+            self.send("SN 00059 TM550 1.18", c)
+        elif t == "#ID":
+            self.send("ID 00059", c)
+        elif p[:2] == ["#RP", "003"]:
+            self.send(f"&P 003 {run:02d} {self.run + 1:02d}", c)
+        elif p[:2] in (["#RP", "026"], ["#WP", "026"], ["#RP", "001"]):
+            self.send("AK F", c)
+            return
+        elif p[0] == "#RT":
+            day = int(self.now_abs() // 86400)
+            self.send(f"T?           00  0:00:00.00000 {day:5d}", c)
+            self.send("AK C", c)
+        elif p[0] == "#DL":
+            self.send(f"DS {run:02d}", c)
+            if run:
+                rows = [(r[2], self.fmt("A" + r[0][1], 0, seq, ch, r[2])) for (ch, seq), r in self.recs.items()]
+                rows += [(tb, self.fmt("AC", 0, seq, ch, tb)) for ch, seq, tb in self.blocked]
+                for _t, line in sorted(rows):
+                    self.send(line, c)
+            self.send(f"DE {run:02d}", c)
+        elif not t.startswith("#"):
+            return
+        self.send("AK C", c)
+
     def start(self):
+        if self.device == "tm550":
+            with self.lock:
+                self.seq[CH_START] += 1
+                t = self.now_abs()
+                self.recs[(CH_START, self.seq[CH_START])] = ["TN", 0, t]
+                self.send(self.fmt("TN", 0, self.seq[CH_START], CH_START, t))
+                return 0
         with self.lock:
             nr = self.next[CH_START]
             self.next[CH_START] = nr + 1
@@ -2677,6 +2746,17 @@ class SimCP:
             return nr
 
     def finish(self):
+        if self.device == "tm550":
+            with self.lock:
+                t = self.now_abs()
+                self.seq[CH_FINISH] += 1
+                seq = self.seq[CH_FINISH]
+                self.recs[(CH_FINISH, seq)] = ["TN", 0, t]
+                self.send(self.fmt("TN", 0, seq, CH_FINISH, t))
+                if self.bounce:  # zweiter Kontakt in der Sperrzeit
+                    self.blocked.append((CH_FINISH, seq, t + 0.11))
+                    self.send(self.fmt("TC", 0, seq, CH_FINISH, t + 0.11))
+                return None
         with self.lock:
             t = self.now_abs()
             self.seq[CH_FINISH] += 1
@@ -3035,6 +3115,7 @@ class LiveRankingApp:
         self.install_error_hooks()
 
         self.settings = self.load_settings()
+        apply_channels(self.settings["timing"])
         apply_palette(self.settings["theme"])
         messagebox.app = self
         self.dialog_hook = None   # Tests: Antworten fuer Meldungsfenster
@@ -3106,6 +3187,7 @@ class LiveRankingApp:
         self.status = {}            # nr -> "DNS" | "DNF" | "DSQ"
         self.cp_lastseq = {}        # (geraet, lauf, eingang) -> letzte Seq
         self.cp_download = None     # Zeiten waehrend #DL
+        self.reset_caps("cp545")
         self.cp_backlog = None      # alte Zeilen aus dem Puffer des CP direkt nach dem Verbinden
         self.cp_backlog_t = 0.0
         self.cp_backlog_again = False
@@ -4175,7 +4257,8 @@ class LiveRankingApp:
         self._button(tools_u, "Lauf vom CP laden", self.cp_download_run).grid(row=0, column=0, sticky="ew",
                                                                                padx=(0, 3))
         self._button(tools_u, "Simulator", self.open_simulator).grid(row=0, column=1, sticky="ew", padx=(3, 0))
-        self._label(us, "CP per USB-Kabel direkt am PC. Die App steuert ihn wie über Ethernet. Erscheint "
+        self._label(us, "CP 545 oder TM550 per USB-Kabel direkt am PC (TM550: «USB Serial Port»). Die App "
+                        "steuert ihn wie über Ethernet und erkennt das Gerät selbst. Erscheint "
                         "beim Einstecken kein neuer COM-Port, erkennt Windows den CP nicht (Treiber prüfen). "
                         "«ACK» nur einschalten, wenn am CP «9600bds Flow Ctrl» gewählt ist.",
                     fg=MUTED, wraplength=wrap, justify="left").grid(row=6, column=0, columnspan=2, sticky="w",
@@ -4195,7 +4278,8 @@ class LiveRankingApp:
                                              "Ethernet am CP einschalten (F › Einstellungen › Ethernet). "
                                              "Ohne Adminrechte im Betrieb: in Windows bei der Netzwerkkarte "
                                              f"unter IPv4 › Alternative Konfiguration {PC_IP} / {PC_MASK} "
-                                             "eintragen.",
+                                             "eintragen. TM550 (ITS/Vola): am Gerät IP 192.168.1.20 einstellen, "
+                                             "Modus TIMING, Start E1, Ziel E4, NO IDENTIFICATION, Lauf offen.",
                                         fg=MUTED, wraplength=wrap, justify="left")
         self.lbl_eth_hint.grid(row=7, column=0, columnspan=2, sticky="w", pady=(0, 6))
         self._label(eth, "Reserve-CP (optional)").grid(row=4, column=0, columnspan=2, sticky="w")
@@ -4220,7 +4304,8 @@ class LiveRankingApp:
         ts = self.settings["timing"]
         self.timing_entries = {}
         rows = (("prell_start_ms", "Prellzeit Start (ms)"), ("prell_finish_ms", "Prellzeit Ziel (ms)"),
-                ("min_run_s", "Mindestfahrzeit (s), 0 = aus"))
+                ("min_run_s", "Mindestfahrzeit (s), 0 = aus"), ("ch_start", "Eingang Start (1-4)"),
+                ("ch_finish", "Eingang Ziel (1-4)"))
         for i, (key, label) in enumerate(rows):
             self._label(b, label).grid(row=i, column=0, sticky="w", pady=2)
             e = self._entry(b, width=7)
@@ -4230,7 +4315,8 @@ class LiveRankingApp:
             e.bind("<Return>", lambda ev: self.save_timing())
             self.timing_entries[key] = e
         self.timing_switches = {}
-        for i, (key, label) in enumerate((("lock_start", "Start sperren"), ("lock_finish", "Ziel sperren")), start=3):
+        for i, (key, label) in enumerate((("lock_start", "Start sperren"), ("lock_finish", "Ziel sperren")),
+                                         start=len(rows)):
             self._label(b, label).grid(row=i, column=0, sticky="w", pady=(int(5 * self.ui_scale), 0))
             sw = Switch(b, command=lambda k=key: self.toggle_lock(k), scale=self.ui_scale, on=ts[key])
             sw.grid(row=i, column=1, sticky="e", pady=(int(5 * self.ui_scale), 0))
@@ -4449,7 +4535,12 @@ class LiveRankingApp:
         for key, e in self.timing_entries.items():
             try:
                 val = float(e.get().replace(",", "."))
-                if val < 0 or val > (100000 if key.endswith("ms") else 3600):
+                if key.startswith("ch_"):
+                    other = ts["ch_finish" if key == "ch_start" else "ch_start"]
+                    if val not in (1, 2, 3, 4) or val == other:
+                        raise ValueError
+                    val = int(val)
+                elif val < 0 or val > (100000 if key.endswith("ms") else 3600):
                     raise ValueError
             except ValueError:
                 e.delete(0, "end")
@@ -4459,6 +4550,7 @@ class LiveRankingApp:
             if val != ts[key]:
                 ts[key] = val
                 self.log(f"Zeitmessung: {key.replace('_', ' ')} = {val:g}", tag="ok")
+        apply_channels(ts)
         self.save_settings()
 
     def toggle_lock(self, key):
@@ -6416,12 +6508,54 @@ class LiveRankingApp:
             self.cp_b.stop()
             self.cp_b = None
 
+    # ---------------- Geraete: CP 545 oder TM550 ---------------- #
+    DEVICE_LABEL = {"cp545": "CP 545", "tm550": "TM550"}
+
+    def reset_caps(self, device):
+        """Faehigkeiten des Geraets. TM550 (ITS/Vola, getestet FW 1.18): keine vorgeladene Startnummer,
+        kein #RT, Download (#DL) nur bei offenem Lauf (Modus TIMING), Nummern vom Geraet wertlos,
+        Befehle nur mit Pruefsumme, Antworten bis 2 s, puffert nicht bei Unterbruch."""
+        tm = device == "tm550"
+        self.cp_device = device
+        self.cp_caps = {"preload": not tm, "rt": not tm, "dl": True, "ignore_nr": tm, "buffer": not tm,
+                        "timeout": 4.0 if tm else CMD_TIMEOUT}
+
+    def dev_name(self):
+        return self.DEVICE_LABEL.get(self.cp_device, "CP")
+
+    def device_for_ip(self, ip):
+        info = next((i for h, i in getattr(self, "cp_found", []) if h == ip), "")
+        if "TM550" in (info or ""):
+            return "tm550"
+        if info:
+            return "cp545"
+        return self.settings["conn"].get("device") if self.settings["conn"].get("cp_ip") == ip else None
+
+    def set_device(self, device, why=""):
+        if device == self.cp_device:
+            return
+        self.reset_caps(device)
+        self.settings["conn"]["device"] = device
+        self.save_settings()
+        if device == "tm550":
+            self.log("Gerät: TM550 erkannt. Die App vergibt die Startnummern selbst; verlorene Zeiten holt sie per "
+                     "Download des Laufs (nur im Modus TIMING mit offenem Lauf). Empfohlen am TM550: TIMING, "
+                     "Start E1, Ziel E4, NO IDENTIFICATION, Sperrzeit E4 kurz." + (f" ({why})" if why else ""),
+                     tag="ok")
+        DIAG.info(f"Gerät {device}: {self.cp_caps}")
+
     def connect_cp(self, ip, port=None):
         self.settings["conn"]["cp_ip"] = ip
         self.save_settings()
         self.fill_eth_combos()
         self.cp_reconnected = False
+        device = self.device_for_ip(ip) if port is None else None
+        if device:
+            self.reset_caps(device)
+        if port is None and device == "tm550":
+            port = CP_SCAN_PORT  # TM550: Befehle und Zeiten ueber dieselbe Verbindung auf Port 7000
         self.cp = CPClient(ip, port or cp_ports()[1], self.q)
+        self.cp.checksum = device == "tm550"
         self.cp.start()
         if port is None:
             self.settings["conn"]["cp_ip_b"] = self.selected_backup()
@@ -6449,7 +6583,7 @@ class LiveRankingApp:
         # Der CP schickt zuerst alles, was er seit dem letzten Abholen gepuffert hat, erst dann die Antwort
         # auf #SN. Diese Zeilen werden gesammelt und nicht als neue Impulse behandelt.
         self.cp_backlog, self.cp_backlog_t, self.cp_backlog_again = [], time.time(), take_buffer
-        self.cp_query("#SN", "serial")
+        self.cp_query("#SN", "serial", on_fail=self._sn_retry)
         self.cp_query("#RP 003", ("param", "003"), on_ok=self._on_run)
         self.cp_query(f"#RP 026 {CH_START:02d}", ("param", "026", CH_START), on_ok=self._on_next_read,
                       on_fail=self._on_next_unread)
@@ -6457,6 +6591,16 @@ class LiveRankingApp:
         self.cp_query("#!T", "sync")
         self.start_eth_tick()
         self.apply_show_settings()
+
+    def _sn_retry(self, reason):
+        """Keine Antwort auf #SN ohne Pruefsumme: TM550 versteht Befehle nur mit Pruefsumme."""
+        if self.cp is None or getattr(self.cp, "checksum", True) or reason != "keine Antwort":
+            return
+        self.cp.checksum = True
+        DIAG.info("#SN ohne Antwort: Befehle ab jetzt mit Prüfsumme")
+        self.cp_cmds.insert(0, {"text": "#SN", "expect": "serial", "on_ok": None,
+                                "on_fail": lambda r: setattr(self.cp, "checksum", False) if self.cp else None,
+                                "label": "#SN", "tries": 1})
 
     def _on_prec(self, info):
         try:
@@ -6473,7 +6617,14 @@ class LiveRankingApp:
             self.cp_run = run
             self.log(f"CP: Lauf {run} offen")
         elif not run:
-            self.log("CP: kein Lauf offen. Am CP einen Lauf öffnen (NET TIME).", tag="warn")
+            self.cp_run = 0
+            if self.cp_device == "tm550":
+                if not getattr(self, "_tm_norun_told", False):
+                    self._tm_norun_told = True
+                    self.log("TM550: kein Lauf offen. Zeiten kommen trotzdem, verlorene Zeiten lassen sich aber nur "
+                             "mit offenem Lauf (Modus TIMING) nachladen.", tag="warn")
+            else:
+                self.log("CP: kein Lauf offen. Am CP einen Lauf öffnen (NET TIME).", tag="warn")
 
     def _on_next_unread(self, reason):
         if reason == "keine Antwort" and self.cp_readback:
@@ -6507,7 +6658,10 @@ class LiveRankingApp:
             self.root.after(int((self.cp_hold_until - time.time()) * 1000) + 5, self.cp_pump)
             return
         cmd = self.cp_cmds.pop(0)
-        cmd["deadline"] = time.time() + CMD_TIMEOUT
+        wait = self.cp_caps["timeout"]
+        if cmd["expect"] == "serial":
+            wait = max(wait, 8.0)  # erste Antwort nach dem Verbinden: TM550 braucht bis 6 s
+        cmd["deadline"] = time.time() + wait
         self.cp_inflight = cmd
         DIAG.debug(f"CP A> {cmd['text']}")
         self._diag_tx = (time.strftime("%H:%M:%S"), cmd["text"])
@@ -6516,8 +6670,9 @@ class LiveRankingApp:
 
     def cp_resolve(self, ok, info=None, reason=""):
         cmd, self.cp_inflight = self.cp_inflight, None
-        if cmd["expect"] != "ack":
-            self.cp_hold_until = time.time() + 0.3  # nachfolgendes AK der Abfrage abwarten
+        if cmd["expect"] != "ack" or self.cp_device == "tm550":
+            # nachfolgendes AK der Abfrage abwarten; TM550 quittiert manche Befehle doppelt (AK F + AK C)
+            self.cp_hold_until = time.time() + (0.6 if self.cp_device == "tm550" else 0.3)
         if ok and cmd["on_ok"]:
             cmd["on_ok"](info)
         elif not ok and cmd["on_fail"]:
@@ -6539,6 +6694,9 @@ class LiveRankingApp:
         if exp == "serial" and info["kind"] == "serial":
             self.cp_info = f"{info['type']} Nr {info['serial']} {info['version']}".strip()
             self.log(f"CP: {self.cp_info}", tag="ok")
+            self.set_device("tm550" if "TM550" in info["type"].upper() else "cp545", self.cp_info)
+            if self.cp_device == "tm550" and self.cp is not None:
+                self.cp.checksum = True
             self.cp_resolve(True, info)
         elif exp == "sync" and info["kind"] == "sync":
             self.add_cp_offset((datetime.date.today() - EPOCH_2000).days * 86400 + info["tod"])
@@ -6606,7 +6764,7 @@ class LiveRankingApp:
 
     def cp_sync_next(self, reason=""):
         """Naechste Startnummer aus der Startliste im CP vorladen, wenn sie von seiner Folge abweicht."""
-        if not self.eth_mode() or self.cp is None or not self.cp.connected:
+        if not self.eth_mode() or self.cp is None or not self.cp.connected or not self.cp_caps["preload"]:
             return
         nxt = self.next_starters(1)
         if not nxt:
@@ -6659,7 +6817,8 @@ class LiveRankingApp:
     def cp_sync_finish(self):
         """Den CP auf dasselbe naechste Boot einstellen wie die App (#WP 026 04), damit sein
         Papierstreifen und seine Rangliste stimmen. Die Zuordnung in der App haengt nicht davon ab."""
-        if not self.eth_mode() or self.cp is None or not self.cp.connected or not self.course:
+        if (not self.eth_mode() or self.cp is None or not self.cp.connected or not self.course
+                or not self.cp_caps["preload"]):
             return
         want = self.cp_recs[self.course[0][2]]
         if want.get("cp_done") or want["cp_nr"] <= 0:
@@ -6793,6 +6952,8 @@ class LiveRankingApp:
         DIAG.debug(f"CP {dev}< {raw.strip()}")
         if dev == "A":
             self._diag_rx = raw.strip()
+            if self.cp_inflight is not None and self.cp_download is not None:
+                self.cp_inflight["deadline"] = max(self.cp_inflight["deadline"], time.time() + self.cp_caps["timeout"])
         if info is None:
             return
         self.raw_log(dev, raw)
@@ -6946,17 +7107,35 @@ class LiveRankingApp:
         last = self.cp_lastseq.get(k)
         if last is not None and t["seq"] > last + 1:
             missing = list(range(last + 1, min(t["seq"], last + 51)))
-            self.log(f"CP: Zeiten Seq {missing[0]}-{missing[-1]} auf Eingang {t['ch']} fehlen, werden "
-                     "nachgeholt", tag="warn")
+            if not self.cp_caps["rt"]:
+                if self.cp_caps["dl"] and self.cp_run:
+                    self.log(f"{self.dev_name()}: Zeiten Seq {missing[0]}-{missing[-1]} auf Eingang {t['ch']} "
+                             "fehlen, Lauf wird nachgeladen", tag="warn")
+                    if not getattr(self, "_gap_dl_pending", False):
+                        self._gap_dl_pending = True
+                        self.root.after(1500, self._gap_download)
+                else:
+                    self.log(f"{self.dev_name()}: Zeiten Seq {missing[0]}-{missing[-1]} auf Eingang {t['ch']} "
+                             "fehlen und lassen sich ohne offenen Lauf nicht nachholen. Am Gerät ablesen und von "
+                             "Hand nachtragen.", tag="error")
+                missing = []
             for s in missing:
                 if (dev, self.cp_run, t["ch"], s) not in self.cp_recs:
                     self.cp_query(f"#RT {s:04d} {t['ch']:02d}", "ack")
         if last is None or t["seq"] > last:
             self.cp_lastseq[k] = t["seq"]
 
+    def _gap_download(self):
+        self._gap_dl_pending = False
+        if self.cp is not None and self.cp.connected and self.cp_run:
+            DIAG.info(f"Lücke: lade Lauf {self.cp_run} (#DL)")
+            self.cp_query(f"#DL {self.cp_run:02d}", "ack")
+
     def cp_probe(self):
         """Nach der letzten bekannten Zeit je Eingang fragen: findet auch eine verlorene letzte Zeile,
         auf die keine weitere Zeit folgt (Sequenzluecke sonst erst beim naechsten Impuls sichtbar)."""
+        if not self.cp_caps["rt"]:
+            return
         for ch in (CH_START, CH_FINISH):
             last = self.cp_lastseq.get(("A", self.cp_run, ch))
             if last is not None:
@@ -6966,8 +7145,12 @@ class LiveRankingApp:
         if self.cp is None or not self.cp.connected:
             messagebox.showinfo("Lauf vom CP laden", "Zuerst über Ethernet mit dem CP verbinden.")
             return
+        if self.cp_device == "tm550" and not self.cp_run:
+            messagebox.showinfo("Lauf vom Gerät laden", "Am TM550 ist kein Lauf offen. Laden geht nur im Modus TIMING "
+                                                        "mit offenem Lauf.")
+            return
         run = self.cp_run or 1
-        self.log(f"Lauf {run} wird vom CP geladen (#DL)", tag="ok")
+        self.log(f"Lauf {run} wird vom {self.dev_name()} geladen (#DL)", tag="ok")
         self.cp_query(f"#DL {run:02d}", "ack",
                       on_fail=lambda r: messagebox.showerror("Lauf vom CP laden", f"Der CP hat den Download nicht "
                                                                                  f"bestätigt ({r})."))
@@ -7001,8 +7184,16 @@ class LiveRankingApp:
         if typ.startswith("A"):
             typ = "T" + typ[1:]  # Antwort auf #RT / #DL wie eine normale Zeit behandeln
         ch, seq, cpn = t["ch"], t["seq"], t["nr"]
+        if dev == "A" and self.cp_caps["ignore_nr"]:
+            cpn = 0  # TM550: Nummern vom Geraet sind nur Zaehler, die App vergibt die Nummern
         key = (dev, self.cp_run, ch, seq)
         rec = self.cp_recs.get(key)
+        if typ == "TC" and rec is not None and abs(rec["abs"] - t["abs"]) > 0.01:
+            # TM550: weiterer Kontakt innerhalb der Sperrzeit, mit Seq der gueltigen Zeit. Kein Storno.
+            self.log(f"{self.dev_name()}: Kontakt {fmt_tod(t['abs'] % 86400)} auf Eingang {ch} in der Sperrzeit "
+                     f"verworfen (gültig bleibt {fmt_tod(rec['abs'] % 86400)})", tag="test")
+            DIAG.info(f"gesperrter Kontakt {key} {t['abs']}")
+            return
         if typ in ("TN", "T+", "T=", "TI"):
             if rec is not None and abs(rec["abs"] - t["abs"]) > 0.5 and dev == "A":
                 # gleiche Laufnummer und Zaehlnummer, andere Zeit: der CP hat den Lauf neu begonnen
@@ -7092,6 +7283,28 @@ class LiveRankingApp:
             self.log(f"Startimpuls {fmt_tod(abs_t % 86400)} ungültig (Prellzeit)", tag="warn")
             return
         if cpn <= 0:
+            nxt = self.next_starters(1) if not self.cp_caps["preload"] else []
+            if nxt:
+                # TM550: Nummer aus der Startreihenfolge der App. Kommt eine verlorene, fruehere Startzeit
+                # nachtraeglich (Download), werden die Nummern der spaeteren, noch fahrenden Starts nachgeschoben.
+                later = sorted((r["abs"], k) for k, r in self.run_recs(CH_START)
+                               if k != key and r.get("auto_nr") and r["status"] == "ok" and not r.get("done")
+                               and not r.get("dnf") and r["abs"] > abs_t)
+                if later:
+                    nums = [self.cp_recs[k]["nr"] for _a, k in later] + [nxt[0]]
+                    rec.update(nr=nums[0], status="ok", auto_nr=True)
+                    for (_a, k), n in zip(later, nums[1:]):
+                        self.cp_recs[k]["nr"] = n
+                    self.last_start_nr = nums[-1]
+                    self.log(f"START Nr {nums[0]} ({fmt_tod(abs_t % 86400)}) nachgeholt, spätere Starts "
+                             f"neu nummeriert: {', '.join(str(n) for n in nums[1:])}", tag="warn")
+                    self.save_autosave()
+                    self.course_changed()
+                    self.update_panels()
+                    return
+                self.start_number(key, nxt[0])
+                rec["auto_nr"] = True
+                return
             rec["status"] = "nobody"
             self.log(f"Startimpuls {fmt_tod(abs_t % 86400)} ohne Nummer", tag="warn")
             return
