@@ -10,7 +10,9 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
-#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F)
+#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N)
+#   M: Zeitmessarten nacheinander (TM550: BASIC, TIMING, SPEED, LAP; CP: z.B. NET TIME, PTB SEQ)
+#   N: Nummern zuordnen (TM550-Smartphone-App, Identifikation AT START / MANUAL / AUTOMATIC, CP-Tastatur)
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
     [string]$Ip = "",
@@ -111,6 +113,29 @@ function Send-Cmd([string]$cmd, [int]$WaitMs = $Wait, [int]$MaxMs = 15000, [stri
     $script:summary += ("{0,-22} {1}" -f $cmd, $res)
     return $lines
 }
+# Fasst Zeitzeilen zusammen: Art (TN, T-, AN ...), Nummer, Kanal. Liefert Text fuer die Zusammenfassung.
+function Describe($lines) {
+    $parts = @()
+    foreach ($l in $lines) {
+        if ($l -match "^([TAR][N\-\*C+=R]) (.{4}) +(\S+) +(M?\d+|M?\S+) ") {
+            $nr = $Matches[2].Trim(); if (-not $nr) { $nr = "-" }
+            $parts += ($Matches[1] + " nr " + $nr + " k" + $Matches[4])
+        } elseif ($l -match "^(\S{2})") { $parts += $Matches[1] }
+    }
+    if (-not $parts.Count) { return "keine Zeilen" }
+    return ($parts -join "; ")
+}
+# Bittet um eine Handlung am Geraet, hoert $Sec Sekunden zu und traegt das Ergebnis ein.
+function Observe([string]$label, [string]$todo, [int]$Sec = 30) {
+    Write-Host ""
+    Write-Host ("$label`: $todo") -ForegroundColor Yellow
+    [void](Read-Host "Enter druecken, dann hat man $Sec s Zeit")
+    Log "Beobachte $Sec s: $label ($todo)"
+    $got = Collect ($Sec * 1000) ($Sec * 1000)
+    $script:summary += ("{0,-22} {1}" -f $label, (Describe $got))
+    return $got
+}
+
 function Ask($title) {
     $id = ($title.Trim() -split "\s+")[0]
     if ($Nur.Count -and -not ($Nur | Where-Object { $_.ToUpper() -eq $id.ToUpper() -or $_.ToUpper() -eq $id.Substring(0, 1).ToUpper() })) {
@@ -127,13 +152,15 @@ function Ask($title) {
 $script:summary = @()
 Log "=== Fernbefehle-Test $Device, Pruefsumme: $UseCs ==="
 Open-Device
+$fw = Read-Host "Firmware am Geraet (z.B. VB16 bzw. 1.48)"
+Log "Firmware laut Stefan: $fw"
 Start-Sleep -Milliseconds 500
 $pre = Collect 800 2000
 if ($pre.Count) { Log ("Beim Verbinden " + $pre.Count + " Zeile(n) erhalten") }
 
 # A: nur lesen
 if (Ask "A  Lesen: #SN, #ID, #!T, #RP 003 (Lauf), #RP 120 (Betriebsart)") {
-    foreach ($c in @("#SN", "#ID", "#!T", "#RP 003", "#RP 120")) { [void](Send-Cmd $c) }
+    foreach ($c in @("#SN", "#ID", "#!T", "#RP 003", "#RP 120", "#RP 001", "#RP 026 01")) { [void](Send-Cmd $c) }
 }
 
 # B: Druckzeile
@@ -220,11 +247,11 @@ if (Ask "H  App-Befehle: #RP 026 01, #WP 026 01 0150, #RP 026 01, dann 2 Impulse
 }
 
 # I: Praezision lesen und schreiben (#RP/#WP 001), danach urspruenglichen Wert zurueck
-if (Ask "I  Praezision: #RP 001, #WP 001 mit 1, 2, 3 (je 1 Impuls ausloesen), dann zurueck auf den alten Wert") {
+if (Ask "I  Praezision: #RP 001, #WP 001 mit 0, 1, 2, 3, 5 (je 1 Impuls ausloesen), dann zurueck auf den alten Wert") {
     $orig = ""
     foreach ($l in (Send-Cmd "#RP 001")) { if ($l -match "^&P\s*001\s+(\S+)") { $orig = $Matches[1] } }
     $script:summary += ("{0,-22} {1}" -f "Praezision vorher", $(if ($orig) { $orig } else { "nicht lesbar" }))
-    foreach ($v in @("1", "2", "3")) {
+    foreach ($v in @("0", "1", "2", "3", "5")) {
         [void](Send-Cmd "#WP 001 $v")
         $now = ""
         foreach ($l in (Send-Cmd "#RP 001")) { if ($l -match "^&P\s*001\s+(\S+)") { $now = $Matches[1] } }
@@ -235,6 +262,63 @@ if (Ask "I  Praezision: #RP 001, #WP 001 mit 1, 2, 3 (je 1 Impuls ausloesen), da
         $script:summary += ("{0,-22} {1}" -f "Praezision $v", ("gelesen " + $(if ($now) { $now } else { "-" }) + ", Zeile: " + $(if ($line) { (Visible $line) } else { "kein Impuls" })))
     }
     if ($orig) { [void](Send-Cmd "#WP 001 $orig"); [void](Send-Cmd "#RP 001") }
+}
+
+# M: Zeitmessarten. Am Geraet umstellen, Lauf oeffnen, Impulse, Zeilenformat festhalten.
+if (Ask "M  Zeitmessarten: je Art am Geraet umstellen, Lauf oeffnen lassen, Start- und Ziel-Impuls") {
+    $modes = $(if ($Device -eq "tm550") { @("BASIC", "TIMING", "SPEED", "LAP") } else { @("NET TIME", "PTB SEQUENTIEL 1-4", "START-FINISH") })
+    foreach ($m in $modes) {
+        Write-Host ""
+        $a = Read-Host "Zeitmessart $m am Geraet einstellen (Lauf vorher schliessen), dann Enter. 'n' = ueberspringen"
+        if ($a -match "^[nN]") { continue }
+        Log "--- Zeitmessart $m ---"
+        $open = ""; $next = ""
+        [void](Send-Cmd "#RP 120")
+        foreach ($l in (Send-Cmd "#RP 003")) { if ($l -match "^&P\s*003\s+(\d+)\s+(\d+)") { $open = $Matches[1]; $next = $Matches[2] } }
+        if (-not ($open -and [int]$open -gt 0)) {
+            [void](Send-Cmd "#WC 002")
+            foreach ($l in (Send-Cmd "#RP 003")) { if ($l -match "^&P\s*003\s+(\d+)") { $open = $Matches[1] } }
+        }
+        $script:summary += ("{0,-22} {1}" -f "Lauf $m", $(if ($open -and [int]$open -gt 0) { "offen: $open" } else { "kein Lauf" }))
+        [void](Send-Cmd "#WP 026 01 0150")
+        $back = Send-Cmd "#RP 026 01"
+        $script:summary += ("{0,-22} {1}" -f "Vorladen $m", $(if ($back -match "0150") { "150 zurueckgelesen" } else { "nein" }))
+        $imp = Observe "Impulse $m" "1 Start-, 1 Zwischen- (falls vorhanden) und 1 Ziel-Impuls ausloesen" 30
+        $first = $imp | Where-Object { $_ -match "^T. .{4} +(\d+) +M?(\d+)" } | Select-Object -First 1
+        if ($first -and $first -match "^T. .{4} +(\d+) +M?(\d+)") {
+            [void](Send-Cmd ("#RT " + $Matches[1].PadLeft(4, "0") + " " + $Matches[2].PadLeft(2, "0")))
+        }
+        Log "Am Geraet notieren: Anzeige (Balken B1-B4, Zeilen), was gedruckt wurde"
+    }
+}
+
+# N: Nummern zuordnen ausserhalb der App (TM550-Smartphone-App bzw. CP-Tastatur). Was kommt an?
+if (Ask "N  Nummern zuordnen: Startliste, Smartphone-App bzw. CP-Tastatur, je Identifikation 1 Durchgang") {
+    $runs = $(if ($Device -eq "tm550") {
+        @("MANUAL IDENTIFICATION: Start- und Ziel-Impuls, danach in der Smartphone-App Nr 7 zuordnen und synchronisieren",
+          "IDENTIFICATION AT START: in der Smartphone-App Nr 8 eingeben und synchronisieren, dann Start- und Ziel-Impuls",
+          "AUTOMATIC IDENTIFICATION: Start- und Ziel-Impuls, danach Nr 9 in der Smartphone-App",
+          "Korrektur: in der Smartphone-App Nr 9 auf 19 aendern bzw. Zeit loeschen")
+    } else {
+        @("NET TIME: 7 E1 (Nr 7 an den Start), Start- und Ziel-Impuls",
+          "Ohne Nummer: Start-Impuls, danach 8 R Enter-Taste (Nummer zuordnen)",
+          "Umnummerieren: 8 R, neue Nummer 18 Enter-Taste",
+          "Falschstart: E1 allein nach einem Start, dann * E1 (rueckgaengig)",
+          "DNF: 18 R 0, DSQ: 7 R 0.")
+    })
+    foreach ($r in $runs) {
+        Write-Host ""
+        $a = Read-Host "Naechster Durchgang: $r  (Enter = los, 'n' = ueberspringen)"
+        if ($a -match "^[nN]") { continue }
+        [void](Observe ($r.Split(":")[0]) $r 60)
+    }
+    if ($Device -eq "tm550") {
+        Log "--- Startliste mit Identifikation AT START ---"
+        foreach ($c in @("#SLR", "#SLA 0101", "#SLA 0102", "#SLC")) { [void](Send-Cmd $c) }
+        [void](Observe "Startliste AT START" "2 Start-Impulse (erwartet 101, 102)" 30)
+        [void](Send-Cmd "#SLR")
+    }
+    [void](Send-Cmd "#WC 012" 4000 30000 "^DE\s")
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen

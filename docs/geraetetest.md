@@ -106,6 +106,8 @@ Das Skript fragt jede Gruppe mit `j`/`n` ab. Alle mit `j` beantworten.
 | G Lauf öffnen | Lauf schliessen, nur Startliste löschen und abschliessen (`#SLR`, `#SLC`), sonst `#WC 002` mit Laufnummer | Ist danach ein Lauf offen, welche Nummer? |
 | H App-Befehle | nächste Startnummer 150 vorladen und zurücklesen, Zeit nachfragen (`#RT`) | gelbe Aufforderung: 1 Start- und 1 Ziel-Impuls. Startet Nr 150? |
 | I Präzision | Präzision lesen, nacheinander 1, 2 und 3 schreiben, zurücklesen, danach alter Wert | nach jeder gelben Aufforderung 1 Impuls auslösen. Ändert sich die Anzahl Stellen am Display und auf dem Papier? |
+| M Zeitmessarten | siehe «Komplett-Test mit neuer Firmware» | Anzeige je Zeitmessart |
+| N Nummern zuordnen | siehe «Komplett-Test mit neuer Firmware» | Nummer am Display |
 | F Format | 10 s zuhören | 1 Start- und 1 Ziel-Impuls auslösen |
 
 Einzelne Gruppen: `-Nur G` oder `-Nur A,G` anhängen.
@@ -173,6 +175,43 @@ Die App stellt die Karte beim nächsten Verbinden selbst wieder um.
 Die Dateien `fernbefehle_*.txt` aus dem Ordner `Dokumente\SWV Geraetetest` hochladen, dazu die Notizen
 aus den Tabellen (was der CP gedruckt hat, welcher Lauf offen war, was das Display bei der Startliste
 gezeigt hat).
+
+## Komplett-Test mit neuer Firmware (CP 545 VB16, TM550 1.48)
+
+Skript neu holen (Schritt 1), sonst fehlen die Gruppen M und N. Das Skript fragt am Anfang nach der
+Firmware am Gerät, diese eintippen.
+
+Neu im Skript:
+- Gruppe A liest zusätzlich Präzision (`#RP 001`) und vorgeladene Nummer (`#RP 026 01`).
+- Gruppe I schreibt die Präzision 0, 1, 2, 3 und 5 (0 = 1/10 beim CP in NET TIME?).
+- Gruppe M: jede Zeitmessart einzeln. Das Skript fordert zum Umstellen auf, öffnet bei Bedarf den
+  Lauf mit `#WC 002`, lädt Nr 150 vor, wartet 30 s auf Impulse und fragt die erste Zeit mit `#RT` nach.
+  TM550: BASIC, TIMING, SPEED, LAP. CP 545: NET TIME, PTB SEQUENTIEL 1-4, START-FINISH.
+- Gruppe N: Nummern ausserhalb der App zuordnen, je Durchgang 60 s Zeit. Die Zusammenfassung zeigt
+  pro Zeile Art, Nummer und Kanal (z.B. `TN nr 8 k1`, `T- nr 9 k4`).
+
+Reihenfolge pro Gerät, jeweils über Ethernet:
+
+1. CP 545: Ethernet einschalten, NET TIME, Lauf offen. Dann
+   `powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Ip 192.168.1.50`
+   und alle Gruppen mit `j`.
+2. TM550: TIMING, NO IDENTIFICATION bzw. MANUAL IDENTIFICATION, Lauf offen, Smartphone-App verbunden.
+   Dann `powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51`
+   und alle Gruppen mit `j`. In Gruppe N vor jedem Durchgang die Identifikation am TM550 umstellen,
+   wie in der gelben Zeile angegeben.
+3. Beide Geräte zusätzlich über USB (Schritt 8), mindestens `-Nur A,C,H,M`.
+4. Optional TM550 mit Protocol DOCK statt dem bisherigen Protokoll: `-Nur A,F`, damit sichtbar wird,
+   ob sich das Zeilenformat ändert. Danach zurückstellen.
+
+Am Gerät notieren:
+
+| Punkt | CP 545 | TM550 |
+| --- | --- | --- |
+| Gruppe B: wird gedruckt? | Papier | mit Printer BLE verbunden? |
+| Gruppe C: Lauf geöffnet in NET TIME? | | |
+| Gruppe M: Anzeige je Zeitmessart | Display, Papier | Balken B1 bis B4, Anzahl Zeilen |
+| Gruppe M: Anzeigetafel über RS232 | | läuft in BASIC, TIMING, SPEED, LAP? |
+| Gruppe N: Nummer am Display und auf der Anzeigetafel | | nach Synchronisieren in der Smartphone-App |
 
 ## Ergebnisse 22.11.2026
 
