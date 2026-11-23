@@ -213,6 +213,29 @@ Am Gerät notieren:
 | Gruppe M: Anzeigetafel über RS232 | | läuft in BASIC, TIMING, SPEED, LAP? |
 | Gruppe N: Nummer am Display und auf der Anzeigetafel | | nach Synchronisieren in der Smartphone-App |
 
+## Ergebnisse 23.11.2026 (CP 545 VB16, TM550 1.48)
+
+| Befehl | CP 545 (VB16) | TM550 (1.48) |
+| --- | --- | --- |
+| `#SN` | `SN 04755 CP545 VB16` | `SN 00059 TM550 1.48` |
+| `#PL Text` | druckt die Zeile | AK F (auch mit Printer BLE) |
+| `#WC 002` Lauf öffnen | nur in PTB SEQUENTIEL 1-4, sonst AK F | in allen Zeitmessarten; AK F, wenn schon ein Lauf offen ist |
+| Startnummer vorladen `#WP 026` | NET TIME mit Lauf, danach zählt der CP selbst weiter (150, 151). Ohne Lauf AK F, PTB SEQ zurückgelesen 0000 | TIMING: zurückgelesen 0150, Start kommt als `TN 0150`, danach wieder leer. BASIC AK F, SPEED und LAP angenommen ohne Wirkung |
+| `#RP 026` ohne Nummer | `&P 026 01 0000` | `&P 026 00    0` |
+| `#RT` | in allen Zeitmessarten | BASIC und TIMING: Antwort als `TN`-Zeile; SPEED und LAP nur AK C |
+| `#RP 120` | AK R | keine Antwort |
+| Präzision `#WP 001 n` | zurückgelesen n+1, Zeilen mit n+1 Stellen: 0 = 1/10, 1 = 1/100, 2 = 1/1000. 5 überschreibt die Kanalspalte | ohne Versatz: 0 = 1 s, 1 = 1/10 … 5 = 1/100000 |
+| Tagesfeld | 9823, stimmt | 9823, stimmt (1.18 lag daneben) |
+| Zielimpuls | eine Zeile | fast immer Doppelkontakt: zweite `TN` ohne Nummer 0,10 bis 0,13 s später |
+| `IR`-Zeile | | im Ziel mit Nummer und Laufzeit |
+| LAP | | meldet sich als `OP nn CIRCUIT` |
+| Statuszeilen | | `&P 001/002/008/023/025/033/038`, `DS/DE` von selbst |
+| Tastatur / Smartphone-App | Umnummerieren: `T-` alte Nr, `T*` neue Nr (gleiche Zählnummer). Falschstart (E1): `TC`. DNF/DSQ (R 0): keine Zeile | AT START und AUTOMATIC: Nummer auf Start und Ziel. Korrektur in der Smartphone-App: `T*` neue Nr, gelöschte Zeit `TC`. MANUAL mit Smartphone-App: nur `CL/OP 05` im Wechsel, keine Zeiten (ungeklärt) |
+
+Offen für den nächsten Test:
+- TM550 MANUAL IDENTIFICATION ohne verbundene Smartphone-App, Gruppe N.
+- CP 545 DNF und DSQ (`Nr R 0`, `Nr R 0 *`) mit offenem Lauf in NET TIME, Gruppe N.
+
 ## Ergebnisse 22.11.2026
 
 | Befehl | CP 545 (VB08) | TM550 (1.18) |

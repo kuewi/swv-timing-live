@@ -1,6 +1,6 @@
 # SWV Timing Live (SWV Live-Ranking)
 
-![Oberfläche v1.16.0](docs/screenshots/ui_v1.16.0.png)
+![Oberfläche v1.17.0](docs/screenshots/ui_v1.17.0.png)
 
 
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des
@@ -49,8 +49,8 @@ brauchen dieselben Start- und Zielimpulse (Verteilung elektrisch mit ITS/TAG Heu
 
 ### Üben
 
-![Simulator CP 545 v1.16.0](docs/screenshots/sim_cp545_v1.16.0.png)
-![Simulator TM550 v1.16.0](docs/screenshots/sim_tm550_v1.16.0.png)
+![Simulator CP 545 v1.17.0](docs/screenshots/sim_cp545_v1.17.0.png)
+![Simulator TM550 v1.17.0](docs/screenshots/sim_tm550_v1.17.0.png)
 
 Unter Simulator: «Üben: CP 545 mit Tastatur» bzw. «Üben: TM550» öffnet ein nachgebautes Gerät
 (Vorderseite mit Display und Tastenfeld nach Foto, Rückseite mit Bananenbuchsen und Anschlüssen) und
@@ -63,7 +63,7 @@ Die Browser-Anzeige (nur lokales Netz, mit Schlüssel) bietet zusätzlich eine A
 den WebSocket `/ws` (`&stream=all` für alles in einer Nachricht). Übersicht unter `/api?key=…`.
 
 Pläne für die API und die Anbindung ans Onlinetool: [docs/plaene_api_onlinetool.md](docs/plaene_api_onlinetool.md).
-Notizen zu weiteren Geräten: [FDS TBox / DBox](docs/fds_tbox.md).
+Notizen zu weiteren Geräten: [FDS TBox / DBox](docs/fds_tbox.md), [Funkstrecke HL675 und TAG Heuer Timing Online (GPRS)](docs/funk_und_online.md).
 
 ## Start und Build
 

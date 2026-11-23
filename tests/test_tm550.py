@@ -26,13 +26,13 @@ sim = m.SimCP(device="tm550", bounce=True)
 app.var_conn.set("usb"); app.on_conn_mode_change(); pump(0.1)
 app.cmb_usb.set(f"socket://127.0.0.1:{sim.port}")
 app.toggle_connection(); pump(4.0)
-check("TM550 über USB erkannt", app.cp_device == "tm550" and not app.cp_caps["preload"])
+check("TM550 über USB erkannt", app.cp_device == "tm550")
 sim.start(); pump(0.5); sim.start(); pump(0.5)
 check("Starts mit Nummern aus der Startreihenfolge", [c[1] for c in app.course] == [21, 22])
 sim.finish(); pump(0.8)
 check("Ziel an 21, gesperrter Kontakt kein Storno", 21 in app.results and [c[1] for c in app.course] == [22]
       and any("Sperrzeit" in l[0] for l in app.log_lines))
-check("keine Vorladung versucht", not any("#WP 026" in l[0] for l in app.log_lines))
+check("Vorladen bei FW 1.18 abgelehnt, App nummeriert", not app.cp_caps["preload"] and app.cp_caps["ignore_nr"])
 sim.drop_next = True; sim.start(); pump(0.3)      # Zeile geht verloren
 sim.start(); pump(3.5)                             # Luecke -> Download des Laufs
 check("Lücke per Download geschlossen", [c[1] for c in app.course] == [22, 23, 24])

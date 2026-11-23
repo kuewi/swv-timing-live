@@ -1,5 +1,20 @@
 # Änderungen
 
+## v1.17.0 (24.11.2026)
+Aus dem Gerätetest vom 23.11.2026 mit CP 545 VB16 und TM550 1.48:
+- TM550 ab Firmware 1.48: In der Zeitmessart TIMING lädt die App die nächste Startnummer vor (`#WP 026`), die Startzeit kommt mit dieser Nummer. In BASIC, SPEED und LAP vergibt die App die Nummern. Nummern mit führenden Nullen (`0150`), `IR`-Zeilen, LAP als «CIRCUIT», Statuszeilen (`&P …`, `DS/DE` von selbst) werden erkannt. Das Tagesfeld gilt wieder, ausser es weicht mehr als einen Tag vom PC ab
+- TM550 1.48 meldet fast jeden Zielimpuls doppelt (zweite Zeile 0,1 s später ohne Nummer). Die Prellzeit verwirft sie, im Log nur noch leise als «Doppelkontakt»
+- Falschstart: Wird eine Startzeit am Gerät storniert (`TC`, CP: E1 allein, TM550: in der Smartphone-App gelöscht), ist das Boot wieder als nächstes am Start und die Nummer wird wieder vorgeladen. Bisher wurde es als DNF markiert
+- CP: verliert eine Zeit am CP ihre Nummer (`T-`, z.B. Umnummerieren oder Neustart einer Nummer), sagt das Log warum
+- Präzision unter Zeitmessung: 1 s, 1/10, 1/100 oder 1/1000, abgeschnitten wie am Gerät. Knopf «Präzision am Gerät einstellen» schreibt `#WP 001` (CP 545: Wert minus 1, kleinste Stufe 1/10; TM550 ohne Versatz) und prüft durch Zurücklesen
+- Zeitmessarten: Vorladen beim CP in NET TIME, START-FINISH, START-INTER-FINISH und TRAINING, nicht in PTB SEQ; unbekannte Zeitmessart mit Hinweis. «Lauf öffnen» geht auch am CP 545, aber nur in PTB SEQUENTIEL 1-4
+- Start/Ziel sperren: Der Schalter blinkt rot. Am CP (und TM550 in TIMING) wird die Sperrnummer 999 vorgeladen (einstellbar, darf nicht in der Startliste stehen), damit ein Impuls in der Pause keine echte Nummer verbraucht. Impulse werden ignoriert, im Log und Ticker gemeldet und unter «Auf Fahrstrecke» als gesperrt aufgeführt. Sperren mit Booten auf der Strecke fragt nach. Freigeben stellt die nächste Nummer wieder ein
+- Bedienung: Knopf zum Versenken der Seitenleiste nur noch mit Pfeil. Unter Daten › Bedienung wählbar: Seitenleiste oder Menü oben mit Ausklappfeldern (gleiche Abschnitte). «Empfangene Daten» bleibt in jeder Ansicht unten links sichtbar
+- Reserve-Gerät: Paarung nach Gerätezeit, sobald der Uhrversatz bekannt ist. Wartezeit auf das Hauptgerät einstellbar (Standard 3 s). Kommt die Zeile des Hauptgeräts erst danach, gibt es kein Doppel und keine Warnung
+- Quelle «GPRS Interface» (TAG Heuer Timing Online): im Feld Gerät `127.0.0.1:Port` eintippen. Nur Empfang, keine Befehle. TM550 mit Werkseinstellung Port 2101 findet die Suche ebenfalls (`ip:2101`)
+- Übungsgerät CP 545 nach Handbuch: Taste «ON» statt «C», `*` löscht die Eingabe, «Nr E1» = nächste Nummer, «E1» allein = Falschstart, Display 8 × 21 Zeichen, Zeitmessart im F-Menü. TM550 als Firmware 1.48 mit Zeitmessarten BASIC/TIMING/SPEED/LAP, SHIFT + E1..E4 sperrt einen Eingang
+- Doku: [Funkstrecke HL675 und TAG Heuer Timing Online](docs/funk_und_online.md), Testergebnisse 23.11.2026 in [docs/geraetetest.md](docs/geraetetest.md). `fernbefehle_test.ps1`: Gruppe N mit MANUAL ohne Smartphone-App und DNF/DSQ am CP
+
 ## v1.16.0 (23.11.2026)
 - Verbindung: eigener Knopf «Reserve verbinden» / «Reserve trennen» mit Zustand im Block Reserve-Gerät. Der Knopf des Hauptgeräts verbindet nur noch das Hauptgerät. Wird das Hauptgerät getrennt, bleibt die Reserve verbunden und liefert alle Zeiten. Eine Änderung der Reserve-Auswahl verbindet nicht mehr von selbst
 - CP 545 druckt bei einem Vereinswechsel eine Zeile auf den Papierstreifen, z.B. `> RC Rheinfelden (12)`, sobald das letzte Boot des bisherigen Vereins gestartet ist (beim Verbinden vor dem ersten Start auch für den ersten Verein). Umlaute umgeschrieben, auf 24 Zeichen gekürzt, nie doppelt. Schalter «Vereinswechsel auf CP drucken» unter Zeitmessung. Auch ein CP als Reserve druckt, der TM550 nicht

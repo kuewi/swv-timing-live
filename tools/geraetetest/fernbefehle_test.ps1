@@ -295,7 +295,8 @@ if (Ask "M  Zeitmessarten: je Art am Geraet umstellen, Lauf oeffnen lassen, Star
 # N: Nummern zuordnen ausserhalb der App (TM550-Smartphone-App bzw. CP-Tastatur). Was kommt an?
 if (Ask "N  Nummern zuordnen: Startliste, Smartphone-App bzw. CP-Tastatur, je Identifikation 1 Durchgang") {
     $runs = $(if ($Device -eq "tm550") {
-        @("MANUAL IDENTIFICATION: Start- und Ziel-Impuls, danach in der Smartphone-App Nr 7 zuordnen und synchronisieren",
+        @("MANUAL OHNE APP: MANUAL IDENTIFICATION, Smartphone-App getrennt, Start- und Ziel-Impuls",
+          "MANUAL IDENTIFICATION: Start- und Ziel-Impuls, danach in der Smartphone-App Nr 7 zuordnen und synchronisieren",
           "IDENTIFICATION AT START: in der Smartphone-App Nr 8 eingeben und synchronisieren, dann Start- und Ziel-Impuls",
           "AUTOMATIC IDENTIFICATION: Start- und Ziel-Impuls, danach Nr 9 in der Smartphone-App",
           "Korrektur: in der Smartphone-App Nr 9 auf 19 aendern bzw. Zeit loeschen")
@@ -304,7 +305,7 @@ if (Ask "N  Nummern zuordnen: Startliste, Smartphone-App bzw. CP-Tastatur, je Id
           "Ohne Nummer: Start-Impuls, danach 8 R Enter-Taste (Nummer zuordnen)",
           "Umnummerieren: 8 R, neue Nummer 18 Enter-Taste",
           "Falschstart: E1 allein nach einem Start, dann * E1 (rueckgaengig)",
-          "DNF: 18 R 0, DSQ: 7 R 0.")
+          "DNF: Lauf offen in NET TIME, 2 Starts (Nr 30, 31), dann 30 R 0 (DNF) und 31 R 0 * (DSQ)")
     })
     foreach ($r in $runs) {
         Write-Host ""

@@ -24,7 +24,7 @@ app.var_conn.set("ethernet"); app.on_conn_mode_change(); pump(0.1)
 S = m.SimCP(); S.mode = "PTB SEQUENTIEL 1-4"
 app.reset_caps("cp545"); app.connect_cp("127.0.0.1", S.port); pump(5)
 
-check("PTB: Vorladen aus", not app.cp_caps["preload"] and "CP vergibt keine Startnummern" in logs())
+check("PTB: Vorladen aus", not app.cp_caps["preload"] and "vergibt keine Startnummern" in logs())
 n_err = logs().count("nach 3 Versuchen")
 S.start(); pump(0.8); S.start(); pump(0.8)
 check("PTB: App nummeriert 101, 102", started() == [101, 102])
