@@ -108,6 +108,7 @@ Das Skript fragt jede Gruppe mit `j`/`n` ab. Alle mit `j` beantworten.
 | I Präzision | Präzision lesen, nacheinander 1, 2 und 3 schreiben, zurücklesen, danach alter Wert | nach jeder gelben Aufforderung 1 Impuls auslösen. Ändert sich die Anzahl Stellen am Display und auf dem Papier? |
 | M Zeitmessarten | siehe «Komplett-Test mit neuer Firmware» | Anzeige je Zeitmessart |
 | N Nummern zuordnen | siehe «Komplett-Test mit neuer Firmware» | Nummer am Display |
+| O Ziel zurücknehmen | Nr 40 ins Ziel, dann `#WP 026 04 0040` und nochmals Ziel, danach Tastatur «41 E4», «E4 allein» | Bekommt der zweite Zielimpuls Nr 40? Papier und Display |
 | F Format | 10 s zuhören | 1 Start- und 1 Ziel-Impuls auslösen |
 
 Einzelne Gruppen: `-Nur G` oder `-Nur A,G` anhängen.
@@ -226,13 +227,15 @@ Am Gerät notieren:
 | `#RP 120` | AK R | keine Antwort |
 | Präzision `#WP 001 n` | zurückgelesen n+1, Zeilen mit n+1 Stellen: 0 = 1/10, 1 = 1/100, 2 = 1/1000. 5 überschreibt die Kanalspalte | ohne Versatz: 0 = 1 s, 1 = 1/10 … 5 = 1/100000 |
 | Tagesfeld | 9823, stimmt | 9823, stimmt (1.18 lag daneben) |
-| Zielimpuls | eine Zeile | fast immer Doppelkontakt: zweite `TN` ohne Nummer 0,10 bis 0,13 s später |
+| Doppelkontakt | | als zweite `TN` ohne Nummer 0,10 bis 0,13 s später (1.18: als `TC`). Kam im Test vom Kabel mit Bananensteckern an E4, nicht von der Firmware; mit Taster kein regulärer Fall |
 | `IR`-Zeile | | im Ziel mit Nummer und Laufzeit |
 | LAP | | meldet sich als `OP nn CIRCUIT` |
 | Statuszeilen | | `&P 001/002/008/023/025/033/038`, `DS/DE` von selbst |
 | Tastatur / Smartphone-App | Umnummerieren: `T-` alte Nr, `T*` neue Nr (gleiche Zählnummer). Falschstart (E1): `TC`. DNF/DSQ (R 0): keine Zeile | AT START und AUTOMATIC: Nummer auf Start und Ziel. Korrektur in der Smartphone-App: `T*` neue Nr, gelöschte Zeit `TC`. MANUAL mit Smartphone-App: nur `CL/OP 05` im Wechsel, keine Zeiten (ungeklärt) |
 
 Offen für den nächsten Test:
+- Gruppe O: Zielzeit zurücknehmen. Nimmt der CP `#WP 026 04` für ein Boot an, das für ihn schon im Ziel ist? Was
+  machen «Nr E4» und «E4 allein» an der Tastatur?
 - TM550 MANUAL IDENTIFICATION ohne verbundene Smartphone-App, Gruppe N.
 - CP 545 DNF und DSQ (`Nr R 0`, `Nr R 0 *`) mit offenem Lauf in NET TIME, Gruppe N.
 

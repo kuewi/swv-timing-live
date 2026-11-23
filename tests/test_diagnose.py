@@ -89,14 +89,15 @@ q = json.load(open(os.path.join(D, "fehlerberichte", "offen.json"), encoding="ut
 check("Bericht in der Liste offen", q and q[-1]["id"] == man["id"])
 
 # Seitenleiste
+app._drop_watch = lambda: None
+app.toggle_sidebar_pin(); pump(0.3)
+check("versenkt: Menü oben", app.side_outer.winfo_manager() == "" and app.topbar.winfo_ismapped())
+app.toggle_dropdown("startliste"); pump(0.3)
+check("Ausklappfeld", app.side_outer.winfo_manager() == "place")
+app.close_dropdown(); pump(0.2)
+check("Ausklappfeld zu", app.side_outer.winfo_manager() == "")
 app.toggle_sidebar_pin(); pump(0.2)
-check("versenkt", app.side_outer.winfo_manager() == "" and app.side_strip.winfo_manager() == "grid")
-root.event_generate("<Motion>", warp=True, x=3, y=400); pump(0.5)
-check("fährt am Rand heraus", app.side_outer.winfo_manager() == "place")
-root.event_generate("<Motion>", warp=True, x=1200, y=400); pump(0.5)
-check("verschwindet beim Verlassen", app.side_outer.winfo_manager() == "")
-app.toggle_sidebar_pin(); pump(0.2)
-check("wieder angepinnt", app.side_outer.winfo_manager() == "grid" and app.settings["sidebar_pinned"])
+check("wieder angepinnt", app.side_outer.winfo_manager() == "grid" and app.settings["nav_layout"] == "side")
 check("Startliste zuklappbar", "startliste" in app.settings["collapsed"] and "manuell" in app.settings["collapsed"])
 
 # Nummer aendern: Hinweis mit Tastenfolge, spaetere Korrektur am CP hat Vorrang

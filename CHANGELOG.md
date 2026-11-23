@@ -1,9 +1,19 @@
 # Änderungen
 
+## v1.18.0 (24.11.2026)
+- Reserve-Gerät: Hat nur die Reserve einen Impuls, meldet die App die Abweichung und fragt in einem Fenster, welches Gerät gilt («Reserve übernehmen» oder «Hauptgerät gilt»), auf Wunsch für die ganze Sitzung. Das Rennen läuft weiter, bis zur Antwort gilt die Zeit der Reserve vorläufig. Verworfene Impulse stehen unter «Auf Fahrstrecke» als «nur Reserve». Ist das Hauptgerät getrennt, übernimmt die Reserve ohne Frage
+- TM550 1.48 als Reserve in TIMING: bekommt die nächste Startnummer vorgeladen (mit Prüfsumme), seine Nummern werden übernommen. Verschiedene Nummern von Haupt- und Reserve-Gerät für denselben Impuls werden gemeldet, es gilt das Hauptgerät. Sperrnummer auch an der Reserve
+- Zielzeit ungültig schalten (Fehlimpuls): Die App lädt die Nummer am CP wieder auf den Zieleingang vor. Lehnt der CP ab (für ihn ist das Boot schon im Ziel), sagt sie, was am CP einzugeben ist («Nr E4»). Beim TM550 Hinweis auf die Smartphone-App
+- Versionsnummer neben dem Logo: grün = aktuell, rot leuchtend = neuere Version verfügbar, grau = nicht geprüft. Klick lädt und installiert die neue Version (mit Rückfrage) bzw. prüft sofort. Prüfung beim Start und alle 6 Stunden
+- Neben dem Pfeil oben links: Knopf für helles/dunkles Design (Schalter unter Wettkampf entfällt). Der Pfeil versenkt die Seitenleiste ins Menü oben mit Ausklappfeldern und pinnt sie wieder an (Streifen am linken Rand entfällt, Einstellung unter Daten entfällt)
+- Scrollen in Seitenleiste und Ranglisten feiner: 40 px je Mausrad-Raste, Touchpads nach Stärke
+- Doppelkontakt: Häufen sie sich auf einem Eingang (3 in 10 Minuten), meldet die App einmal, dass der Eingang prellt. Übungsgerät TM550 ohne Doppelkontakt von selbst (Rechtsklick auf die Buchse löst einen aus). Doku richtiggestellt: der Doppelkontakt im Test kam vom Kabel mit Bananensteckern
+- `fernbefehle_test.ps1`: Gruppe O (Zielzeit zurücknehmen am CP)
+
 ## v1.17.0 (24.11.2026)
 Aus dem Gerätetest vom 23.11.2026 mit CP 545 VB16 und TM550 1.48:
 - TM550 ab Firmware 1.48: In der Zeitmessart TIMING lädt die App die nächste Startnummer vor (`#WP 026`), die Startzeit kommt mit dieser Nummer. In BASIC, SPEED und LAP vergibt die App die Nummern. Nummern mit führenden Nullen (`0150`), `IR`-Zeilen, LAP als «CIRCUIT», Statuszeilen (`&P …`, `DS/DE` von selbst) werden erkannt. Das Tagesfeld gilt wieder, ausser es weicht mehr als einen Tag vom PC ab
-- TM550 1.48 meldet fast jeden Zielimpuls doppelt (zweite Zeile 0,1 s später ohne Nummer). Die Prellzeit verwirft sie, im Log nur noch leise als «Doppelkontakt»
+- Doppelkontakt: Der TM550 1.48 meldet einen zweiten Kontakt als eigene Zeile ohne Nummer (1.18: als TC). Die Prellzeit verwirft sie, im Log nur noch leise als «Doppelkontakt». (Im Test kam der Doppelkontakt vom Kabel mit Bananensteckern an E4, nicht von der Firmware.)
 - Falschstart: Wird eine Startzeit am Gerät storniert (`TC`, CP: E1 allein, TM550: in der Smartphone-App gelöscht), ist das Boot wieder als nächstes am Start und die Nummer wird wieder vorgeladen. Bisher wurde es als DNF markiert
 - CP: verliert eine Zeit am CP ihre Nummer (`T-`, z.B. Umnummerieren oder Neustart einer Nummer), sagt das Log warum
 - Präzision unter Zeitmessung: 1 s, 1/10, 1/100 oder 1/1000, abgeschnitten wie am Gerät. Knopf «Präzision am Gerät einstellen» schreibt `#WP 001` (CP 545: Wert minus 1, kleinste Stufe 1/10; TM550 ohne Versatz) und prüft durch Zurücklesen

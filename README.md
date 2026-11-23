@@ -1,6 +1,6 @@
 # SWV Timing Live (SWV Live-Ranking)
 
-![Oberfläche v1.17.0](docs/screenshots/ui_v1.17.0.png)
+![Oberfläche v1.18.0](docs/screenshots/ui_v1.18.0.png)
 
 
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des
@@ -49,8 +49,8 @@ brauchen dieselben Start- und Zielimpulse (Verteilung elektrisch mit ITS/TAG Heu
 
 ### Üben
 
-![Simulator CP 545 v1.17.0](docs/screenshots/sim_cp545_v1.17.0.png)
-![Simulator TM550 v1.17.0](docs/screenshots/sim_tm550_v1.17.0.png)
+![Simulator CP 545 v1.18.0](docs/screenshots/sim_cp545_v1.18.0.png)
+![Simulator TM550 v1.18.0](docs/screenshots/sim_tm550_v1.18.0.png)
 
 Unter Simulator: «Üben: CP 545 mit Tastatur» bzw. «Üben: TM550» öffnet ein nachgebautes Gerät
 (Vorderseite mit Display und Tastenfeld nach Foto, Rückseite mit Bananenbuchsen und Anschlüssen) und

@@ -10,7 +10,7 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
-#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N)
+#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O)
 #   M: Zeitmessarten nacheinander (TM550: BASIC, TIMING, SPEED, LAP; CP: z.B. NET TIME, PTB SEQ)
 #   N: Nummern zuordnen (TM550-Smartphone-App, Identifikation AT START / MANUAL / AUTOMATIC, CP-Tastatur)
 param(
@@ -320,6 +320,17 @@ if (Ask "N  Nummern zuordnen: Startliste, Smartphone-App bzw. CP-Tastatur, je Id
         [void](Send-Cmd "#SLR")
     }
     [void](Send-Cmd "#WC 012" 4000 30000 "^DE\s")
+}
+
+# O: Zielzeit in der App zuruecknehmen: nimmt das Geraet die Nummer fuer das Ziel nochmals an?
+if (Ask "O  Ziel zuruecknehmen: Nr 40 starten und ins Ziel, dann #WP 026 04 0040 und nochmals Ziel-Impuls") {
+    [void](Send-Cmd "#WP 026 01 0040")
+    [void](Observe "O Start und Ziel" "1 Start- und 1 Ziel-Impuls (Nr 40 kommt ins Ziel)" 30)
+    [void](Send-Cmd "#WP 026 04 0040")
+    $back = Send-Cmd "#RP 026 04"
+    $script:summary += ("{0,-22} {1}" -f "Ziel 40 nochmals", $(if ($back -match "0040") { "angenommen" } else { "nicht angenommen" }))
+    [void](Observe "O Ziel nochmals" "1 Ziel-Impuls: bekommt er Nr 40? Papier und Display notieren" 30)
+    [void](Observe "O Tastatur" "CP: Start-Impuls (Nr 41), Ziel-Impuls, dann 41 E4 eingeben, nochmals Ziel-Impuls; danach E4 allein" 60)
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen

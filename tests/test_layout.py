@@ -19,11 +19,10 @@ def log_left_bottom():
     return log.winfo_ismapped() and x < 120 and y + log.winfo_height() > root.winfo_height() - 60
 check("Pfeil-Knopf ohne Text", app.btn_pin.cget("text") in ("⇤", "⇥"))
 check("angepinnt: Log unten links", log_left_bottom())
-app.toggle_sidebar_pin(); pump(0.8)
-check("versenkt: Log weiter unten links", log_left_bottom() and not app.side_outer.winfo_ismapped())
-app.toggle_sidebar_pin(); pump(0.5)
+check("Design-Knopf neben dem Pfeil", app.btn_theme.winfo_ismapped())
 app._drop_watch = lambda: None  # Xvfb: Maus steht nicht ueber dem Ausklappfeld
-app.var_nav.set("top"); app.set_nav_layout("top"); pump(0.8)
+app.toggle_sidebar_pin(); pump(0.8)
+check("Pfeil versenkt: Menü oben", app.settings["nav_layout"] == "top" and not app.side_outer.winfo_ismapped())
 check("Menü oben: Knöpfe je Abschnitt", app.topbar.winfo_ismapped() and len(app.top_buttons) >= 8
       and not app.side_outer.winfo_ismapped())
 check("Menü oben: Log unten links", log_left_bottom())
@@ -33,9 +32,18 @@ check("nur dieser Abschnitt", sum(1 for _k, _t, b in app.side_boxes if b.winfo_i
 app.toggle_dropdown("zeitmessung"); pump(0.3)
 check("nochmals klicken schliesst", not app.side_outer.winfo_ismapped())
 app.toggle_dropdown("daten"); pump(0.3); app.close_dropdown(); pump(0.2)
-app.set_nav_layout("side"); pump(0.8)
+app.toggle_sidebar_pin(); pump(0.8)
 check("zurück zur Seitenleiste", app.side_outer.winfo_ismapped() and not app.topbar.winfo_ismapped()
       and sum(1 for _k, _t, b in app.side_boxes if b.winfo_ismapped()) >= 8)
 app.rebuild_ui("light"); pump(1)
 check("Neuaufbau (Design) ohne Fehler", log_left_bottom())
+check("Version grau ohne Prüfung", app.lbl_version.cget("bg") == m.BG)
+app.handle_update_event("update_info", ({"version": (99, 0, 0), "tag": "v99.0.0", "body": "", "setup_url": "",
+                                        "html_url": "", "setup": "", "sums_url": ""}, False))
+pump(0.2)
+check("neuere Version: rot", app.lbl_version.cget("bg") in (m.RED, m.DARK_RED))
+app.handle_update_event("update_info", ({"version": m.parse_version(m.APP_VERSION), "tag": "v" + m.APP_VERSION,
+                                        "body": "", "setup_url": "", "html_url": "", "setup": "", "sums_url": ""},
+                                       False)); pump(0.2)
+check("aktuell: grün", app.lbl_version.cget("bg") == m.GREEN)
 print(f"{sum(ok)}/{len(ok)} OK"); root.destroy(); sys.exit(0 if all(ok) else 1)

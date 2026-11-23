@@ -74,7 +74,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.17.0"
+APP_VERSION = "1.18.0"
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -2909,6 +2909,9 @@ class SimCP:
             if not self.run_open:
                 self.send("AK F", c)  # ohne Lauf abgelehnt
                 return
+            if int(p[2]) == CH_FINISH and int(p[3]) != 999 and not any(x[0] == int(p[3]) for x in self.course):
+                self.send("AK F", c)  # Annahme: Boot ist fuer den CP nicht auf der Strecke (noch nicht getestet)
+                return
             if "NET" in self.mode:
                 self.next[int(p[2])] = int(p[3])  # andere Zeitmessart: AK C, aber ohne Wirkung
         elif p[0] == "#RT" and len(p) >= 3:
@@ -3652,6 +3655,7 @@ class LiveRankingApp:
         self.cp_download = None     # Zeiten waehrend #DL
         self.reset_caps("cp545")
         self.cp_b_device = None
+        self.cp_b_fw, self.cp_b_mode, self.cp_b_nr_ok, self.cp_b_next = "", "", False, None
         self.backup_reset()
         self.cp_backlog = None      # alte Zeilen aus dem Puffer des CP direkt nach dem Verbinden
         self.cp_backlog_t = 0.0
@@ -3685,6 +3689,7 @@ class LiveRankingApp:
         self.report_missing_modules()
         if getattr(sys, "frozen", False):  # nur die gebaute App prueft beim Start (nicht Tests und Entwicklung)
             self.root.after(4000, lambda: self.check_updates(manual=False))
+        self.root.after(6 * 3600 * 1000, self._periodic_update_check)
         if self.settings["conn"]["mode"] == "ethernet":
             self.refresh_adapters()
         elif self.settings["net_restore"].get("pending"):
@@ -3914,6 +3919,70 @@ class LiveRankingApp:
     # ================================================================== #
     # Updates: GitHub-Releases (nur ausgehend, nur auf Rueckfrage)
     # ================================================================== #
+    def _periodic_update_check(self):
+        """Alle 6 Stunden nach Updates sehen (nur ausgehend zu GitHub, wenn die Pruefung eingeschaltet ist)."""
+        if self.settings["updates"].get("check", True):
+            self.settings["updates"]["last_check"] = 0
+            self.check_updates(manual=False)
+        self.root.after(6 * 3600 * 1000, self._periodic_update_check)
+
+    def _version_label(self, parent):
+        lab = tk.Label(parent, text=f"v{APP_VERSION}", bg=BG, fg=MUTED, font=self.f_side_bold, cursor="hand2",
+                       padx=6, pady=1)
+        lab.bind("<Button-1>", lambda e: self.on_version_click())
+        self.root.after(10, self.refresh_version_label)
+        return lab
+
+    def refresh_version_label(self):
+        """Gruen = aktuell, Rot = neuere Version verfuegbar, Grau = nicht geprueft / keine Verbindung."""
+        st = getattr(self, "update_state", None)
+        if st is None:  # letztes Ergebnis der Pruefung (gespeichert), bis neu geprueft ist
+            latest = self.settings["updates"].get("latest", "")
+            st = "unknown"
+            if latest and self.settings["updates"].get("check", True):
+                st = "newer" if parse_version(latest) > parse_version(APP_VERSION) else "current"
+                if st == "newer":
+                    st = "unknown"  # ohne Release-Daten kein Download: neu pruefen
+            self.update_state = st
+        color = {"current": GREEN, "newer": RED}.get(st, None)
+        tip = {"current": "aktuell", "newer": f"{getattr(self, 'update_latest', '')} verfügbar, klicken zum "
+                                                "Aktualisieren"}.get(st, "nicht geprüft, klicken zum Prüfen")
+        for lab in (getattr(self, "lbl_version", None), getattr(self, "lbl_version_top", None)):
+            if lab is None:
+                continue
+            try:
+                if color:
+                    lab.configure(bg=color, fg=WHITE)
+                else:
+                    lab.configure(bg=BG, fg=MUTED)
+                lab._tip = tip
+            except tk.TclError:
+                pass
+        if st == "newer" and not getattr(self, "_ver_glow", False):
+            self._ver_glow = True
+            self.root.after(700, self._version_glow)
+
+    def _version_glow(self):
+        """Neuere Version: Anzeige leuchtet (wechselt zwischen hell- und dunkelrot)."""
+        if getattr(self, "update_state", "") != "newer":
+            self._ver_glow = False
+            return
+        self._ver_phase = not getattr(self, "_ver_phase", False)
+        for lab in (getattr(self, "lbl_version", None), getattr(self, "lbl_version_top", None)):
+            try:
+                if lab is not None:
+                    lab.configure(bg=RED if self._ver_phase else DARK_RED)
+            except tk.TclError:
+                pass
+        self.root.after(700, self._version_glow)
+
+    def on_version_click(self):
+        info = getattr(self, "update_info", None)
+        if getattr(self, "update_state", "") == "newer" and info:
+            self.offer_update(info, from_click=True)
+        else:
+            self.check_updates(manual=True)
+
     def toggle_update_check(self):
         u = self.settings["updates"]
         u["check"] = not u["check"]
@@ -3952,6 +4021,9 @@ class LiveRankingApp:
             self._update_busy = False
             err, manual = payload
             DIAG.info(f"Update-Prüfung fehlgeschlagen: {err}")
+            if getattr(self, "update_state", "unknown") != "newer":
+                self.update_state = "unknown"
+                self.refresh_version_label()
             if manual:
                 page = "https://github.com/kuewi/swv-timing-live/releases"
                 if "CERTIFICATE_VERIFY_FAILED" in err:
@@ -3972,7 +4044,14 @@ class LiveRankingApp:
             u["last_check"] = time.time()
             self.save_settings()
             DIAG.info(f"Update-Prüfung: neueste {info['tag']}, installiert v{APP_VERSION}")
-            if not info["version"] or info["version"] <= parse_version(APP_VERSION):
+            newer = bool(info["version"]) and info["version"] > parse_version(APP_VERSION)
+            self.update_state = "newer" if newer else "current"
+            self.update_info = info if newer else None
+            self.update_latest = info.get("tag", "")
+            self.settings["updates"]["latest"] = self.update_latest
+            self.save_settings()
+            self.refresh_version_label()
+            if not newer:
                 if manual:
                     messagebox.showinfo("Updates", f"Version {APP_VERSION} ist aktuell.")
                 return
@@ -3997,7 +4076,7 @@ class LiveRankingApp:
             self.log(f"Update nicht geladen: {payload}", tag="error")
             messagebox.showerror("Update", f"Das Update konnte nicht geladen werden:\n{payload}")
 
-    def offer_update(self, info):
+    def offer_update(self, info, from_click=False):
         notes = info["body"].strip()
         if len(notes) > 900:
             notes = notes[:900].rsplit("\n", 1)[0] + "\n..."
@@ -4017,7 +4096,8 @@ class LiveRankingApp:
             text += ("\n\nAchtung: der CP ist verbunden. Die App wird für das Update geschlossen. Zeiten puffert der "
                      "CP und die App holt sie nach dem Neustart nach.")
         if not messagebox.askyesno("Neue Version", text):
-            self._decline_update(info)
+            if not from_click:
+                self._decline_update(info)
             return
         self.download_update(info)
 
@@ -4416,7 +4496,8 @@ class LiveRankingApp:
         self._side_out = False
         outer.rowconfigure(0, weight=1)
         outer.columnconfigure(0, weight=1)
-        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0, bd=0)
+        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0, bd=0,
+                           yscrollincrement=int(40 * self.ui_scale))  # ein Mausrad-Schritt = 40 px
         canvas.grid(row=0, column=0, sticky="nsew")
         sbar = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         sbar.grid(row=0, column=1, sticky="ns")
@@ -4444,14 +4525,15 @@ class LiveRankingApp:
             elif event.num == 5:
                 step = 1
             else:
-                step = -1 if event.delta > 0 else 1
+                # Windows: delta 120 je Raste, Touchpads kleiner; mindestens 1 Schritt (yscrollincrement)
+                step = -int(event.delta / 120) or (-1 if event.delta > 0 else 1)
             path = str(w)
             if path.startswith(str(outer)):
                 if isinstance(w, (tk.Listbox, tk.Text)) or not sbar.winfo_ismapped():
                     return
-                canvas.yview_scroll(step * 3, "units")
+                canvas.yview_scroll(step, "units")
             elif path.startswith(str(self.cards_canvas)) and self.cards_scrolling:
-                self.cards_canvas.yview_scroll(step * 3, "units")
+                self.cards_canvas.yview_scroll(step, "units")
 
         self.root.bind_all("<MouseWheel>", on_wheel, add="+")
         self.root.bind_all("<Button-4>", on_wheel, add="+")
@@ -4483,7 +4565,8 @@ class LiveRankingApp:
         content.columnconfigure(0, weight=1)
         content.rowconfigure(0, weight=1)
         self.content = content
-        self.cards_canvas = tk.Canvas(content, bg=BG, highlightthickness=0, bd=0)
+        self.cards_canvas = tk.Canvas(content, bg=BG, highlightthickness=0, bd=0,
+                                      yscrollincrement=int(40 * self.ui_scale))
         self.cards_canvas.grid(row=0, column=0, sticky="nsew")
         self.cards_sb = tk.Scrollbar(content, orient="vertical", command=self.cards_canvas.yview)
         self.cards_canvas.configure(yscrollcommand=self.cards_sb.set)
@@ -4544,9 +4627,12 @@ class LiveRankingApp:
             # weisses Feld, damit Rot und Blau auch im dunklen Design gut lesbar sind
             tk.Label(head, image=self.logo_img, bg="#FFFFFF", bd=0, padx=int(8 * self.ui_scale),
                      pady=int(4 * self.ui_scale)).pack(side="left")
-        tk.Label(head, text=f"v{APP_VERSION}", bg=BG, fg=MUTED, font=self.f_side).pack(side="left", padx=(8, 0))
+        self.lbl_version = self._version_label(head)
+        self.lbl_version.pack(side="left", padx=(8, 0))
         self.btn_pin = self._button(head, "", self.toggle_sidebar_pin)
         self.btn_pin.pack(side="right")
+        self.btn_theme = self._button(head, "☀" if THEME == "dark" else "☾", self.toggle_theme)
+        self.btn_theme.pack(side="right", padx=(0, 6))
         pin = tk.Frame(side, bg=BG)
         pin.pack(fill="x", padx=10, pady=(8, 0))
         self._button(pin, "Fehler melden (F12)", self.open_report_dialog, DARK_RED).pack(fill="x")
@@ -4561,12 +4647,15 @@ class LiveRankingApp:
         for w in bar.winfo_children():
             w.destroy()
         self.top_buttons = {}
-        tk.Label(bar, text=f"v{APP_VERSION}", bg=BG, fg=MUTED, font=self.f_side).pack(side="left", padx=(4, 8))
+        self.lbl_version_top = self._version_label(bar)
+        self.lbl_version_top.pack(side="left", padx=(4, 8))
         for key, title, _box in self.side_boxes:
             short = title.split(" (")[0].replace("Kategorien & Nummern-Range", "Kategorien")
             b = self._button(bar, short + " ▾", lambda k=key: self.toggle_dropdown(k))
             b.pack(side="left", padx=(0, 4))
             self.top_buttons[key] = b
+        self._button(bar, "⇥", self.toggle_sidebar_pin).pack(side="right", padx=(6, 0))
+        self._button(bar, "☀" if THEME == "dark" else "☾", self.toggle_theme).pack(side="right", padx=(6, 0))
         self._button(bar, "Fehler melden", self.open_report_dialog, DARK_RED).pack(side="right")
 
     def set_nav_layout(self, layout):
@@ -4602,7 +4691,10 @@ class LiveRankingApp:
         lf.lift()
 
     def apply_sidebar_mode(self):
-        pinned = self.settings["sidebar_pinned"]
+        if not self.settings["sidebar_pinned"]:  # frueher: versenkt am linken Rand -> jetzt Menue oben
+            self.settings["sidebar_pinned"] = True
+            self.settings["nav_layout"] = "top"
+        pinned = True
         top = self.settings.get("nav_layout", "side") == "top"
         self.btn_pin.configure(text="⇤" if pinned else "⇥")
         self._side_out = False
@@ -4679,10 +4771,12 @@ class LiveRankingApp:
         self.root.after(250, self._drop_watch)
 
     def toggle_sidebar_pin(self):
-        self.settings["sidebar_pinned"] = not self.settings["sidebar_pinned"]
+        """Pfeil: Seitenleiste versenken (Menue oben mit Ausklappfeldern) bzw. wieder anpinnen."""
+        top = self.settings.get("nav_layout", "side") != "top"
+        self.settings["nav_layout"] = "top" if top else "side"
+        self.settings["sidebar_pinned"] = True
         self.save_settings()
-        self.log("Seitenleiste " + ("angepinnt" if self.settings["sidebar_pinned"] else
-                                    "versenkt: fährt am linken Rand heraus"), tag="ok")
+        self.log("Seitenleiste " + ("versenkt: Menü oben mit Ausklappfeldern" if top else "angepinnt"), tag="ok")
         self.apply_sidebar_mode()
 
     def side_show(self):
@@ -4801,12 +4895,6 @@ class LiveRankingApp:
         self.lbl_event_hint = self._label(b, "Datum als TT.MM.JJJJ, «bis» leer lassen bei einem Tag",
                                           fg=MUTED, wraplength=wrap, justify="left")
         self.lbl_event_hint.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
-        tk.Frame(b, bg=BORDER, height=1).grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 0))
-        lbl_theme = tk.Label(b, text="Helles Design", bg=PANEL, fg=TEXT, font=self.f_side, anchor="w", cursor="hand2")
-        lbl_theme.grid(row=4, column=0, columnspan=3, sticky="w", pady=(int(5 * self.ui_scale), 0))
-        self.sw_theme = Switch(b, command=self.toggle_theme, scale=self.ui_scale, on=THEME == "light")
-        self.sw_theme.grid(row=4, column=3, sticky="e", pady=(int(5 * self.ui_scale), 0))
-        lbl_theme.bind("<Button-1>", lambda e: self.toggle_theme())
         for entry, key in ((self.e_event_name, "name"), (self.e_event_from, "von"), (self.e_event_to, "bis")):
             entry.insert(0, ev.get(key, ""))
             entry.bind("<KeyRelease>", lambda e: self.schedule_event_save())
@@ -5146,11 +5234,6 @@ class LiveRankingApp:
         self.lbl_count.grid(row=5, column=0, sticky="w", pady=(4, 0))
         self._label(b, f"Daten, Logs und Fehlerberichte: {self.data_path}", fg=MUTED, wraplength=wrap,
                     justify="left").grid(row=6, column=0, sticky="w", pady=(4, 0))
-        self._label(b, "Bedienung").grid(row=9, column=0, sticky="w", pady=(10, 0))
-        self.var_nav = tk.StringVar(value=self.settings.get("nav_layout", "side"))
-        Segmented(b, (("side", "Seitenleiste"), ("top", "Menü oben")), self.var_nav,
-                  command=lambda: self.set_nav_layout(self.var_nav.get()), font=self.f_side_bold,
-                  scale=self.ui_scale).grid(row=10, column=0, sticky="ew", pady=(4, 0))
         upd = tk.Frame(b, bg=PANEL)
         upd.grid(row=7, column=0, sticky="ew", pady=(8, 0))
         upd.columnconfigure(0, weight=1)
@@ -5337,8 +5420,10 @@ class LiveRankingApp:
         if on:
             if self.cp_caps.get("preload") and (ch == CH_START or self.cp_device != "tm550"):
                 self.cp_write_param("026", ch, nr, "Sperrnummer")
-            if self.cp_b is not None and self.cp_b.connected and self.cp_b_device != "tm550":
+            if self.backup_preload_ok() and (ch == CH_START or self.cp_b_device != "tm550"):
                 self.cp_b.send(f"#WP 026 {ch:02d} {nr:04d}")
+                if ch == CH_START:
+                    self.cp_b_next = nr
             return
         if ch == CH_START:
             self.cp_next_start = None
@@ -6476,7 +6561,7 @@ class LiveRankingApp:
         self._pending_keys = pend
         if pend:
             seg.append(("\nImpulse ohne Zuordnung\n", "sub"))
-            why = {"locked": "gesperrt", "nobody": "ohne Boot", "fehl": "Fehlimpuls", "prell": "Prellzeit",
+            why = {"locked": "gesperrt", "nobody": "ohne Boot", "reserve": "nur Reserve", "fehl": "Fehlimpuls", "prell": "Prellzeit",
                    "unassigned": "Nummer am CP entfernt"}
             for j, k in enumerate(pend):
                 r = self.cp_recs[k]
@@ -7531,6 +7616,7 @@ class LiveRankingApp:
         Impuls beim Hauptgeraet oder ist es getrennt, uebernimmt die App die Zeit der Reserve (Uhr abgeglichen)."""
         self.stop_backup()
         self.backup_reset()
+        self.cp_b_fw, self.cp_b_mode, self.cp_b_nr_ok, self.cp_b_next = "", "", False, None
         if not target:
             return
         if target.startswith("usb:"):
@@ -7541,6 +7627,8 @@ class LiveRankingApp:
         else:
             info = next((i for h, i in self.cp_found if h == target), "")
             self.cp_b_device = "tm550" if "TM550" in (info or "") else ("cp545" if info else None)
+            self.cp_b_fw = (info or "").split()[-1] if info else ""
+            self.cp_b_nr_ok = self.cp_b_device == "cp545" or self.cp_b_fw >= "1.4"
             tm = self.cp_b_device == "tm550"
             self.cp_b = CPClient(target, port or (cp_ports()[0] if tm else cp_ports()[1]), self.q)
             self.cp_b.checksum = tm
@@ -7596,6 +7684,96 @@ class LiveRankingApp:
                 return
         self.b_pend.append([now, info])
 
+    def backup_ask(self, key):
+        """Abweichung Haupt/Reserve: fragen, welches Geraet gilt. Blockiert nichts, bis zur Antwort gilt die Zeit
+        der Reserve vorlaeufig. Fenster zu = Reserve bleibt."""
+        rec = self.cp_recs.get(key)
+        if rec is None:
+            return
+        ch = "Start" if key[2] == CH_START else ("Ziel" if key[2] == CH_FINISH else f"Eingang {key[2]}")
+        who = f"Nr {rec['nr']}" if rec.get("nr") else "kein Boot"
+        try:
+            dlg = self._toplevel("Abweichung Haupt- und Reserve-Gerät")
+        except tk.TclError:
+            return
+        self._b_dialogs = getattr(self, "_b_dialogs", []) + [dlg]
+        tk.Label(dlg, text=f"{ch} {fmt_tod(rec['abs'] % 86400)}: nur das Reserve-Gerät hat diesen Impuls, das "
+                           f"Hauptgerät nicht.\nVorläufig übernommen: {who}.\n\nWelches Gerät gilt?",
+                 bg=PANEL, fg=TEXT, font=self.f_side, justify="left", wraplength=self.narrow_wrap()).pack(
+            anchor="w", pady=(0, 8))
+        remember = tk.BooleanVar(value=False)
+        self._check(dlg, "Für diese Sitzung immer so", remember).pack(anchor="w", pady=(0, 8))
+
+        def pick(choice):
+            try:
+                dlg.destroy()
+            except tk.TclError:
+                pass
+            self.backup_decide(key, choice, remember.get())
+
+        self._button(dlg, "Reserve übernehmen", lambda: pick("reserve"), GREEN).pack(fill="x", pady=(0, 4))
+        self._button(dlg, "Hauptgerät gilt (Impuls verwerfen)", lambda: pick("main"), DARK_RED).pack(fill="x")
+        dlg.protocol("WM_DELETE_WINDOW", lambda: pick("reserve"))
+        self._place(dlg, narrow=True)
+
+    def backup_decide(self, key, choice, remember=False):
+        if remember:
+            self._b_rule = choice
+            self.log("Abweichung Haupt/Reserve für diese Sitzung: " + ("Reserve übernehmen" if choice == "reserve"
+                                                                        else "Hauptgerät gilt"), tag="ok")
+            for d in getattr(self, "_b_dialogs", []):
+                try:
+                    d.destroy()
+                except tk.TclError:
+                    pass
+            self._b_dialogs = []
+        rec = self.cp_recs.get(key)
+        if rec is None or choice != "main":
+            if rec is not None:
+                self.log(f"Abweichung {fmt_tod(rec['abs'] % 86400)}: Zeit der Reserve gilt", tag="ok")
+            return
+        nr = rec.get("nr", 0)
+        if key[2] == CH_FINISH and rec["status"] == "ok":
+            self.undo_finish(key)
+            self.log(f"Abweichung: Zielzeit {fmt_tod(rec['abs'] % 86400)} der Reserve verworfen, Nr {nr} wieder "
+                     "auf der Strecke", tag="warn")
+        elif key[2] == CH_START and rec["status"] == "ok" and nr > 0:
+            self.unstart(nr)
+            self.log(f"Abweichung: Startzeit {fmt_tod(rec['abs'] % 86400)} der Reserve verworfen, Nr {nr} wieder "
+                     "als nächstes am Start", tag="warn")
+        rec.update(status="reserve", nr=0, start=None)
+        self.save_autosave()
+        self.on_data_changed()
+        self.course_changed()
+        self.update_panels()
+        self.cp_sync_next("Abweichung")
+
+    def unstart(self, nr):
+        """Nr wieder als naechstes an den Start (Startzeit verworfen)."""
+        if self.last_start_nr == nr and nr in self.order_index:
+            i = self.order_index[nr]
+            self.last_start_nr = self.start_order[i - 1] if i > 0 else None
+
+    def backup_preload_ok(self):
+        """Nimmt das Reserve-Geraet vorgeladene Startnummern an? CP 545 ja; TM550 ab 1.48 in TIMING (bzw. solange
+        die Zeitmessart unbekannt ist und keine Startzeit ohne Nummer kam)."""
+        if self.cp_b is None or not self.cp_b.connected:
+            return False
+        if self.cp_b_device == "cp545":
+            return True
+        if self.cp_b_device == "tm550":
+            mode = (getattr(self, "cp_b_mode", "") or "").upper()
+            return bool(getattr(self, "cp_b_nr_ok", False)) and mode in ("", "TIMING")
+        return False
+
+    def backup_preload(self, nr):
+        """Naechste Startnummer in die Reserve laden (ohne Zuruecklesen; der TM550 verbraucht sie beim Start)."""
+        if not self.backup_preload_ok() or getattr(self, "cp_b_next", None) == nr:
+            return
+        self.cp_b_next = nr
+        DIAG.debug(f"CP B> #WP 026 {CH_START:02d} {nr:04d}")
+        self.cp_b.send(f"#WP 026 {CH_START:02d} {nr:04d}")
+
     def backup_match(self, a, b, rx_gap):
         if self.b_offset is not None:
             return abs(b["abs"] - self.b_offset - a["abs"]) <= 0.05
@@ -7641,6 +7819,10 @@ class LiveRankingApp:
         self.a_pend.append([now, info])
 
     def backup_pair(self, a, b):
+        if a.get("nr") and b.get("nr") and a["nr"] != b["nr"] and self.backup_preload_ok():
+            self.log(f"Haupt- und Reserve-Gerät: verschiedene Nummern für denselben Impuls "
+                     f"({fmt_tod(a['abs'] % 86400)}, Eingang {a['ch']}): Haupt Nr {a['nr']}, Reserve Nr {b['nr']}. "
+                     "Es gilt die Nummer des Hauptgeräts", tag="warn")
         off = b["abs"] - a["abs"]
         if self.b_offset is not None and abs(off - self.b_offset) > 0.5:
             self.log(f"Reserve-Gerät: Uhrversatz springt von {self.b_offset:+.3f} s auf {off:+.3f} s "
@@ -7661,11 +7843,26 @@ class LiveRankingApp:
         wait = self.backup_wait()
         for rx, b in [x for x in self.b_pend if now - x[0] > wait]:
             self.b_pend.remove([rx, b])
+            key = ("B", self.cp_run, b["ch"], b["seq"])
             if self.main_connected():
                 tod = fmt_tod(self.backup_corrected(b)["abs"] % 86400)
-                self.log(f"Impuls {tod} auf Eingang {b['ch']} nur beim Reserve-Gerät: Zeit der Reserve übernommen",
-                         tag="warn")
-                self.add_ticker(f"Zeit {tod} vom Reserve-Gerät übernommen (Hauptgerät hat sie nicht)", "warn")
+                rule = getattr(self, "_b_rule", None)
+                if rule == "main":
+                    c = self.backup_corrected(b)
+                    self.cp_recs[key] = {"nr": 0, "cp_nr": b["nr"], "abs": c["abs"], "status": "reserve"}
+                    self.log(f"Impuls {tod} auf Eingang {b['ch']} nur beim Reserve-Gerät: verworfen (Hauptgerät "
+                             "gilt für diese Sitzung), unter «Auf Fahrstrecke» als «nur Reserve»", tag="warn")
+                    self.save_autosave()
+                    self.course_changed()
+                    continue
+                self.log(f"Abweichung: Impuls {tod} auf Eingang {b['ch']} nur beim Reserve-Gerät, das Hauptgerät "
+                         "hat ihn nicht. Zeit der Reserve vorläufig übernommen", tag="warn")
+                self.add_ticker(f"Abweichung: Zeit {tod} nur beim Reserve-Gerät", "warn")
+                self.b_taken += 1
+                self.on_cp_time(self.backup_corrected(b), "B")
+                if rule is None:
+                    self.backup_ask(key)
+                continue
             self.b_taken += 1
             self.on_cp_time(self.backup_corrected(b), "B")
         for rx, a in [x for x in self.a_pend if now - x[0] > wait]:
@@ -8053,6 +8250,10 @@ class LiveRankingApp:
     def cp_sync_next(self, reason=""):
         """Naechste Startnummer aus der Startliste im CP vorladen, wenn sie von seiner Folge abweicht."""
         if not self.eth_mode() or self.cp is None or not self.cp.connected or not self.cp_caps["preload"]:
+            if self.eth_mode() and not self.tset().get("lock_start"):
+                nxt = self.next_starters(1)
+                if nxt:
+                    self.backup_preload(nxt[0])  # Reserve auch, wenn das Hauptgeraet nicht vorlaedt
             return
         if self.tset().get("lock_start"):
             return  # Sperrnummer bleibt vorgeladen
@@ -8060,6 +8261,7 @@ class LiveRankingApp:
         if not nxt:
             return
         want = nxt[0]
+        self.backup_preload(want)
         if want == self.cp_next_start or getattr(self, "_cp_next_pending", None) == want:
             return
         self._cp_next_pending = want
@@ -8072,9 +8274,6 @@ class LiveRankingApp:
                 return
             if ok:
                 self.cp_next_start = want
-                if self.cp_b is not None and self.cp_b.connected and self.cp_b_device != "tm550":
-                    DIAG.debug(f"CP B> #WP 026 {CH_START:02d} {want:04d}")
-                    self.cp_b.send(f"#WP 026 {CH_START:02d} {want:04d}")  # Reserve gleich nummerieren
                 self.update_panels()
             # Startliste hat sich inzwischen geaendert: nochmals abgleichen
             self.root.after(50, self.cp_sync_next)
@@ -8126,11 +8325,17 @@ class LiveRankingApp:
             return
         self._cp_finish_pending = target
 
-        def done(ok, _why=""):
+        def done(ok, why=""):
             self._cp_finish_pending = None
             if ok:
                 self.cp_finish_want = target
-            self.root.after(50, self.cp_sync_finish)
+                self.root.after(50, self.cp_sync_finish)
+            elif why in ("vom CP abgelehnt", "CP meldet 0") and target not in getattr(self, "_restore_told", set()):
+                self._restore_told = getattr(self, "_restore_told", set()) | {target}
+                self.log(f"CP nimmt Nr {target} für das Ziel nicht an (für den CP ist es schon im Ziel). Der nächste "
+                         f"Zielimpuls kommt am CP ohne Nummer, die App ordnet ihn Nr {target} zu. Am CP vor dem "
+                         f"Zielimpuls «{target} E4» eingeben, dann stimmen Papierstreifen und CP überein.",
+                         tag="warn")
 
         self.cp_write_param("026", CH_FINISH, target, "nächstes Ziel", done)
 
@@ -8258,8 +8463,20 @@ class LiveRankingApp:
                 info["day"] = pc_day
                 info["abs"] = info["day"] * 86400 + info["tod"]
         self.raw_log(dev, raw)
+        if dev == "B" and info["kind"] in ("open", "close"):
+            self.cp_b_mode = info.get("mode", "") if info["kind"] == "open" else ""
+            self.cp_b_open = info["kind"] == "open"
+            if info["kind"] == "open":
+                self.cp_b_next = None
+                self.root.after(100, lambda: self.cp_sync_next("Reserve: Lauf offen"))
         if dev == "B" and info["kind"] == "serial":
             self.cp_b_device = "tm550" if "TM550" in info["type"].upper() else "cp545"
+            self.cp_b_fw = info.get("version", "")
+            self.cp_b_nr_ok = self.cp_b_device == "cp545" or self.cp_b_fw >= "1.4"
+            self.cp_b_next = None
+            if self.cp_b is not None and self.cp_b_device == "tm550":
+                self.cp_b.checksum = True
+            self.root.after(100, lambda: self.cp_sync_next("Reserve verbunden"))
             self.log(f"Reserve-Gerät: {info['type']} Nr {info['serial']} {info['version']}".strip(), tag="ok")
             return
         if dev == "A" and self.cp_backlog is not None:
@@ -8557,8 +8774,14 @@ class LiveRankingApp:
         if typ.startswith("A"):
             typ = "T" + typ[1:]  # Antwort auf #RT / #DL wie eine normale Zeit behandeln
         ch, seq, cpn = t["ch"], t["seq"], t["nr"]
-        if (dev == "A" and self.cp_caps["ignore_nr"]) or (dev == "B" and self.cp_b_device == "tm550"):
-            cpn = 0  # TM550: Nummern vom Geraet sind nur Zaehler, die App vergibt die Nummern
+        if dev == "B" and self.cp_b_device == "tm550" and self.backup_preload_ok() and cpn <= 0 \
+                and t["ch"] == CH_START and t["type"] == "TN":
+            self.cp_b_nr_ok = False  # TM550 als Reserve liefert keine Nummern (Zeitmessart ohne Nummern)
+            self.log("Reserve TM550: Startzeit ohne Nummer, die App vergibt die Nummern der Reserve selbst",
+                     tag="warn")
+        if (dev == "A" and self.cp_caps["ignore_nr"]) or (dev == "B" and self.cp_b_device == "tm550"
+                                                          and not self.backup_preload_ok()):
+            cpn = 0  # TM550 ohne Vorladen: Nummern vom Geraet sind nur Zaehler, die App vergibt die Nummern
         key = (dev, self.cp_run, ch, seq)
         rec = self.cp_recs.get(key)
         if typ == "TC" and rec is not None and abs(rec["abs"] - t["abs"]) > 0.01:
@@ -8649,9 +8872,7 @@ class LiveRankingApp:
         self.log(f"{dev}: Startzeit von Nr {nr} ({fmt_tod(self.cp_recs[key]['abs'] % 86400)}) storniert "
                  "(Falschstart). Nr {0} ist wieder als nächstes am Start.".format(nr), tag="warn")
         self.add_ticker(f"Falschstart: Nr {nr} startet nochmals", "warn")
-        if self.last_start_nr == nr and nr in self.order_index:
-            i = self.order_index[nr]
-            self.last_start_nr = self.start_order[i - 1] if i > 0 else None
+        self.unstart(nr)
         self.save_autosave()
         self.course_changed()
         self.update_panels()
@@ -8666,8 +8887,18 @@ class LiveRankingApp:
                    for k, r in self.run_recs(ch))
 
     def bounce_tag(self, ch, abs_t):
-        """Doppelkontakt unter 0.2 s (TM550 1.48 bei fast jedem Zielimpuls) nur leise protokollieren."""
+        """Doppelkontakt unter 0.2 s nur leise protokollieren (prellender Kontakt, z.B. Kabel mit Bananensteckern
+        statt Taster). Haeufen sie sich auf einem Eingang (3 in 10 min), einmal darauf hinweisen."""
         near = min((abs(abs_t - r["abs"]) for _k, r in self.run_recs(ch) if r["status"] == "ok"), default=1.0)
+        now = time.time()
+        hist = self._bounce_hist = getattr(self, "_bounce_hist", {})
+        hist[ch] = [t for t in hist.get(ch, []) if now - t < 600] + [now]
+        told = self._bounce_told = getattr(self, "_bounce_told", set())
+        if len(hist[ch]) >= 3 and ch not in told:
+            told.add(ch)
+            self.log(f"Eingang {ch} prellt ({len(hist[ch])} Doppelkontakte in 10 min). Kontakt bzw. Kabel prüfen. Die "
+                     "Zweitimpulse werden verworfen.", tag="warn")
+            self.add_ticker(f"Eingang {ch} prellt, Kontakt prüfen", "warn")
         return "test" if near < 0.2 else "warn"
 
     def on_start_impulse(self, key, cpn, abs_t):
@@ -8804,20 +9035,61 @@ class LiveRankingApp:
         if not rec or rec["status"] != "ok":
             return
         nr = rec["nr"]
+        skey = rec.get("start")
         self.undo_finish(fkey)
         rec.update(status="fehl", nr=0, start=None)
         self.log(f"Zielzeit {fmt_tod(rec['abs'] % 86400)} ungültig geschaltet, Nr {nr} wieder auf der Strecke",
                  tag="warn")
+        self.device_restore_finish(nr, skey, fkey)
         self.add_ticker(f"Zielzeit von Nr {nr} ungültig (Fehlimpuls), Nr {nr} wieder auf der Strecke", "warn")
         self.save_autosave()
         self.on_data_changed()
         self.course_changed()
 
+    def device_restore_finish(self, nr, skey, fkey):
+        """Zielzeit in der App zurueckgenommen: das Geraet fuehrt das Boot weiter als fertig. CP 545: «am CP fertig»
+        aufheben und die Nummer auf den Zieleingang vorladen, sobald das Boot als naechstes erwartet wird.
+        TM550 laesst sich dafuer nicht fernsteuern."""
+        st = self.cp_recs.get(skey) if skey else None
+        if fkey[0] == "A" and self.cp_device == "tm550" or fkey[0] == "B" and self.cp_b_device == "tm550":
+            self.log(f"TM550 führt Nr {nr} weiter als im Ziel. Der nächste Zielimpuls kommt dort ohne Nummer, die "
+                     f"App ordnet ihn Nr {nr} zu. Am TM550 lässt sich das in der Smartphone-App korrigieren.",
+                     tag="warn")
+            return
+        if st is None or not self.eth_mode():
+            return
+        st["cp_done"] = False
+        self._restore_told = set(getattr(self, "_restore_told", set())) - {nr}
+        self.cp_finish_want = None
+        self._cp_finish_pending = None
+        if self.cp is not None and self.cp.connected and self.cp_caps.get("preload") and fkey[0] == "A":
+            target = st["cp_nr"] or nr
+            course = self.compute_course()
+            if course and course[0][1] == nr:
+                def done(ok, why=""):
+                    if ok:
+                        self.cp_finish_want = target
+                        self.log(f"CP: nächster Zielimpuls am CP bekommt wieder Nr {target}", tag="ok")
+                    else:
+                        self.log(f"CP nimmt Nr {target} für das Ziel nicht an (für den CP ist es schon im Ziel). "
+                                 f"Der nächste Zielimpuls kommt am CP ohne Nummer, die App ordnet ihn Nr {nr} zu. Am "
+                                 f"CP vor dem Zielimpuls «{target} E4» eingeben, dann stimmen Papierstreifen und CP "
+                                 "überein.", tag="warn")
+                        self._restore_told = getattr(self, "_restore_told", set()) | {target}
+                self.cp_write_param("026", CH_FINISH, target, "nächstes Ziel", done)
+            else:
+                self.log(f"CP: Nr {nr} wird für das Ziel am CP vorgeladen, sobald es als nächstes erwartet wird",
+                         tag="ok")
+        course = self.compute_course()
+        if self.cp_b is not None and self.cp_b.connected and self.cp_b_device == "cp545" and course \
+                and course[0][1] == nr:
+            self.cp_b.send(f"#WP 026 {CH_FINISH:02d} {st['cp_nr'] or nr:04d}")
+
     def pending_impulses(self):
         """Impulse ohne Zuordnung im laufenden Lauf, neueste zuletzt."""
         items = [(r["abs"], k) for k, r in self.run_recs()
                  if k[2] in (CH_START, CH_FINISH) and r["status"] in ("locked", "nobody", "fehl", "prell",
-                                                                         "unassigned")]
+                                                                         "unassigned", "reserve")]
         return [k for _a, k in sorted(items)][-8:]
 
     def on_cp_result(self, info):
@@ -9074,7 +9346,7 @@ class LiveRankingApp:
         if self.sim is None or self.sim.device != device:
             if self.sim is not None:
                 self.sim.close()
-            self.sim = SimCP(device=device, bounce=device == "tm550", fw="1.48" if device == "tm550" else "VB16")
+            self.sim = SimCP(device=device, fw="1.48" if device == "tm550" else "VB16")
             self.log(f"Simulator {self.DEVICE_LABEL[device]} ({self.sim.fw}) gestartet (127.0.0.1:{self.sim.port})",
                      tag="ok")
         if self.settings["conn"]["mode"] != "ethernet":
@@ -9679,7 +9951,7 @@ class LiveRankingApp:
             doc.table([("Pos", .07, "right"), ("Nr", .07, "right"), ("Name", .30, "left"), ("Verein", .24, "left"),
                        ("Kategorie", .17, "left"), ("Zeit/Status", .15, "right")], rows)
         else:  # Zeitprotokoll wie der Papierstreifen des CP
-            why = {"ok": "", "locked": "gesperrt", "nobody": "ohne Boot", "fehl": "Fehlimpuls", "prell": "Prellzeit",
+            why = {"ok": "", "locked": "gesperrt", "nobody": "ohne Boot", "reserve": "nur Reserve", "fehl": "Fehlimpuls", "prell": "Prellzeit",
                    "unassigned": "ohne Nummer (CP)", "cancelled": "storniert (CP)", "invalid": "ungültig",
                    "dup": "doppelt (Reserve)", "ignored": "ausgeschieden"}
             rows = []
