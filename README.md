@@ -63,6 +63,7 @@ Die Browser-Anzeige (nur lokales Netz, mit Schlüssel) bietet zusätzlich eine A
 den WebSocket `/ws` (`&stream=all` für alles in einer Nachricht). Übersicht unter `/api?key=…`.
 
 Pläne für die API und die Anbindung ans Onlinetool: [docs/plaene_api_onlinetool.md](docs/plaene_api_onlinetool.md).
+Notizen zu weiteren Geräten: [FDS TBox / DBox](docs/fds_tbox.md).
 
 ## Start und Build
 
