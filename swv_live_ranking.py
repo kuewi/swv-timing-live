@@ -74,7 +74,8 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.18.0"
+APP_VERSION = "1.18.1"
+ORANGE = "#D9730D"   # Update geladen, wartet auf Installation
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
 TOP_N = 5
@@ -241,7 +242,8 @@ DEFAULT_SETTINGS = {
              "adapter": "",
              "usb_port": "", "usb_baud": 9600, "usb_ack": False},
     "net_restore": {"pending": False, "adapter": ""},
-    "updates": {"check": True, "last_check": 0, "declined": "", "declined_at": 0},
+    "updates": {"check": True, "last_check": 0, "declined": "", "declined_at": 0, "ready_path": "", "ready_tag": "",
+                "install_on_exit": False},
 }
 
 SHOW_LABELS = [
@@ -3944,9 +3946,16 @@ class LiveRankingApp:
                 if st == "newer":
                     st = "unknown"  # ohne Release-Daten kein Download: neu pruefen
             self.update_state = st
-        color = {"current": GREEN, "newer": RED}.get(st, None)
+        u = self.settings["updates"]
+        if st != "ready" and self.update_ready_for(u.get("ready_tag")) \
+                and parse_version(u.get("ready_tag")) > parse_version(APP_VERSION):
+            st = self.update_state = "ready"
+        color = {"current": GREEN, "newer": RED, "ready": ORANGE}.get(st, None)
+        when = "beim Beenden" if u.get("install_on_exit") else "wenn du es auslöst"
         tip = {"current": "aktuell", "newer": f"{getattr(self, 'update_latest', '')} verfügbar, klicken zum "
-                                                "Aktualisieren"}.get(st, "nicht geprüft, klicken zum Prüfen")
+                                                "Herunterladen",
+               "ready": f"{u.get('ready_tag', '')} geladen, wird installiert {when}"}.get(
+            st, "nicht geprüft, klicken zum Prüfen")
         for lab in (getattr(self, "lbl_version", None), getattr(self, "lbl_version_top", None)):
             if lab is None:
                 continue
@@ -3978,7 +3987,9 @@ class LiveRankingApp:
 
     def on_version_click(self):
         info = getattr(self, "update_info", None)
-        if getattr(self, "update_state", "") == "newer" and info:
+        if getattr(self, "update_state", "") == "ready":
+            self.update_choice()
+        elif getattr(self, "update_state", "") == "newer" and info:
             self.offer_update(info, from_click=True)
         else:
             self.check_updates(manual=True)
@@ -4045,7 +4056,7 @@ class LiveRankingApp:
             self.save_settings()
             DIAG.info(f"Update-Prüfung: neueste {info['tag']}, installiert v{APP_VERSION}")
             newer = bool(info["version"]) and info["version"] > parse_version(APP_VERSION)
-            self.update_state = "newer" if newer else "current"
+            self.update_state = ("ready" if self.update_ready_for(info["tag"]) else "newer") if newer else "current"
             self.update_info = info if newer else None
             self.update_latest = info.get("tag", "")
             self.settings["updates"]["latest"] = self.update_latest
@@ -4069,7 +4080,7 @@ class LiveRankingApp:
             return
         if kind == "update_ready":
             self._update_busy = False
-            self.launch_setup(payload)
+            self.update_set_ready(payload)
             return
         if kind == "update_failed":
             self._update_busy = False
@@ -4091,10 +4102,12 @@ class LiveRankingApp:
             else:
                 self._decline_update(info)
             return
-        text = f"Version {info['tag'].lstrip('v')} ist verfügbar (installiert: {APP_VERSION}).\n\n{notes}\n\nJetzt aktualisieren?"
-        if self.cp is not None and self.cp.connected:
-            text += ("\n\nAchtung: der CP ist verbunden. Die App wird für das Update geschlossen. Zeiten puffert der "
-                     "CP und die App holt sie nach dem Neustart nach.")
+        if self.update_ready_for(info["tag"]):
+            self.update_choice()
+            return
+        text = (f"Version {info['tag'].lstrip('v')} ist verfügbar (installiert: {APP_VERSION}).\n\n{notes}\n\n"
+                "Jetzt im Hintergrund herunterladen? Die App läuft weiter. Wann installiert wird, wählst du danach: "
+                "jetzt, in 8 Stunden oder beim Beenden der App.")
         if not messagebox.askyesno("Neue Version", text):
             if not from_click:
                 self._decline_update(info)
@@ -4142,10 +4155,118 @@ class LiveRankingApp:
 
         threading.Thread(target=work, daemon=True, name="Update-Download").start()
 
-    def launch_setup(self, path):
-        """Setup starten (Windows fragt nach Adminrechten) und die App schliessen."""
+    # ---- Update installieren: nie von selbst, nie waehrend des Wettkampfs ---- #
+    def update_ready_for(self, tag):
+        u = self.settings["updates"]
+        return bool(u.get("ready_path")) and u.get("ready_tag") == tag and os.path.isfile(u["ready_path"])
+
+    def update_set_ready(self, path):
+        """Setup geladen und geprueft: Anzeige orange, Zeitpunkt waehlen lassen. Die App laeuft weiter."""
+        info = getattr(self, "update_info", None) or {}
+        u = self.settings["updates"]
+        u["ready_path"], u["ready_tag"] = path, info.get("tag", u.get("ready_tag", ""))
+        u["install_on_exit"] = False
+        self.save_settings()
+        self.update_state = "ready"
+        self.refresh_version_label()
+        self.log(f"Update {u['ready_tag']} geladen und geprüft. Installiert wird erst, wenn du es auslöst "
+                 "(jetzt, in 8 Stunden oder beim Beenden).", tag="ok")
+        self.update_choice()
+
+    def update_busy_reason(self):
+        """Grund, warum jetzt nicht installiert wird (Wettkampf laeuft), sonst ''."""
+        parts = []
+        if self.cp is not None and self.cp.connected:
+            parts.append(f"{self.dev_name()} verbunden")
+        elif self.reader is not None:
+            parts.append("RS232 verbunden")
+        if self.cp_b is not None and self.cp_b.connected:
+            parts.append("Reserve verbunden")
+        n = len(self.course)
+        if n:
+            parts.append(f"{n} {'Boot' if n == 1 else 'Boote'} auf der Strecke")
+        return ", ".join(parts)
+
+    def update_choice(self):
+        """Fenster: jetzt installieren (nur ohne Verbindung und ohne Boote auf der Strecke), in 8 Stunden, beim
+        Beenden. Blockiert nichts."""
+        u = self.settings["updates"]
+        if not self.update_ready_for(u.get("ready_tag")):
+            return
+        old = getattr(self, "_update_dlg", None)
+        try:
+            if old is not None and old.winfo_exists():
+                old.destroy()
+        except tk.TclError:
+            pass
+        try:
+            dlg = self._toplevel("Update installieren")
+        except tk.TclError:
+            return
+        self._update_dlg = dlg
+        busy = self.update_busy_reason()
+        tk.Label(dlg, text=f"Version {u['ready_tag'].lstrip('v')} ist geladen und geprüft.\nWann installieren? Die "
+                           "App schliesst sich dafür nie von selbst.", bg=PANEL, fg=TEXT, font=self.f_side,
+                 justify="left", wraplength=self.narrow_wrap()).pack(anchor="w", pady=(0, 8))
+        b_now = self._button(dlg, "Jetzt installieren", lambda: pick("now"), GREEN if not busy else None)
+        b_now.pack(fill="x", pady=(0, 4))
+        if busy:
+            b_now.configure(state="disabled")
+            tk.Label(dlg, text=f"Gesperrt: {busy}. Erst nach dem Wettkampf (trennen, Strecke leer).", bg=PANEL,
+                     fg=GOLD, font=self.f_side, justify="left", wraplength=self.narrow_wrap()).pack(
+                anchor="w", pady=(0, 6))
+        self._button(dlg, "In 8 Stunden", lambda: pick("later")).pack(fill="x", pady=(0, 4))
+        self._button(dlg, "Beim Beenden der App", lambda: pick("exit")).pack(fill="x")
+        dlg.protocol("WM_DELETE_WINDOW", lambda: pick("later"))
+        self._place(dlg, narrow=True)
+
+        def pick(choice):
+            try:
+                dlg.destroy()
+            except tk.TclError:
+                pass
+            self.update_choose(choice)
+
+    def update_choose(self, choice):
+        u = self.settings["updates"]
+        path = u.get("ready_path", "")
+        if choice == "now":
+            busy = self.update_busy_reason()
+            if busy:
+                messagebox.showinfo("Update", f"Jetzt nicht: {busy}. Das Update bleibt geladen.")
+                return
+            self.launch_setup(path)
+            return
+        if choice == "exit":
+            u["install_on_exit"] = True
+            self.save_settings()
+            self.log(f"Update {u.get('ready_tag', '')} wird beim Beenden der App installiert.", tag="ok")
+        else:
+            self.log(f"Update {u.get('ready_tag', '')}: Erinnerung in 8 Stunden.", tag="ok")
+            self._schedule_update_remind(8 * 3600)
+        self.refresh_version_label()
+
+    def _schedule_update_remind(self, sec):
+        if getattr(self, "_upd_remind_job", None):
+            try:
+                self.root.after_cancel(self._upd_remind_job)
+            except tk.TclError:
+                pass
+        self._upd_remind_job = self.root.after(int(sec * 1000), self._update_remind)
+
+    def _update_remind(self):
+        """Erinnerung: nur in einem ruhigen Moment fragen, sonst eine Stunde spaeter nochmals."""
+        self._upd_remind_job = None
+        if not self.update_ready_for(self.settings["updates"].get("ready_tag")):
+            return
+        if self.update_busy_reason():
+            self._schedule_update_remind(3600)
+            return
+        self.update_choice()
+
+    def start_setup(self, path):
+        """Setup starten (Windows fragt nach Adminrechten). True, wenn gestartet."""
         DIAG.warning(f"Update: starte {path}")
-        self.log("Update geladen und geprüft. Die App wird geschlossen, das Setup startet.", tag="ok")
         if IS_WINDOWS:
             try:
                 import ctypes
@@ -4153,8 +4274,21 @@ class LiveRankingApp:
                 if r <= 32:
                     raise OSError(f"ShellExecute {r}")
             except Exception as exc:
-                messagebox.showerror("Update", f"Setup nicht gestartet: {exc}\n{path}")
-                return
+                DIAG.error(f"Setup nicht gestartet: {exc}")
+                return False
+        u = self.settings["updates"]
+        u["ready_path"], u["ready_tag"], u["install_on_exit"] = "", "", False
+        self.save_settings()
+        return True
+
+    def launch_setup(self, path):
+        """Auf ausdruecklichen Wunsch (Knopf «Jetzt installieren», ohne laufenden Wettkampf): Setup starten und die
+        App schliessen."""
+        self.log("Update: Setup startet, die App wird geschlossen.", tag="ok")
+        if not self.start_setup(path):
+            messagebox.showerror("Update", f"Setup nicht gestartet.\n{path}")
+            return
+        self._setup_started = True
         self.root.after(500, self.on_close)
 
     # ================================================================== #
@@ -11848,6 +11982,10 @@ class LiveRankingApp:
             if ok:
                 self.settings["net_restore"] = {"pending": False, "adapter": ""}
                 self.save_settings()
+        u = self.settings["updates"]
+        if u.get("install_on_exit") and not getattr(self, "_setup_started", False) \
+                and self.update_ready_for(u.get("ready_tag")):
+            self.start_setup(u["ready_path"])  # vom Benutzer gewaehlt: beim Beenden installieren
         self.root.destroy()
 
 

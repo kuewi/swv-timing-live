@@ -42,9 +42,31 @@ check("Version im Fenstertitel", f"v{m.APP_VERSION}" in root.title())
 app.settings["updates"]["last_check"] = 0
 app.check_updates(manual=False); pump(1.0)
 check("neue Version angeboten mit Release-Text", any("Neue Version" == t and "Testfunktion" in msg for _k, t, msg in asked))
-check("Setup geladen, Prüfsumme ok, gestartet", launched and open(launched[0], "rb").read() == payload)
+check("Setup geladen und geprüft, nicht von selbst gestartet", not launched and app.update_state == "ready"
+      and open(app.settings["updates"]["ready_path"], "rb").read() == payload)
+check("Anzeige orange", app.lbl_version.cget("bg") == m.ORANGE)
+check("Auswahlfenster offen", app._update_dlg.winfo_exists())
+# Wettkampf laeuft: jetzt installieren gesperrt
+app.course = [(0.0, 1, ("A", 1, 1, 1))]
+check("Grund: Boot auf der Strecke", "1 Boot auf der Strecke" in app.update_busy_reason())
+app.update_choose("now"); pump(0.2)
+check("jetzt: gesperrt während Wettkampf", not launched)
+# 8 Stunden: Erinnerung, waehrend Wettkampf eine Stunde spaeter
+app.update_choose("later")
+check("Erinnerung geplant", app._upd_remind_job is not None)
+app._update_remind()
+check("Erinnerung im Wettkampf verschoben", app._upd_remind_job is not None and not launched)
+# beim Beenden
+app.update_choose("exit")
+check("beim Beenden vorgemerkt", app.settings["updates"]["install_on_exit"])
+started = []
+app.start_setup = lambda path: started.append(path) or True
+app.course = []
+app.update_choose("now"); pump(0.2)
+check("ohne Wettkampf: jetzt installieren", launched)
 # falsche Pruefsumme
 launched.clear(); asked.clear()
+app.settings["updates"].update(ready_path="", ready_tag="", install_on_exit=False); app.update_state = None
 sums["txt"] = f"{'0' * 64}  SWV_LiveRanking_Setup_{newer}.exe\n"
 app.check_updates(manual=True); pump(1.0)
 check("falsche Prüfsumme: nicht gestartet", not launched and any(k == "error" for k, _t, _m in asked))
@@ -63,4 +85,11 @@ check("aktuell: Meldung bei manueller Suche", any("aktuell" in msg for _k, _t, m
 app.settings["updates"]["check"] = False; app.settings["updates"]["last_check"] = 0
 n = calls["fetch"]; app.check_updates(manual=False); pump(0.5)
 check("abgeschaltet: keine Prüfung beim Start", calls["fetch"] == n)
+# beim Beenden: Setup startet nach dem Aufraeumen
+f = os.path.join(D, "setup_test.exe"); open(f, "wb").write(b"x")
+app.settings["updates"].update(ready_path=f, ready_tag="v" + newer, install_on_exit=True)
+started = []
+app.start_setup = lambda path: started.append(path) or True
+app.on_close()
+check("beim Beenden installiert", started == [f])
 print("GESAMT", "OK" if all(ok) else "FEHLER")

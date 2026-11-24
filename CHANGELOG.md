@@ -1,5 +1,8 @@
 # Änderungen
 
+## v1.18.1 (24.11.2026)
+- Update: Die App schliesst sich nie mehr von selbst. Das Setup wird im Hintergrund geladen und geprüft, die Versionsanzeige wird orange. Danach wählen: «Jetzt installieren» (nur ohne verbundenes Gerät und ohne Boote auf der Strecke, sonst gesperrt mit Grund), «In 8 Stunden» (erinnert nur in einem ruhigen Moment, sonst eine Stunde später) oder «Beim Beenden der App» (Setup startet, nachdem du die App geschlossen hast). Klick auf die orange Versionsnummer öffnet die Auswahl wieder
+
 ## v1.18.0 (24.11.2026)
 - Reserve-Gerät: Hat nur die Reserve einen Impuls, meldet die App die Abweichung und fragt in einem Fenster, welches Gerät gilt («Reserve übernehmen» oder «Hauptgerät gilt»), auf Wunsch für die ganze Sitzung. Das Rennen läuft weiter, bis zur Antwort gilt die Zeit der Reserve vorläufig. Verworfene Impulse stehen unter «Auf Fahrstrecke» als «nur Reserve». Ist das Hauptgerät getrennt, übernimmt die Reserve ohne Frage
 - TM550 1.48 als Reserve in TIMING: bekommt die nächste Startnummer vorgeladen (mit Prüfsumme), seine Nummern werden übernommen. Verschiedene Nummern von Haupt- und Reserve-Gerät für denselben Impuls werden gemeldet, es gilt das Hauptgerät. Sperrnummer auch an der Reserve
