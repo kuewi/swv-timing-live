@@ -1,5 +1,16 @@
 # Änderungen
 
+## v1.19.0 (24.11.2026)
+- Kleine Bildschirme (13''-Laptops): Die Oberfläche passt sich an die nutzbare Fläche an (Bezug 1600 × 900 bei 100 %), Schriften, Abstände und Seitenleiste werden kleiner. Unter Daten › Grösse der Oberfläche: Auto, 90 %, 100 %, 110 %, wirkt sofort. Dialoge sind höchstens so hoch wie der Bildschirm, Tabellen und Textfelder schrumpfen, die Knöpfe (z.B. «Importieren» bei Startliste einlesen) bleiben sichtbar
+- Menü oben ist der Standard. Ist eine Seitenleiste angepinnt, bleibt sie
+- Im Menü oben ist «Empfangene Daten» das erste Feld oben links im Kartenraster. Die Ranglisten behalten die volle Höhe, die Spalte rechts (Als nächstes am Start, Auf Fahrstrecke, Ticker) ebenfalls
+- «Verbindung» in Farbe: grün = Haupt- und Reserve-Gerät verbunden, orange = eines, rot = keines (Knopf im Menü oben, Titel in der Seitenleiste)
+- «Fehler melden» steht rot direkt neben der Versionsnummer, im Menü oben und in der Seitenleiste. Die Abschnittsknöpfe im Menü oben brechen bei schmalem Fenster in eine zweite Zeile um, statt Knöpfe aus dem Bild zu schieben
+- Startliste › «Startliste eingeben»: Nummern in Startreihenfolge von Hand, mit Bereichen («1-12, 201-215, 301») oder eine Zeile pro Boot mit Angaben (Tab oder Semikolon, aus Excel kopiert). Vorschau mit Anzahl, Kategorien und Warnungen (doppelt, ungültig), Ersetzen oder Anhängen
+- Vereinsdruck: Startet ein Boot ausserhalb der Reihenfolge mit neuem Verein, druckt der CP den Verein sofort. Wird nichts gedruckt, steht der Grund im Log. Neuer Lauf oder neue Startliste setzen «schon gedruckt» zurück
+- «CP: kein Lauf offen» erscheint nur noch einmal statt alle 15 Sekunden
+- USB-Gerät weg (Kabel gezogen oder ausgeschaltet): verständliche Meldung statt «ClearCommError … PermissionError»
+
 ## v1.18.1 (24.11.2026)
 - Update: Die App schliesst sich nie mehr von selbst. Das Setup wird im Hintergrund geladen und geprüft, die Versionsanzeige wird orange. Danach wählen: «Jetzt installieren» (nur ohne verbundenes Gerät und ohne Boote auf der Strecke, sonst gesperrt mit Grund), «In 8 Stunden» (erinnert nur in einem ruhigen Moment, sonst eine Stunde später) oder «Beim Beenden der App» (Setup startet, nachdem du die App geschlossen hast). Klick auf die orange Versionsnummer öffnet die Auswahl wieder
 

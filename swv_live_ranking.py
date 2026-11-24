@@ -74,7 +74,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.18.1"
+APP_VERSION = "1.19.0"
 ORANGE = "#D9730D"   # Update geladen, wartet auf Installation
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
@@ -233,7 +233,8 @@ DEFAULT_SETTINGS = {
     "export_dir": "",
     "theme": "dark",
     "sidebar_pinned": True,
-    "nav_layout": "side",   # "side": Seitenleiste, "top": Menueleiste oben mit Ausklappfeldern
+    "ui_size": "auto",      # Groesse der Oberflaeche: "auto" (nach Bildschirm) oder Faktor "0.9", "1.0", "1.1"
+    "nav_layout": "top",    # "top": Menueleiste oben mit Ausklappfeldern (Standard), "side": Seitenleiste
     "cats_auto": True,
     "timing": {"prell_start_ms": 300, "prell_finish_ms": 300, "min_run_s": 0, "lock_start": False,
                "lock_finish": False, "ch_start": 1, "ch_finish": 4, "print_club": True, "prec_digits": 2,
@@ -2385,6 +2386,50 @@ def parse_thcom(raw):
     return {"kind": "other", "text": t}
 
 
+def parse_manual_startlist(text, max_range=500):
+    """Von Hand eingegebene Startliste -> ([(nr, [Name 1, Name 2, Verein, Kategorie])], Warnungen).
+    Zeilen mit Tab oder Semikolon: erste Zelle Nummer, dann Angaben. Sonst Nummern und Bereiche «a-b»."""
+    items, warn, seen = [], [], set()
+
+    def add(nr, fields=()):
+        if nr <= 0 or nr > 9999:
+            warn.append(f"Nr {nr} ungültig")
+        elif nr in seen:
+            warn.append(f"Nr {nr} doppelt")
+        else:
+            seen.add(nr)
+            items.append((nr, [f.strip() for f in fields]))
+
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "\t" in line or ";" in line:
+            cells = [c.strip() for c in re.split(r"[\t;]", line)]
+            if cells and cells[0].isdigit():
+                add(int(cells[0]), [c for c in cells[1:]])
+                continue
+            if cells and not any(c.isdigit() for c in cells[0]):
+                continue  # Kopfzeile aus Excel
+        line = re.sub(r"\s*[-–]\s*", "-", line)
+        for tok in re.split(r"[,\s]+", line):
+            if not tok:
+                continue
+            mm = re.fullmatch(r"(\d+)\s*[-–]\s*(\d+)", tok)
+            if mm:
+                a, b = int(mm.group(1)), int(mm.group(2))
+                if b < a or b - a + 1 > max_range:
+                    warn.append(f"Bereich {tok} {'rückwärts' if b < a else 'zu gross'}")
+                    continue
+                for n in range(a, b + 1):
+                    add(n)
+            elif tok.isdigit():
+                add(int(tok))
+            else:
+                warn.append(f"«{tok}» ist keine Nummer")
+    return items, warn
+
+
 def mode_label(mode):
     """TM550 meldet LAP als «CIRCUIT»."""
     m = " ".join((mode or "").split())
@@ -3746,37 +3791,78 @@ class LiveRankingApp:
                     if f in families), "TkDefaultFont")
         mono = next((f for f in ("SF Mono", "Menlo", "Cascadia Mono", "Consolas", "DejaVu Sans Mono")
                      if f in families), "TkFixedFont")
-        try:
-            dpi = float(self.root.winfo_fpixels("1i"))
+        if not hasattr(self, "_tk_base_scaling"):
+            try:
+                self._tk_base_scaling = float(self.root.tk.call("tk", "scaling"))
+                self._dpi = float(self.root.winfo_fpixels("1i"))
+            except tk.TclError:
+                self._tk_base_scaling, self._dpi = 96.0 / 72.0, 96.0
+        dpi_scale = max(1.0, min(3.0, self._dpi / 96.0))
+        f = self.size_factor(dpi_scale)
+        self.ui_fit = f
+        try:  # Schriften in Punkt (Seitenleiste, Dialoge) mitverkleinern
+            self.root.tk.call("tk", "scaling", self._tk_base_scaling * f)
         except tk.TclError:
-            dpi = 96.0
-        self.ui_scale = max(1.0, min(3.0, dpi / 96.0))
+            pass
+        self.ui_scale = max(0.7, min(3.0, dpi_scale * f))
         self.side_w = int(358 * self.ui_scale)
         self.wrap_w = self.side_w - int(70 * self.ui_scale)
-        self.f_status = tkfont.Font(family=fam, size=-28, weight="bold")
-        self.f_status_name = tkfont.Font(family=fam, size=-18, weight="bold")
-        self.f_status_sub = tkfont.Font(family=fam, size=-16)
-        self.f_ticker = tkfont.Font(family=fam, size=-20)
-        self.f_ticker_bold = tkfont.Font(family=fam, size=-20, weight="bold")
-        self.f_ticker_time = tkfont.Font(family=fam, size=-15)
-        self._mf_bold = tkfont.Font(family=fam, size=-30, weight="bold")
-        self._mf_row = tkfont.Font(family=fam, size=-30, weight="bold")
-        self._mf_title = tkfont.Font(family=fam, size=-20, weight="bold")
-        self._mf_sub = tkfont.Font(family=fam, size=-15)
-        self._mf_pen = tkfont.Font(family=fam, size=-16, weight="bold")
-        self.f_title = tkfont.Font(family=fam, size=-22, weight="bold")
-        self.f_row = tkfont.Font(family=fam, size=-28, weight="bold")
-        self.f_first = tkfont.Font(family=fam, size=-36, weight="bold")
-        self.f_sub = tkfont.Font(family=fam, size=-15)
-        self.f_pen = tkfont.Font(family=fam, size=-16, weight="bold")
-        self.f_panel = tkfont.Font(family=fam, size=-15)
-        self.f_panel_bold = tkfont.Font(family=fam, size=-15, weight="bold")
-        self.f_panel_head = tkfont.Font(family=fam, size=-16, weight="bold")
+
+        def px(n):  # Pixelschriften mit der Groesse der Oberflaeche
+            return -max(8, int(round(n * f)))
+
+        self.f_status = tkfont.Font(family=fam, size=px(28), weight="bold")
+        self.f_status_name = tkfont.Font(family=fam, size=px(18), weight="bold")
+        self.f_status_sub = tkfont.Font(family=fam, size=px(16))
+        self.f_ticker = tkfont.Font(family=fam, size=px(20))
+        self.f_ticker_bold = tkfont.Font(family=fam, size=px(20), weight="bold")
+        self.f_ticker_time = tkfont.Font(family=fam, size=px(15))
+        self._mf_bold = tkfont.Font(family=fam, size=px(30), weight="bold")
+        self._mf_row = tkfont.Font(family=fam, size=px(30), weight="bold")
+        self._mf_title = tkfont.Font(family=fam, size=px(20), weight="bold")
+        self._mf_sub = tkfont.Font(family=fam, size=px(15))
+        self._mf_pen = tkfont.Font(family=fam, size=px(16), weight="bold")
+        self.f_title = tkfont.Font(family=fam, size=px(22), weight="bold")
+        self.f_row = tkfont.Font(family=fam, size=px(28), weight="bold")
+        self.f_first = tkfont.Font(family=fam, size=px(36), weight="bold")
+        self.f_sub = tkfont.Font(family=fam, size=px(15))
+        self.f_pen = tkfont.Font(family=fam, size=px(16), weight="bold")
+        self.f_panel = tkfont.Font(family=fam, size=px(15))
+        self.f_panel_bold = tkfont.Font(family=fam, size=px(15), weight="bold")
+        self.f_panel_head = tkfont.Font(family=fam, size=px(16), weight="bold")
         self.f_side = tkfont.Font(family=fam, size=10)
         self.f_side_bold = tkfont.Font(family=fam, size=10, weight="bold")
         self.f_side_head = tkfont.Font(family=fam, size=11, weight="bold")
         self.f_log = tkfont.Font(family=mono, size=9)
-        self.f_dialog = tkfont.Font(family=fam, size=-40, weight="bold")
+        self.f_dialog = tkfont.Font(family=fam, size=px(40), weight="bold")
+
+    def size_factor(self, dpi_scale):
+        """Grösse der Oberflaeche: Auto passt auf die nutzbare Flaeche (Bezug 1600 x 900 Bildpunkte bei 100 %),
+        z.B. 13''-Laptop mit Full HD und 150 % = 1280 x 720 -> 0.8. Sonst fester Faktor aus den Einstellungen."""
+        pref = self.settings.get("ui_size", "auto")
+        if pref != "auto":
+            try:
+                return max(0.7, min(1.3, float(pref)))
+            except (TypeError, ValueError):
+                pass
+        try:
+            sw = self.root.winfo_screenwidth() / dpi_scale
+            sh = (self.root.winfo_screenheight() - 48 * dpi_scale) / dpi_scale  # Taskleiste
+        except tk.TclError:
+            return 1.0
+        if os.environ.get("SWV_SCREEN"):  # Tests: «1280x720»
+            sw, sh = (int(v) for v in os.environ["SWV_SCREEN"].lower().split("x"))
+            sh -= 48
+        return max(0.72, min(1.0, sw / 1600.0, sh / 852.0))
+
+    def set_ui_size(self, value):
+        if value == self.settings.get("ui_size", "auto"):
+            return
+        self.settings["ui_size"] = value
+        self.save_settings()
+        self.log("Grösse der Oberfläche: " + ("automatisch" if value == "auto" else f"{float(value) * 100:.0f} %"),
+                 tag="ok")
+        self.rebuild_ui(THEME)
 
     def setup_styles(self):
         self.root.option_add("*TCombobox*Listbox.background", LIST_BG)
@@ -3851,6 +3937,9 @@ class LiveRankingApp:
         headf.pack(fill="x", padx=12, pady=(10, 8))
         head = tk.Label(headf, bg=PANEL, fg=TEXT, font=self.f_side_head, anchor="w")
         head.pack(side="left")
+        if key:
+            self.section_heads = getattr(self, "section_heads", {})
+            self.section_heads[key] = head
         stat = None
         if status:
             stat = tk.Label(headf, bg=PANEL, fg=MUTED, font=self.f_side_bold, anchor="w")
@@ -3900,16 +3989,73 @@ class LiveRankingApp:
         self._placed = alive + [dlg]
         off = int(26 * self.ui_scale) * min(len(alive), 6)
         x, y = self.root.winfo_rootx() + m + off, self.root.winfo_rooty() + m + off
-        max_h = max(200, self.root.winfo_height() - 2 * m - off)
+        max_h = max(200, min(self.root.winfo_height(), self.screen_height()) - 2 * m - off)
+        max_w = max(300, self.root.winfo_screenwidth() - 2 * m)
+        too_high = (height or dlg.winfo_reqheight()) > max_h
+        if too_high:
+            self._fit_height(dlg)  # Tabellen/Textfelder schrumpfen lassen, Knoepfe bleiben sichtbar
         if narrow:
             w = self.side_w - 2 * m
             h = min(max_h, height or dlg.winfo_reqheight())
             dlg.geometry(f"{w}x{h}+{max(0, x)}+{max(0, y)}")
-        elif height:
-            dlg.geometry(f"{dlg.winfo_reqwidth()}x{min(max_h, height)}+{max(0, x)}+{max(0, y)}")
+        elif height or too_high:
+            w = min(max_w, dlg.winfo_reqwidth())
+            dlg.geometry(f"{w}x{min(max_h, height or dlg.winfo_reqheight())}+{max(0, x)}+{max(0, y)}")
+        elif dlg.winfo_reqwidth() > max_w:
+            dlg.geometry(f"{max_w}x{dlg.winfo_reqheight()}+{max(0, x)}+{max(0, y)}")
         else:
             dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
         set_titlebar(dlg)
+
+    def screen_height(self):
+        """Nutzbare Bildschirmhoehe (ohne Taskleiste), in Tests per SWV_SCREEN."""
+        if os.environ.get("SWV_SCREEN"):
+            h = int(os.environ["SWV_SCREEN"].lower().split("x")[1])
+            return int((h - 48) * max(1.0, getattr(self, "_dpi", 96.0) / 96.0))
+        return self.root.winfo_screenheight() - int(48 * max(1.0, getattr(self, "_dpi", 96.0) / 96.0))
+
+    def _fit_height(self, dlg):
+        """Dialog hoeher als der Bildschirm: grosse Felder (Tabellen, Text, Listen) duerfen schrumpfen und
+        bekommen die Resthoehe, Knopfzeilen am Ende werden zuerst platziert (bleiben sichtbar)."""
+        big = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, (tk.Text, tk.Listbox, ttk.Treeview, tk.Canvas)):
+                    big.append(c)
+                else:
+                    walk(c)
+        walk(dlg)
+        for w in big:
+            try:
+                if isinstance(w, (tk.Text, tk.Listbox, ttk.Treeview)):
+                    w.configure(height=3)
+                else:
+                    w.configure(height=int(60 * self.ui_scale))
+            except tk.TclError:
+                pass
+            node = w
+            while node is not dlg and node is not None:
+                mgr = node.winfo_manager()
+                try:
+                    if mgr == "grid":
+                        node.master.rowconfigure(int(node.grid_info()["row"]), weight=1)
+                        node.grid_configure(sticky="nsew")
+                    elif mgr == "pack":
+                        node.pack_configure(fill="both", expand=True)
+                except tk.TclError:
+                    pass
+                node = node.master
+        # pack: letzte Knopfzeile zuerst unten platzieren
+        kids = [c for c in dlg.pack_slaves()]
+        if kids:
+            last = kids[-1]
+            if last not in big:
+                try:
+                    last.pack_configure(side="bottom", before=kids[0])
+                except tk.TclError:
+                    pass
+        dlg.update_idletasks()
 
     def _center(self, dlg):
         self._place(dlg)
@@ -4761,16 +4907,17 @@ class LiveRankingApp:
             # weisses Feld, damit Rot und Blau auch im dunklen Design gut lesbar sind
             tk.Label(head, image=self.logo_img, bg="#FFFFFF", bd=0, padx=int(8 * self.ui_scale),
                      pady=int(4 * self.ui_scale)).pack(side="left")
-        self.lbl_version = self._version_label(head)
-        self.lbl_version.pack(side="left", padx=(8, 0))
         self.btn_pin = self._button(head, "", self.toggle_sidebar_pin)
         self.btn_pin.pack(side="right")
         self.btn_theme = self._button(head, "☀" if THEME == "dark" else "☾", self.toggle_theme)
-        self.btn_theme.pack(side="right", padx=(0, 6))
-        pin = tk.Frame(side, bg=BG)
-        pin.pack(fill="x", padx=10, pady=(8, 0))
-        self._button(pin, "Fehler melden (F12)", self.open_report_dialog, DARK_RED).pack(fill="x")
-        self.side_heads = [head, pin]
+        self.btn_theme.pack(side="right", padx=(0, 4))
+        head2 = tk.Frame(side, bg=BG)  # Versionsnummer und daneben «Fehler melden»
+        head2.pack(fill="x", padx=10, pady=(8, 0))
+        self.lbl_version = self._version_label(head2)
+        self.lbl_version.pack(side="left")
+        self._button(head2, "Fehler melden (F12)", self.open_report_dialog, RED).pack(
+            side="left", padx=(8, 0), fill="x", expand=True)
+        self.side_heads = [head, head2]
         self.build_sidebar(side)
         self.build_topbar()
         self.apply_sidebar_mode()
@@ -4781,16 +4928,79 @@ class LiveRankingApp:
         for w in bar.winfo_children():
             w.destroy()
         self.top_buttons = {}
-        self.lbl_version_top = self._version_label(bar)
-        self.lbl_version_top.pack(side="left", padx=(4, 8))
+        bar.columnconfigure(1, weight=1)
+        left = tk.Frame(bar, bg=BG)
+        left.grid(row=0, column=0, sticky="nw")
+        self.lbl_version_top = self._version_label(left)
+        self.lbl_version_top.pack(side="left", padx=(4, 6))
+        self._button(left, "Fehler melden", self.open_report_dialog, RED).pack(side="left", padx=(0, 8))
+        right = tk.Frame(bar, bg=BG)
+        right.grid(row=0, column=2, sticky="ne")
+        self._button(right, "☀" if THEME == "dark" else "☾", self.toggle_theme).pack(side="left", padx=(6, 0))
+        self._button(right, "⇥", self.toggle_sidebar_pin).pack(side="left", padx=(6, 0))
+        mid = tk.Frame(bar, bg=BG)
+        mid.grid(row=0, column=1, sticky="ew")
         for key, title, _box in self.side_boxes:
             short = title.split(" (")[0].replace("Kategorien & Nummern-Range", "Kategorien")
-            b = self._button(bar, short + " ▾", lambda k=key: self.toggle_dropdown(k))
-            b.pack(side="left", padx=(0, 4))
+            b = self._button(mid, short + " ▾", lambda k=key: self.toggle_dropdown(k))
             self.top_buttons[key] = b
-        self._button(bar, "⇥", self.toggle_sidebar_pin).pack(side="right", padx=(6, 0))
-        self._button(bar, "☀" if THEME == "dark" else "☾", self.toggle_theme).pack(side="right", padx=(6, 0))
-        self._button(bar, "Fehler melden", self.open_report_dialog, DARK_RED).pack(side="right")
+        self._top_mid = mid
+        mid.bind("<Configure>", lambda e: self._flow_topbar())
+        self.root.after(50, self._flow_topbar)
+        self._conn_level = None
+        self.refresh_conn_color()
+
+    def _flow_topbar(self):
+        """Abschnittsknoepfe in Zeilen umbrechen, statt Knoepfe aus dem Bild zu schieben."""
+        mid = getattr(self, "_top_mid", None)
+        if mid is None or not mid.winfo_exists():
+            return
+        width = max(1, mid.winfo_width())
+        x = row = col = 0
+        gap = int(4 * self.ui_scale)
+        for b in self.top_buttons.values():
+            w = b.winfo_reqwidth() + gap
+            if x + w > width and col > 0:
+                row, col, x = row + 1, 0, 0
+            info = b.grid_info() if b.winfo_manager() == "grid" else {}
+            if str(info.get("row")) != str(row) or str(info.get("column")) != str(col):
+                b.grid(row=row, column=col, padx=(0, gap), pady=(0, gap if row or True else 0), sticky="w")
+            x += w
+            col += 1
+        # Spalten hinter den letzten Knoepfen nicht dehnen
+        for c in range(col + len(self.top_buttons)):
+            mid.columnconfigure(c, weight=0)
+
+    def connection_level(self):
+        """2 = Haupt- und Reserve-Geraet verbunden, 1 = eines, 0 = keines."""
+        main = (self.cp is not None and self.cp.connected) or \
+               (self.reader is not None and getattr(self, "rs_rx_seen", True))
+        return int(bool(main)) + int(bool(self.backup_connected()))
+
+    def refresh_conn_color(self):
+        lvl = self.connection_level()
+        if lvl != getattr(self, "_conn_level", None):
+            self._conn_level = lvl
+            color = {2: GREEN, 1: ORANGE, 0: RED}[lvl]
+            b = getattr(self, "top_buttons", {}).get("verbindung")
+            if b is not None:
+                try:
+                    b.configure(bg=color, fg=WHITE)
+                except tk.TclError:
+                    pass
+            head = getattr(self, "section_heads", {}).get("verbindung")
+            if head is not None:
+                try:
+                    head.configure(fg={2: GREEN_TEXT, 1: ORANGE, 0: RED}[lvl])
+                except tk.TclError:
+                    pass
+        if not getattr(self, "_conn_color_job", False):
+            self._conn_color_job = True
+
+            def again():
+                self._conn_color_job = False
+                self.refresh_conn_color()
+            self.root.after(1000, again)
 
     def set_nav_layout(self, layout):
         if layout not in ("side", "top") or layout == self.settings.get("nav_layout", "side"):
@@ -4807,22 +5017,36 @@ class LiveRankingApp:
         for _k, _t, box in self.side_boxes:
             box.pack_forget()
         if only is None:
-            self.side_heads[0].pack(fill="x", padx=10, pady=(8, 0))
-            self.side_heads[1].pack(fill="x", padx=10, pady=(8, 0))
+            for w in self.side_heads:
+                w.pack(fill="x", padx=10, pady=(8, 0))
         for k, _t, box in self.side_boxes:
             if only is None or k == only:
                 box.pack(fill="x", padx=10, pady=(10, 10 if only else 0))
         self.side_canvas.yview_moveto(0)
 
     def place_log(self, in_side):
-        """«Empfangene Daten» unten links: unter der angepinnten Seitenleiste oder unter den Ranglisten."""
+        """«Empfangene Daten»: unter der angepinnten Seitenleiste, im Menue oben als erstes Feld im Kartenraster
+        (oben links), damit die Ranglisten die volle Hoehe behalten."""
         lf = self.log_frame
         lf.grid_forget()
+        self.log_in_cards = not in_side
+        for _b, txt in getattr(self, "log_tabs", {}).values():
+            txt.configure(height=7 if in_side else 4)
+        self.log_spacer.configure(width=self.side_w if in_side else 1)
+        self.log_box.fit = in_side  # als Feld: Textbereich fuellt die Karte
+        if in_side:
+            self.log_box.pack_configure(fill="x", expand=False, padx=10, pady=(6, 10))
+        else:
+            self.log_box.pack_configure(fill="both", expand=True, padx=6, pady=6)
+        self.log_box._redraw()
         if in_side:
             lf.grid(row=1, column=0, sticky="ew")
-        else:
-            lf.grid(in_=self.content, row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        lf.lift()
+            lf.lift()
+        if hasattr(self, "cards_area"):
+            self.layout_cards()
+
+    def log_box_tag(self):
+        return "Empfangene Daten"
 
     def apply_sidebar_mode(self):
         if not self.settings["sidebar_pinned"]:  # frueher: versenkt am linken Rand -> jetzt Menue oben
@@ -5228,7 +5452,9 @@ class LiveRankingApp:
                                   command=self.on_mode_change, font=self.f_side_bold, scale=self.ui_scale)
         self.mode_seg.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self._button(b, "Excel / CSV laden", self.import_startlist, BLUE).grid(
-            row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+            row=2, column=0, sticky="ew", pady=(6, 0), padx=(0, 4))
+        self._button(b, "Startliste eingeben", self.open_manual_startlist).grid(
+            row=2, column=1, sticky="ew", pady=(6, 0), padx=(4, 0))
         self._label(b, "Startnummer").grid(row=3, column=0, sticky="w", pady=(6, 0))
         self.e_part_nr = self._entry(b, width=8)
         self.e_part_nr.grid(row=3, column=1, sticky="ew", pady=(6, 0))
@@ -5368,6 +5594,11 @@ class LiveRankingApp:
         self.lbl_count.grid(row=5, column=0, sticky="w", pady=(4, 0))
         self._label(b, f"Daten, Logs und Fehlerberichte: {self.data_path}", fg=MUTED, wraplength=wrap,
                     justify="left").grid(row=6, column=0, sticky="w", pady=(4, 0))
+        self._label(b, "Grösse der Oberfläche").grid(row=9, column=0, sticky="w", pady=(10, 0))
+        self.var_size = tk.StringVar(value=str(self.settings.get("ui_size", "auto")))
+        Segmented(b, (("auto", "Auto"), ("0.9", "90 %"), ("1.0", "100 %"), ("1.1", "110 %")), self.var_size,
+                  command=lambda: self.set_ui_size(self.var_size.get()), font=self.f_side_bold,
+                  scale=self.ui_scale).grid(row=10, column=0, sticky="ew", pady=(4, 0))
         upd = tk.Frame(b, bg=PANEL)
         upd.grid(row=7, column=0, sticky="ew", pady=(8, 0))
         upd.columnconfigure(0, weight=1)
@@ -5379,9 +5610,11 @@ class LiveRankingApp:
             row=8, column=0, sticky="ew", pady=(6, 0))
 
         # Log: eigener Rahmen unten links, immer sichtbar (place_log)
-        tk.Frame(self.log_frame, bg=BG, width=self.side_w, height=0).pack()
+        self.log_spacer = tk.Frame(self.log_frame, bg=BG, width=self.side_w, height=0)
+        self.log_spacer.pack()
         logbox = RoundedPanel(self.log_frame, fill=PANEL, radius=int(12 * self.ui_scale), fit_height=True)
         logbox.pack(fill="x", padx=10, pady=(6, 10))
+        self.log_box = logbox
         frm = logbox.inner
         tk.Label(frm, text="Empfangene Daten", bg=PANEL, fg=TEXT, font=self.f_side_head,
                  anchor="w").pack(fill="x", padx=12, pady=(10, 6))
@@ -5603,6 +5836,7 @@ class LiveRankingApp:
         self.prev_top = {}
         self.root.configure(bg=BG)
         set_titlebar(self.root)
+        self.setup_fonts()
         self.setup_styles()
         self.build_ui()
         self.refresh_ports()
@@ -5867,13 +6101,18 @@ class LiveRankingApp:
 
     def layout_cards(self):
         nc = max(1, self.card_cols)
-        rows = max(1, -(-len(self.cards) // nc))
+        off = 1 if getattr(self, "log_in_cards", False) else 0  # Feld «Empfangene Daten» oben links
+        rows = max(1, -(-(len(self.cards) + off) // nc))
         for r in range(40):
             self.cards_area.rowconfigure(r, weight=1 if r < rows else 0, uniform="row" if r < rows else "")
         for c in range(3):
             self.cards_area.columnconfigure(c, weight=1 if c < nc else 0, uniform="col" if c < nc else "")
+        if off:
+            self.log_frame.grid(in_=self.cards_area, row=0, column=0, sticky="nsew", padx=0, pady=0)
+            self.log_frame.lift()
         for i, card in enumerate(self.cards):
-            card["box"].grid(row=i // nc, column=i % nc, sticky="nsew", padx=6, pady=6)
+            j = i + off
+            card["box"].grid(row=j // nc, column=j % nc, sticky="nsew", padx=6, pady=6)
 
     def card_title(self, cat):
         title = f"{cat['name']}   {cat['min']}-{cat['max']}"
@@ -7143,23 +7382,46 @@ class LiveRankingApp:
         self.update_panels()
 
     def print_next_club(self, nr):
-        """Gehoert das naechste Boot in der Startreihenfolge zu einem anderen Verein als das eben gestartete,
-        druckt der CP 545 eine Zeile als Ueberschrift vor dessen Start (#PL, am CP getestet)."""
-        if not self.settings["timing"].get("print_club", True) or not self.eth_mode():
-            return
-        nxt = self.next_starters(1)
-        if not nxt:
-            return
-        cur, new = self.participants.get(nr), self.participants.get(nxt[0])
-        if not new or not new.get("verein"):
-            return
-        club = new.get("vnr") or new["verein"]
-        if cur and (cur.get("vnr") or cur.get("verein") or "") == club:
-            return
+        """Vereinswechsel auf dem Papier des CP 545 (#PL, am CP getestet):
+        1. das eben gestartete Boot hat einen anderen Verein als das vorherige und dieser Verein wurde noch nicht
+           angekuendigt (Start ausserhalb der Reihenfolge) -> sofort drucken;
+        2. das naechste Boot der Startreihenfolge gehoert zu einem anderen Verein -> als Ueberschrift vor dessen
+           Start drucken. Gruende fuer «nicht gedruckt» stehen im Log (leise)."""
+        def skip(why):
+            self.log(f"Vereinsdruck: nichts gedruckt ({why})", tag="test", focus=False)  # nur unter «Alle»
+
+        if not self.settings["timing"].get("print_club", True):
+            return skip("Schalter «Vereinswechsel drucken» aus")
+        if not self.eth_mode():
+            return skip("Verbindungsart RS232, Drucken nur über Ethernet oder USB")
+        if not ((self.cp is not None and self.cp.connected and self.cp_device == "cp545")
+                or (self.cp_b is not None and self.cp_b.connected and self.cp_b_device == "cp545")):
+            return skip("kein CP 545 verbunden (TM550 druckt nicht)")
         done = self.__dict__.setdefault("_club_printed", set())
-        if (nxt[0], club) in done:
-            return
-        done.add((nxt[0], club))
+        cur = self.participants.get(nr) if nr else None
+        cur_club = (cur.get("vnr") or cur.get("verein") or "") if cur else ""
+        prev_club = getattr(self, "_print_prev_club", None)
+        if nr:
+            self._print_prev_club = cur_club or prev_club
+        target = None
+        if cur and cur.get("verein") and cur_club != prev_club and not any(c == cur_club for _n, c in done):
+            target = (nr, cur)  # Start ausserhalb der Reihenfolge: Verein jetzt ankuendigen
+        else:
+            nxt = self.next_starters(1)
+            if not nxt:
+                return skip("kein weiteres Boot in der Startliste")
+            new = self.participants.get(nxt[0])
+            if not new or not new.get("verein"):
+                return skip(f"Nr {nxt[0]} ohne Verein")
+            club = new.get("vnr") or new["verein"]
+            if cur_club == club:
+                return skip(f"kein Vereinswechsel: nächstes Boot Nr {nxt[0]} im selben Verein")
+            target = (nxt[0], new)
+        tnr, new = target
+        club = new.get("vnr") or new["verein"]
+        if (tnr, club) in done:
+            return skip(f"Verein von Nr {tnr} schon gedruckt")
+        done.add((tnr, club))
         count = sum(1 for p in self.participants.values() if p.get("verein") == new["verein"])
         text = cp_print_text(new["verein"], count)
         sent = False
@@ -7630,7 +7892,13 @@ class LiveRankingApp:
             DIAG.warning(f"Verbindung verloren: {payload!r} | zuletzt gesendet {getattr(self, '_diag_tx', None)!r} "
                          f"| zuletzt empfangen vor {now - self.cp_last_rx:.1f} s: {getattr(self, '_diag_rx', None)!r}")
             self.cp_inflight, self.cp_cmds = None, []
-            self.log(f"Verbindung zum CP {self.cp.host} unterbrochen: {payload}", tag="error")
+            if re.search(r"PermissionError|Zugriff verweigert|ClearCommError|device reports readiness|"
+                         r"FileNotFoundError|nicht gefunden", str(payload)) and str(self.cp.host).upper().startswith("COM"):
+                self.log(f"USB-Verbindung zum {self.dev_name()} {self.cp.host} weg (Kabel gezogen oder Gerät "
+                         "ausgeschaltet). Die App verbindet neu, sobald der COM-Port wieder da ist.", tag="error")
+                DIAG.info(f"USB weg: {payload}")
+            else:
+                self.log(f"Verbindung zum {self.dev_name()} {self.cp.host} unterbrochen: {payload}", tag="error")
             if self.cp.link != "usb":
                 self.log("Kommt die Verbindung nicht zurück: CP neu gestartet? Ethernet am CP wieder einschalten "
                          "(F › Einstellungen › Ethernet).", tag="warn")
@@ -8201,8 +8469,11 @@ class LiveRankingApp:
         except (IndexError, ValueError):
             return
         self.cp_run_open = bool(run)
+        if run:
+            self._cp_norun_told = False
         if run and run != self.cp_run:
             self.cp_run = run
+            self._club_printed = set()  # neuer Lauf: Vereinswechsel wieder drucken
             self.log(f"CP: Lauf {run} offen")
         if run and not self.cp_caps["preload"] \
                 and mode_numbers(self.cp_device, getattr(self, "cp_mode", "") or "") in ("yes", "maybe"):
@@ -8217,7 +8488,9 @@ class LiveRankingApp:
                     self.log("TM550: kein Lauf offen. Zeiten kommen trotzdem, verlorene Zeiten lassen sich aber nur "
                              "mit offenem Lauf nachladen. Knopf «Lauf öffnen» öffnet einen.", tag="warn")
             else:
-                self.log("CP: kein Lauf offen. Am CP einen Lauf öffnen (NET TIME).", tag="warn")
+                if not getattr(self, "_cp_norun_told", False):  # nur einmal, bis wieder ein Lauf offen ist
+                    self._cp_norun_told = True
+                    self.log("CP: kein Lauf offen. Am CP einen Lauf öffnen (NET TIME).", tag="warn")
                 self.cp_set_preload(False, "kein Lauf offen")
 
     def _on_next_unread(self, reason):
@@ -10370,6 +10643,96 @@ class LiveRankingApp:
     def rebuild_order_index(self):
         self.order_index = {nr: i for i, nr in enumerate(self.start_order)}
 
+    def open_manual_startlist(self):
+        """Startliste von Hand: Nummern in Startreihenfolge (Komma, Leerzeichen, Zeilen, Bereiche «101-130») oder
+        eine Zeile pro Boot «Nr; Name 1; Name 2; Verein» (auch aus Excel kopiert, Tab getrennt)."""
+        dlg = self._toplevel("Startliste eingeben")
+        dlg.columnconfigure(0, weight=1)
+        tk.Label(dlg, text="Startnummern in Startreihenfolge, z.B. «1-12, 201-215, 301» oder eine Zeile pro Boot: "
+                           "«101; Meier; Muster; WFV Muster» (aus Excel kopiert geht auch).",
+                 bg=PANEL, fg=TEXT, font=self.f_side, justify="left", wraplength=int(560 * self.ui_scale)).grid(
+            row=0, column=0, sticky="w")
+        txt = tk.Text(dlg, height=10, width=60, bg=INPUT_BG, fg=INPUT_FG, insertbackground=TEXT, font=self.f_log,
+                      relief="flat", highlightthickness=0)
+        txt.grid(row=1, column=0, sticky="nsew", pady=(8, 6))
+        dlg.rowconfigure(1, weight=1)
+        lbl = tk.Label(dlg, text="", bg=PANEL, fg=MUTED, font=self.f_side, justify="left", anchor="w",
+                       wraplength=int(560 * self.ui_scale))
+        lbl.grid(row=2, column=0, sticky="w")
+        var = tk.StringVar(value="append" if self.start_order else "replace")
+        rf = tk.Frame(dlg, bg=PANEL)
+        rf.grid(row=3, column=0, sticky="w", pady=(6, 0))
+        self._radio(rf, "Ersetzen", var, "replace").pack(side="left", padx=(0, 8))
+        self._radio(rf, "Anhängen", var, "append").pack(side="left")
+        state = {"items": [], "warn": []}
+
+        def refresh(_e=None):
+            items, warn = parse_manual_startlist(txt.get("1.0", "end"))
+            state.update(items=items, warn=warn)
+            cats = {}
+            for nr, _f in items:
+                c = self.range_category(nr)
+                key = c["name"] if c else "ohne Kategorie"
+                cats[key] = cats.get(key, 0) + 1
+            head = ", ".join(str(n) for n, _f in items[:12]) + (" …" if len(items) > 12 else "")
+            text = (f"{len(items)} Starts: {head}\n" + " · ".join(f"{k} {v}" for k, v in cats.items())
+                    if items else "Noch keine Nummern erkannt.")
+            if warn:
+                text += "\n" + "; ".join(warn[:4])
+            lbl.configure(text=text, fg=GOLD if warn else MUTED)
+
+        txt.bind("<KeyRelease>", refresh)
+        txt.bind("<<Paste>>", lambda e: self.root.after(20, refresh))
+
+        def take():
+            items = state["items"]
+            if not items:
+                messagebox.showwarning("Startliste", "Keine Startnummern erkannt.", parent=dlg)
+                return
+            mode = var.get()
+            if mode == "replace" and (self.results or self.course) and not messagebox.askyesno(
+                    "Startliste", "Es gibt schon Starts oder Resultate. Startliste trotzdem ersetzen?\nResultate, "
+                                  "Notizen und Strafpunkte bleiben pro Startnummer erhalten.", parent=dlg):
+                return
+            parts = {} if mode == "replace" else dict(self.participants)
+            order = [] if mode == "replace" else list(self.start_order)
+            added = skipped = 0
+            for nr, f in items:
+                if nr in parts and mode == "append":
+                    skipped += 1
+                    continue
+                old = self.participants.get(nr, {})
+                cat = self.range_category(nr)
+                parts[nr] = {"nr": nr, "p1": f[0] if len(f) > 0 else old.get("p1", ""),
+                             "p2": f[1] if len(f) > 1 else old.get("p2", ""),
+                             "verein": f[2] if len(f) > 2 else old.get("verein", ""),
+                             "kategorie": f[3] if len(f) > 3 else (cat["name"] if cat else old.get("kategorie", "")),
+                             "notiz": old.get("notiz", ""), "strafpunkte": old.get("strafpunkte", 0)}
+                if nr not in order:
+                    order.append(nr)
+                added += 1
+            self.participants, self.start_order = parts, order
+            self._club_printed, self._print_prev_club = set(), None
+            self.rebuild_order_index()
+            self.rebuild_cat_lookup()
+            if mode == "replace" or not getattr(self, "startlist_source", ""):
+                self.startlist_source = "von Hand eingegeben"
+            self.update_startlist_label()
+            self.log(f"Startliste {'ersetzt' if mode == 'replace' else 'ergänzt'}: {added} Starts von Hand"
+                     + (f", {skipped} schon vorhanden" if skipped else ""), tag="ok")
+            dlg.destroy()
+            self.on_data_changed()
+            self.cp_sync_next("Startliste")
+
+        btns = tk.Frame(dlg, bg=PANEL)
+        btns.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        self._button(btns, "Übernehmen", take, BLUE).pack(side="right")
+        self._button(btns, "Abbrechen", dlg.destroy).pack(side="right", padx=(0, 8))
+        refresh()
+        self._place(dlg)
+        txt.focus_set()
+        self.manual_startlist_dlg = (dlg, txt, var, take, refresh)
+
     def update_startlist_label(self):
         if not self.start_order:
             self._set(self.lbl_startlist, text="Keine Startliste geladen", fg=MUTED)
@@ -10510,6 +10873,7 @@ class LiveRankingApp:
                     p["strafpunkte"] = old.get("strafpunkte", 0)
             self.participants = parts
             self.start_order = order
+            self._club_printed, self._print_prev_club = set(), None  # neue Startliste: Vereinsdruck neu
             self.rebuild_order_index()
             self.startlist_source = os.path.basename(path)
             self.settings["wettkampf"] = var_mode.get()
@@ -11206,7 +11570,7 @@ class LiveRankingApp:
             self.upload_win.lift()
             return
         win = self._toplevel("Upload-Warteschlange")
-        win.geometry("980x520")
+        win.geometry(f"{int(980 * self.ui_fit)}x{int(520 * self.ui_fit)}")
         win.columnconfigure(0, weight=1)
         win.rowconfigure(1, weight=1)
         self.upload_win = win

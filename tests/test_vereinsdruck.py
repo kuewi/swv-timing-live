@@ -33,5 +33,21 @@ check("Neuverbinden druckt nicht doppelt", len(printed) == 3)
 app.toggle_print_club(); S.start(); pump(1)
 check("Schalter aus: nichts", len(printed) == 3)
 check("Breite", all(len(p) <= m.CP_PRINT_WIDTH for p in printed))
+check("Grund im Log", any("Vereinsdruck: nichts gedruckt" in l[0] for l in app.log_lines))
+app.disconnect_all(); pump(0.5); S.close()
+# Start ausserhalb der Reihenfolge: Startliste 11 (A), 13 (A), 12 (B); gestartet 11, dann 12
+app.toggle_print_club()
+c2 = {11: "Club A", 13: "Club A", 12: "Club B"}
+app.participants = {n: {"nr": n, "p1": f"V{n}", "p2": "", "kategorie": "AKTIVE", "verein": c, "notiz": "",
+                        "strafpunkte": 0} for n, c in c2.items()}
+app.start_order = [11, 13, 12]; app.rebuild_order_index(); app.on_data_changed()
+app._club_printed, app._print_prev_club = set(), None
+app.cp_recs.clear(); app.course = []; app.results.clear(); app.last_start_nr = None
+S = m.SimCP(); printed.clear()
+S.on_event = lambda t: printed.append(t[7:]) if t.startswith("Druck: ") else None
+app.connect_cp("127.0.0.1", S.port); pump(5)
+S.next[m.CH_START] = 11; S.start(); pump(1.5)
+S.next[m.CH_START] = 12; S.start(); pump(1.5)
+check("Start ausserhalb der Reihenfolge: Verein sofort gedruckt", "> Club B (1)" in printed)
 app.disconnect_all(); pump(0.5); S.close()
 print(f"{sum(ok)}/{len(ok)} OK"); root.destroy(); sys.exit(0 if all(ok) else 1)

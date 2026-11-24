@@ -16,6 +16,7 @@ check("Rahmen ohne Prüfsumme", m.split_serial_frame("PL Hello\t") == ("PL Hello
 
 root = tk.Tk(); root.geometry("1600x900+0+0")
 app = m.LiveRankingApp(root); app.dialog_hook = lambda *a: True
+app.settings["nav_layout"] = "side"; app.apply_sidebar_mode()  # Tests mit angepinnter Seitenleiste
 def pump(sec=0.5):
     end = time.time() + sec
     while time.time() < end: root.update(); time.sleep(0.02)

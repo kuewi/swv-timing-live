@@ -9,6 +9,8 @@ ok = []
 def check(name, cond): ok.append(bool(cond)); print(("OK  " if cond else "FEHLER ") + name)
 root = tk.Tk(); root.geometry("1600x900+0+0")
 app = m.LiveRankingApp(root); app.dialog_hook = lambda *a: True
+check("Standard: Menü oben", app.settings["nav_layout"] == "top")
+app.settings["nav_layout"] = "side"; app.apply_sidebar_mode()  # Tests mit angepinnter Seitenleiste
 def pump(sec=0.3):
     end = time.time() + sec
     while time.time() < end: root.update(); time.sleep(0.02)
@@ -25,7 +27,9 @@ app.toggle_sidebar_pin(); pump(0.8)
 check("Pfeil versenkt: Menü oben", app.settings["nav_layout"] == "top" and not app.side_outer.winfo_ismapped())
 check("Menü oben: Knöpfe je Abschnitt", app.topbar.winfo_ismapped() and len(app.top_buttons) >= 8
       and not app.side_outer.winfo_ismapped())
-check("Menü oben: Log unten links", log_left_bottom())
+lf = app.log_frame
+check("Menü oben: Empfangene Daten als erstes Feld oben links", lf.winfo_ismapped()
+      and lf.winfo_rootx() - root.winfo_rootx() < 60 and lf.winfo_rooty() - root.winfo_rooty() < 300)
 app.toggle_dropdown("zeitmessung"); pump(0.5)
 check("Ausklappfeld zeigt Zeitmessung", app.side_outer.winfo_ismapped() and app._drop_key == "zeitmessung")
 check("nur dieser Abschnitt", sum(1 for _k, _t, b in app.side_boxes if b.winfo_ismapped()) == 1)
