@@ -261,7 +261,11 @@ if (Ask "I  Praezision: #RP 001, #WP 001 mit 0, 1, 2, 3, 5 (je 1 Impuls ausloese
         $line = $imp | Where-Object { $_ -match "^T[N+=] " } | Select-Object -First 1
         $script:summary += ("{0,-22} {1}" -f "Praezision $v", ("gelesen " + $(if ($now) { $now } else { "-" }) + ", Zeile: " + $(if ($line) { (Visible $line) } else { "kein Impuls" })))
     }
-    if ($orig) { [void](Send-Cmd "#WP 001 $orig"); [void](Send-Cmd "#RP 001") }
+    # CP 545 liest n+1 zurueck (geschrieben n: Resultat n, Zeiten n+1 Stellen), TM550 n
+    if ($orig) {
+        $back = $(if ($Device -eq "cp545") { [Math]::Max(0, [int]$orig - 1) } else { $orig })
+        [void](Send-Cmd "#WP 001 $back"); [void](Send-Cmd "#RP 001")
+    }
 }
 
 # M: Zeitmessarten. Am Geraet umstellen, Lauf oeffnen, Impulse, Zeilenformat festhalten.

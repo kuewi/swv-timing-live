@@ -1,5 +1,17 @@
 # Änderungen
 
+## v1.20.0 (25.11.2026)
+Aus den Fehlerberichten vom 24.11.2026 (CP 545 über USB, TM550 1.48 als Reserve):
+- Reserve mit falscher Uhr (TM550 nach dem Firmware-Update: 07:39 statt 22:57, Tag 26001): Bis ein Impuls-Paar den genauen Uhrversatz liefert, schätzt die App ihn aus der Eingangszeit am PC (etwa ±0,3 s). Die Laufzeit hängt nie mehr an der Uhr der Reserve (vorher z.B. 522:17 bei Nr 204). Die Rückfrage nennt «Uhr der Reserve geschätzt»
+- Start nur an der Reserve: Der CP bekommt danach die nächste Nummer. Vorher nahm die App an, der CP habe selbst weitergezählt, und der CP startete dieselbe Nummer nochmals (Wiederholungsfahrt)
+- Neuer Lauf an der Reserve (Zählnummern wieder ab 1): alte und neue Zeiten werden nicht mehr verwechselt (Nr 5 blieb am Start). Mehrere Rückfragen zum selben Impuls werden zusammengefasst
+- Präzision CP 545 richtiggestellt: `#WP 001 n` gibt n Stellen im Resultat (RR, Papier) und n+1 in den Zeitzeilen. Für 1/10 schreibt die App jetzt 1 (vorher 0: Papier 1:02 statt 1:02.3). Die Präzision geht beim Verbinden automatisch an Haupt- und Reserve-Gerät. Ein RR des CP mit weniger Stellen überschreibt das Resultat der App nicht mehr
+- Vereinswechsel auf dem Papier: beim ersten der beiden Ereignisse «letzter Fahrer des alten Vereins im Ziel» oder «erster Fahrer des neuen Vereins gestartet» (vorher schon beim Start des letzten Fahrers des alten Vereins)
+- Nachfrage `#RT` nach einer Zählnummer, die der CP nicht hat, hört nach 3 Versuchen auf (vorher alle 15 s AK F)
+- Vorladen: Startet ein Boot, während die App die Nummer schreibt, erzwingt sie die alte Nummer nicht mehr (konnte zwei gleiche Nummern ergeben)
+- Menü oben: links eine Spalte mit «Als nächstes am Start», «Auf Fahrstrecke», Ticker und ganz unten «Empfangene Daten», rechts die Ranglisten
+- `fernbefehle_test.ps1` Gruppe I stellt die Präzision am CP richtig zurück
+
 ## v1.19.0 (24.11.2026)
 - Kleine Bildschirme (13''-Laptops): Die Oberfläche passt sich an die nutzbare Fläche an (Bezug 1600 × 900 bei 100 %), Schriften, Abstände und Seitenleiste werden kleiner. Unter Daten › Grösse der Oberfläche: Auto, 90 %, 100 %, 110 %, wirkt sofort. Dialoge sind höchstens so hoch wie der Bildschirm, Tabellen und Textfelder schrumpfen, die Knöpfe (z.B. «Importieren» bei Startliste einlesen) bleiben sichtbar
 - Menü oben ist der Standard. Ist eine Seitenleiste angepinnt, bleibt sie

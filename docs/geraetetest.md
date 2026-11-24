@@ -225,7 +225,7 @@ Am Gerät notieren:
 | `#RP 026` ohne Nummer | `&P 026 01 0000` | `&P 026 00    0` |
 | `#RT` | in allen Zeitmessarten | BASIC und TIMING: Antwort als `TN`-Zeile; SPEED und LAP nur AK C |
 | `#RP 120` | AK R | keine Antwort |
-| Präzision `#WP 001 n` | zurückgelesen n+1, Zeilen mit n+1 Stellen: 0 = 1/10, 1 = 1/100, 2 = 1/1000. 5 überschreibt die Kanalspalte | ohne Versatz: 0 = 1 s, 1 = 1/10 … 5 = 1/100000 |
+| Präzision `#WP 001 n` | zurückgelesen n+1. Zeitzeilen n+1 Stellen, Resultat (RR, Papier) n Stellen: 1 = Resultat 1/10 (Zeiten 1/100), 0 = ganze Sekunden (Zeiten 1/10). 5 überschreibt die Kanalspalte. (Test 24.11.: mit 0 kam RR 1:02 bei Zeiten 04.5/06.8) | ohne Versatz: 0 = 1 s, 1 = 1/10 … 5 = 1/100000 |
 | Tagesfeld | 9823, stimmt | 9823, stimmt (1.18 lag daneben) |
 | Doppelkontakt | | als zweite `TN` ohne Nummer 0,10 bis 0,13 s später (1.18: als `TC`). Kam im Test vom Kabel mit Bananensteckern an E4, nicht von der Firmware; mit Taster kein regulärer Fall |
 | `IR`-Zeile | | im Ziel mit Nummer und Laufzeit |

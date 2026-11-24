@@ -28,8 +28,9 @@ check("Pfeil versenkt: Menü oben", app.settings["nav_layout"] == "top" and not 
 check("Menü oben: Knöpfe je Abschnitt", app.topbar.winfo_ismapped() and len(app.top_buttons) >= 8
       and not app.side_outer.winfo_ismapped())
 lf = app.log_frame
-check("Menü oben: Empfangene Daten als erstes Feld oben links", lf.winfo_ismapped()
-      and lf.winfo_rootx() - root.winfo_rootx() < 60 and lf.winfo_rooty() - root.winfo_rooty() < 300)
+check("Menü oben: Empfangene Daten links unten, Ranglisten rechts daneben", lf.winfo_ismapped()
+      and lf.winfo_rootx() - root.winfo_rootx() < 60 and app.left_column()
+      and app.cards_canvas.winfo_rootx() > lf.winfo_rootx() + lf.winfo_width() - 5)
 app.toggle_dropdown("zeitmessung"); pump(0.5)
 check("Ausklappfeld zeigt Zeitmessung", app.side_outer.winfo_ismapped() and app._drop_key == "zeitmessung")
 check("nur dieser Abschnitt", sum(1 for _k, _t, b in app.side_boxes if b.winfo_ismapped()) == 1)

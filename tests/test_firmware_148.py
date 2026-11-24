@@ -57,11 +57,12 @@ app.disconnect_all(); pump(1); S.close()
 # --- CP 545 VB16
 app.course.clear(); app.cp_recs.clear(); app.results.clear(); app.last_start_nr = None
 S = m.SimCP(fw="VB16")
-app.reset_caps("cp545"); app.connect_cp("127.0.0.1", S.port); pump(4)
+app.reset_caps("cp545"); app.connect_cp("127.0.0.1", S.port); pump(5)
+check("Präzision beim Verbinden gesendet", S.prec == 2)
 app.cp_write_precision(); pump(3)
-check("CP Präzision 1/10: geschrieben 0, gelesen 1", S.prec == 1 and app.cp_prec == 1)
+check("CP Präzision 1/10: geschrieben 1, gelesen 2", S.prec == 2 and app.cp_prec == 2)
 app.var_prec.set("2"); app.set_prec_digits(); app.cp_write_precision(); pump(3)
-check("CP Präzision 1/100: geschrieben 1, gelesen 2", S.prec == 2 and app.cp_prec == 2)
+check("CP Präzision 1/100: geschrieben 2, gelesen 3", S.prec == 3 and app.cp_prec == 3)
 S.start(); pump(1.5)
 first = started()[0] if started() else None
 S.false_start(); pump(1.5)
@@ -70,6 +71,10 @@ check("Falschstart: Boot wieder am Start", first is not None and first not in st
 check("Falschstart: Nummer wieder vorgeladen", S.next[m.CH_START] == first)
 S.start(); pump(1.5)
 check("Neustart mit derselben Nummer", started() == [first])
+S.finish(); pump(2)
+r = app.results.get(first)
+check("Resultat 1/100 bleibt (RR des CP mit 1/100 gleich)", r is not None and "CP meldet" not in
+      " ".join(l[0] for l in app.log_lines[-20:]))
 # Lauf oeffnen nur in PTB SEQ
 S.close_run(); pump(1)
 app.cp_open_run(ask=False); pump(2)

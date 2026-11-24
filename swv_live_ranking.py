@@ -74,7 +74,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.19.0"
+APP_VERSION = "1.20.0"
 ORANGE = "#D9730D"   # Update geladen, wartet auf Installation
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
@@ -2925,7 +2925,7 @@ class SimCP:
         elif p[:2] == ["#RP", "001"]:
             self.send(f"&P 001 {self.prec}", c)
         elif p[:2] == ["#WP", "001"] and len(p) >= 3:
-            self.prec = max(1, min(5, int(p[2]) + 1))  # CP 545: geschrieben n -> n+1 Nachkommastellen
+            self.prec = max(1, min(5, int(p[2]) + 1))  # CP 545: n -> Zeiten n+1, Resultat n Stellen
         elif p[:2] == ["#RP", "003"]:
             self.send(f"&P 003 {self.run if self.run_open else 0:02d} {self.run + 1:02d}", c)
         elif t.startswith("#WC 001"):
@@ -3190,7 +3190,7 @@ class SimCP:
             self.course.remove(st)
             self.recs[(CH_FINISH, seq)] = ["TN", st[0], t]
             self.send(self.fmt("TN", st[0], seq, CH_FINISH, t))
-            secs = int((t - st[1]) * 100) / 100
+            secs = trunc_secs(t - st[1], max(0, self.prec - 1))  # Resultat eine Stelle weniger als die Zeiten
             self.results.append((st[0], secs))
             rank = 1 + sum(1 for _n, s2 in self.results if s2 < secs)
             m, sec = divmod(secs, 60)
@@ -5029,7 +5029,9 @@ class LiveRankingApp:
         (oben links), damit die Ranglisten die volle Hoehe behalten."""
         lf = self.log_frame
         lf.grid_forget()
-        self.log_in_cards = not in_side
+        lf.pack_forget()
+        left = not in_side and hasattr(self, "right_panel") and self.left_column()
+        self.log_in_cards = not in_side and not left
         for _b, txt in getattr(self, "log_tabs", {}).values():
             txt.configure(height=7 if in_side else 4)
         self.log_spacer.configure(width=self.side_w if in_side else 1)
@@ -5039,10 +5041,20 @@ class LiveRankingApp:
         else:
             self.log_box.pack_configure(fill="both", expand=True, padx=6, pady=6)
         self.log_box._redraw()
+        lf.pack_propagate(not left)
         if in_side:
             lf.grid(row=1, column=0, sticky="ew")
             lf.lift()
+        elif left:  # unten in der linken Spalte, feste Hoehe
+            self.log_box.fit = False
+            self.log_box.pack_configure(fill="both", expand=True, padx=0, pady=(6, 0))
+            lf.configure(height=int(170 * self.ui_scale))
+            lf.pack_propagate(False)
+            lf.pack(in_=self.right_panel, side="bottom", fill="x")
+            lf.lift()
+            self.log_box._redraw()
         if hasattr(self, "cards_area"):
+            self.place_right_panel()
             self.layout_cards()
 
     def log_box_tag(self):
@@ -5709,24 +5721,25 @@ class LiveRankingApp:
         self._rank_cache = None
         self.on_data_changed(save=False)
 
-    def prec_write_value(self, digits):
-        """Wert fuer #WP 001 und erwarteter Rueckgabewert. CP 545 (VB08/VB16): geschrieben n ergibt n+1
-        Nachkommastellen, 1/10 ist das Minimum. TM550 (1.18/1.48): geschrieben = Nachkommastellen."""
-        if self.cp_device == "tm550":
+    def prec_write_value(self, digits, device=None):
+        """Wert fuer #WP 001 und erwarteter Rueckgabewert. CP 545 (VB08/VB16, Test 24.11.2026): geschrieben n
+        ergibt n Stellen im Resultat (RR, Papier) und n+1 Stellen in den Zeitzeilen, zurueckgelesen n+1.
+        TM550 (1.18/1.48): geschrieben = Nachkommastellen = zurueckgelesen."""
+        if (device or self.cp_device) == "tm550":
             return digits, digits
-        w = max(0, digits - 1)
-        return w, w + 1
+        return digits, digits + 1
 
-    def cp_write_precision(self):
+    def cp_write_precision(self, auto=False):
+        """Praezision an Haupt- und Reserve-Geraet schicken (Knopf, und beim Verbinden automatisch)."""
         digits = self.settings["timing"].get("prec_digits", 2)
-        if self.cp is None or not self.cp.connected:
-            messagebox.showinfo("Präzision", "Zuerst über Ethernet oder USB mit dem Gerät verbinden.")
+        if self.cp is None or not self.cp.connected or self.cp_device not in ("cp545", "tm550"):
+            if not auto:
+                messagebox.showinfo("Präzision", "Zuerst über Ethernet oder USB mit dem Gerät verbinden.")
             return
         w, want = self.prec_write_value(digits)
         name = self.dev_name()
-        note = ""
-        if self.cp_device != "tm550" and digits == 0:
-            note = " Der CP 545 kennt keine ganzen Sekunden: am CP 1/10, die App schneidet auf 1 s ab."
+        note = " (Resultat auf dem Papier, Zeitzeilen eine Stelle genauer)" if self.cp_device == "cp545" else ""
+        self.backup_write_precision()
 
         def read_ok(info):
             try:
@@ -5736,7 +5749,7 @@ class LiveRankingApp:
             if got is not None:
                 self.cp_prec = got
             if got == want:
-                self.log(f"{name}: Präzision {PREC_LABEL.get(want, want)} eingestellt.{note}", tag="ok")
+                self.log(f"{name}: Präzision {PREC_LABEL.get(digits, digits)} eingestellt{note}.", tag="ok")
             else:
                 self.log(f"{name}: Präzision geschrieben, das Gerät meldet {got} statt {want}. Am Gerät prüfen.",
                          tag="warn")
@@ -5744,6 +5757,13 @@ class LiveRankingApp:
         self.cp_query(f"#WP 001 {w}", "ack",
                       on_ok=lambda _i: self.cp_query("#RP 001", ("param", "001"), on_ok=read_ok),
                       on_fail=lambda r: self.log(f"{name}: Präzision nicht gesetzt ({r})", tag="error"))
+
+    def backup_write_precision(self):
+        if self.cp_b is None or not self.cp_b.connected or self.cp_b_device not in ("cp545", "tm550"):
+            return
+        w, _want = self.prec_write_value(self.settings["timing"].get("prec_digits", 2), self.cp_b_device)
+        DIAG.debug(f"CP B> #WP 001 {w}")
+        self.cp_b.send(f"#WP 001 {w}")
 
     def toggle_lock(self, key):
         ts = self.settings["timing"]
@@ -6027,11 +6047,24 @@ class LiveRankingApp:
         self.update_panels()
         self.schedule_font_scale()
 
+    def left_column(self):
+        """Menue oben: Als naechstes am Start, Auf Fahrstrecke, Ticker und ganz unten «Empfangene Daten» in einer
+        Spalte links, die Ranglisten rechts daneben."""
+        return self.settings.get("nav_layout", "side") == "top" and self.panel_orient == "right"
+
     def place_right_panel(self):
-        if not self.any_panel():
+        left = self.left_column()
+        self.cards_canvas.grid_configure(column=1 if left else 0)
+        self.content.columnconfigure(0, weight=0 if left else 1)
+        self.content.columnconfigure(1, weight=1 if left else 0)
+        if self.cards_sb.winfo_manager():
+            self.cards_sb.grid_configure(column=2 if left else 1)
+        if not self.any_panel() and not left:
             self.right_panel.grid_remove()
             return
-        if self.panel_orient == "right":
+        if left:
+            self.right_panel.grid(row=0, column=0, rowspan=1, columnspan=1, sticky="ns", padx=(0, 6), pady=6)
+        elif self.panel_orient == "right":
             self.right_panel.grid(row=0, column=2, rowspan=1, columnspan=1, sticky="ns", padx=(6, 6), pady=6)
         else:
             self.right_panel.grid(row=1, column=0, rowspan=1, columnspan=3, sticky="ew", padx=6, pady=(6, 6))
@@ -6297,6 +6330,8 @@ class LiveRankingApp:
                 self.right_panel.configure(height=panel_h)
         if changed:
             self.apply_show_settings()
+            if self.settings.get("nav_layout", "side") == "top":
+                self.place_log(False)
             return
 
         # Kartenraster: Spaltenzahl und Schrift nach gemessener Textbreite
@@ -6335,7 +6370,7 @@ class LiveRankingApp:
         self.cards_canvas.itemconfigure(self.cards_win, width=w, height=inner_h)
         self.cards_canvas.configure(scrollregion=(0, 0, w, inner_h))
         if scrolling:
-            self.cards_sb.grid(row=0, column=1, sticky="ns")
+            self.cards_sb.grid(row=0, column=2 if self.left_column() else 1, sticky="ns")
         else:
             self.cards_sb.grid_remove()
             self.cards_canvas.yview_moveto(0)
@@ -6575,6 +6610,8 @@ class LiveRankingApp:
         self.log(f"ZIEL Nr {nr} ({cat_name}) {tstr}s [{source}]", tag="ziel")
         self.ticker_for_final(nr, cat, before, prev)
         self.on_data_changed()
+        if self.eth_mode():
+            self.root.after(50, lambda: self.print_next_club(nr, event="finish"))
 
     def ticker_for_final(self, nr, cat, before, prev):
         who = self.who_text(nr)
@@ -7381,12 +7418,12 @@ class LiveRankingApp:
         self.print_next_club(nr)
         self.update_panels()
 
-    def print_next_club(self, nr):
-        """Vereinswechsel auf dem Papier des CP 545 (#PL, am CP getestet):
-        1. das eben gestartete Boot hat einen anderen Verein als das vorherige und dieser Verein wurde noch nicht
-           angekuendigt (Start ausserhalb der Reihenfolge) -> sofort drucken;
-        2. das naechste Boot der Startreihenfolge gehoert zu einem anderen Verein -> als Ueberschrift vor dessen
-           Start drucken. Gruende fuer «nicht gedruckt» stehen im Log (leise)."""
+    def print_next_club(self, nr, event="start"):
+        """Vereinswechsel auf dem Papier des CP 545 (#PL, am CP getestet). Gedruckt wird beim ersten der beiden
+        Ereignisse: der letzte Fahrer des alten Vereins kommt ins Ziel (event «finish», Zeile vor dem Start des
+        neuen Vereins), oder der erste Fahrer des neuen Vereins startet (event «start», Zeile direkt nach dessen
+        Startzeile; der CP druckt die Startzeile beim Impuls selbst). event «connect»: ersten Verein ankuendigen.
+        Gruende fuer «nicht gedruckt» stehen im Log unter «Alle»."""
         def skip(why):
             self.log(f"Vereinsdruck: nichts gedruckt ({why})", tag="test", focus=False)  # nur unter «Alle»
 
@@ -7398,14 +7435,19 @@ class LiveRankingApp:
                 or (self.cp_b is not None and self.cp_b.connected and self.cp_b_device == "cp545")):
             return skip("kein CP 545 verbunden (TM550 druckt nicht)")
         done = self.__dict__.setdefault("_club_printed", set())
-        cur = self.participants.get(nr) if nr else None
-        cur_club = (cur.get("vnr") or cur.get("verein") or "") if cur else ""
-        prev_club = getattr(self, "_print_prev_club", None)
-        if nr:
-            self._print_prev_club = cur_club or prev_club
+
+        def club_of(p):
+            return (p.get("vnr") or p.get("verein") or "") if p else ""
+
+        announced = getattr(self, "_print_prev_club", None)  # zuletzt angekuendigter Verein
         target = None
-        if cur and cur.get("verein") and cur_club != prev_club and not any(c == cur_club for _n, c in done):
-            target = (nr, cur)  # Start ausserhalb der Reihenfolge: Verein jetzt ankuendigen
+        if event == "start":
+            cur = self.participants.get(nr)
+            if not cur or not cur.get("verein"):
+                return skip(f"Nr {nr} ohne Verein")
+            if club_of(cur) == announced:
+                return skip(f"Verein von Nr {nr} schon angekündigt")
+            target = (nr, cur)
         else:
             nxt = self.next_starters(1)
             if not nxt:
@@ -7413,15 +7455,21 @@ class LiveRankingApp:
             new = self.participants.get(nxt[0])
             if not new or not new.get("verein"):
                 return skip(f"Nr {nxt[0]} ohne Verein")
-            club = new.get("vnr") or new["verein"]
-            if cur_club == club:
+            if club_of(new) == announced:
                 return skip(f"kein Vereinswechsel: nächstes Boot Nr {nxt[0]} im selben Verein")
+            if event == "finish":
+                fin = self.participants.get(nr)
+                left = [n for _t, n, _k in self.compute_course()
+                        if club_of(self.participants.get(n)) == club_of(fin)]
+                if left:
+                    return skip(f"Verein von Nr {nr} noch auf der Strecke (Nr {', '.join(map(str, left[:4]))})")
             target = (nxt[0], new)
         tnr, new = target
         club = new.get("vnr") or new["verein"]
         if (tnr, club) in done:
             return skip(f"Verein von Nr {tnr} schon gedruckt")
         done.add((tnr, club))
+        self._print_prev_club = club
         count = sum(1 for p in self.participants.values() if p.get("verein") == new["verein"])
         text = cp_print_text(new["verein"], count)
         sent = False
@@ -8040,6 +8088,9 @@ class LiveRankingApp:
                  "übernommen, wenn das Hauptgerät eine Zeit nicht liefert oder getrennt ist")
 
     # ---------------- Reserve: Uhrabgleich und Uebernahme ---------------- #
+    def backup_reset_extra(self):
+        self.b_rx_offsets, self.b_seq_base, self.b_seq_last, self._b_asked = [], 0, {}, set()
+
     def backup_reset(self):
         self.b_pend = []            # Reserve-Impulse ohne Gegenstueck: [rx, info]
         self.a_pend = []            # Haupt-Impulse ohne Gegenstueck (nur wenn Reserve verbunden): [rx, info]
@@ -8047,6 +8098,7 @@ class LiveRankingApp:
         self.b_offset = None
         self.b_taken = 0
         self._b_warn_t = 0.0
+        self.backup_reset_extra()
 
     def backup_connected(self):
         return self.cp_b is not None and self.cp_b.connected
@@ -8054,8 +8106,42 @@ class LiveRankingApp:
     def main_connected(self):
         return self.cp is not None and self.cp.connected
 
+    def backup_renumber(self, info):
+        """Zaehlnummern der Reserve eindeutig machen: neuer Lauf (OP) oder rueckwaerts springende Zaehlnummer
+        ergibt einen neuen Bereich (+10000 je Lauf), damit alte und neue Zeiten nicht verwechselt werden."""
+        if info.get("kind") != "time" or "seq" not in info:
+            return info
+        base = getattr(self, "b_seq_base", 0)
+        last = getattr(self, "b_seq_last", {})
+        ch, seq = info["ch"], info["seq"]
+        if info["type"] == "TN" and ch in last and seq < last[ch] - 0 and seq <= 2 and not info.get("answer"):
+            base += 10000
+            last = {}
+            self.b_seq_base = base
+            DIAG.info(f"Reserve: Zählnummer {seq} nach {self.b_seq_last} -> neuer Bereich {base}")
+        if info["type"] == "TN":
+            last[ch] = max(last.get(ch, 0), seq)
+        self.b_seq_last = last
+        if base:
+            info = dict(info, seq=seq + base)
+        return info
+
+    def backup_clock_estimate(self):
+        """Versatz Reserve - Hauptgeraet aus den Eingangszeiten am PC, solange kein Impuls-Paar den genauen Wert
+        liefert (z.B. nur an der Reserve ausgeloest). Genauigkeit etwa die Uebertragungszeit (±0,3 s)."""
+        samples = [o for t, o in getattr(self, "b_rx_offsets", []) if time.time() - t < 600]
+        if not samples:
+            return None
+        return max(samples) - (self.cp_offset() or 0.0)
+
+    def backup_offset(self):
+        if self.b_offset is not None:
+            return self.b_offset
+        est = self.backup_clock_estimate()
+        return est if est is not None else 0.0
+
     def backup_corrected(self, info):
-        off = self.b_offset or 0.0
+        off = self.backup_offset()
         out = dict(info)
         out["abs"] = info["abs"] - off
         out["tod"] = out["abs"] % 86400
@@ -8063,6 +8149,9 @@ class LiveRankingApp:
 
     def backup_time(self, info):
         """Zeile vom Reserve-Geraet."""
+        if info["type"] == "TN" and not info.get("answer"):
+            self.b_rx_offsets = (getattr(self, "b_rx_offsets", []) + [(time.time(), info["abs"] - local_abs())])[-30:]
+        info = self.backup_renumber(info)
         if info["type"] not in ("TN", "T+", "T="):
             if not self.main_connected():
                 self.on_cp_time(self.backup_corrected(info), "B")
@@ -8092,8 +8181,14 @@ class LiveRankingApp:
         rec = self.cp_recs.get(key)
         if rec is None:
             return
+        asked = self.__dict__.setdefault("_b_asked", set())
+        if key in asked:
+            return  # zu diesem Impuls ist schon eine Rueckfrage offen bzw. beantwortet
+        asked.add(key)
         ch = "Start" if key[2] == CH_START else ("Ziel" if key[2] == CH_FINISH else f"Eingang {key[2]}")
         who = f"Nr {rec['nr']}" if rec.get("nr") else "kein Boot"
+        if self.b_offset is None:
+            who += " (Uhr der Reserve geschätzt, ±0,3 s)"
         try:
             dlg = self._toplevel("Abweichung Haupt- und Reserve-Gerät")
         except tk.TclError:
@@ -8404,8 +8499,9 @@ class LiveRankingApp:
         for k in ("lock_start", "lock_finish"):
             if self.tset().get(k):
                 self.root.after(4000, lambda k=k: self.cp_lock_preload(k, True))
+        self.root.after(3000, lambda: self.cp_write_precision(auto=True))  # eingestellte Praezision ans Geraet
         if not self.cp_recs and self.last_start_nr is None:  # noch kein Start: Ueberschrift fuer den ersten Verein
-            self.root.after(2500, lambda: self.print_next_club(None))
+            self.root.after(2500, lambda: self.print_next_club(None, event="connect"))
         self.start_eth_tick()
         self.apply_show_settings()
 
@@ -8607,6 +8703,11 @@ class LiveRankingApp:
                 DIAG.info(f"#WP {param} {nr}: {reason}")
                 if on_done:
                     on_done(False, reason)
+                return
+            if param == "026" and inp == CH_START and reason.startswith("CP meldet") and on_done:
+                # inzwischen gestartet (CP zaehlt weiter): nicht dieselbe Nummer erzwingen, neu abgleichen
+                DIAG.info(f"#WP 026 {nr}: {reason}, neu abgleichen")
+                on_done(False, reason)
                 return
             if attempt < 3:
                 self.log(f"CP: {label} Nr {nr} nicht bestätigt ({reason}), neuer Versuch", tag="warn")
@@ -8875,6 +8976,9 @@ class LiveRankingApp:
             self.cp_b_open = info["kind"] == "open"
             if info["kind"] == "open":
                 self.cp_b_next = None
+                if getattr(self, "b_seq_last", {}):  # neuer Lauf der Reserve: Zaehlnummern neu
+                    self.b_seq_base = getattr(self, "b_seq_base", 0) + 10000
+                    self.b_seq_last = {}
                 self.root.after(100, lambda: self.cp_sync_next("Reserve: Lauf offen"))
         if dev == "B" and info["kind"] == "serial":
             self.cp_b_device = "tm550" if "TM550" in info["type"].upper() else "cp545"
@@ -8884,6 +8988,7 @@ class LiveRankingApp:
             if self.cp_b is not None and self.cp_b_device == "tm550":
                 self.cp_b.checksum = True
             self.root.after(100, lambda: self.cp_sync_next("Reserve verbunden"))
+            self.root.after(600, self.backup_write_precision)
             self.log(f"Reserve-Gerät: {info['type']} Nr {info['serial']} {info['version']}".strip(), tag="ok")
             return
         if dev == "A" and self.cp_backlog is not None:
@@ -9078,9 +9183,16 @@ class LiveRankingApp:
         auf die keine weitere Zeit folgt (Sequenzluecke sonst erst beim naechsten Impuls sichtbar)."""
         if not self.cp_caps["rt"]:
             return
+        cnt = self.__dict__.setdefault("_probe_cnt", {})
         for ch in (CH_START, CH_FINISH):
             last = self.cp_lastseq.get(("A", self.cp_run, ch))
             if last is not None:
+                k = (self.cp_run, ch, last + 1)
+                cnt[k] = cnt.get(k, 0) + 1
+                if cnt[k] > 3:
+                    continue  # dreimal AK F: keine solche Zeit, erst nach dem naechsten Impuls wieder fragen
+                if cnt[k] == 3:
+                    DIAG.info(f"Nachfrage Seq {last + 1} Eingang {ch}: keine weitere Zeit, Nachfragen pausiert")
                 self.cp_query(f"#RT {last + 1:04d} {ch:02d}", "ack")
 
     def cp_download_run(self):
@@ -9210,8 +9322,8 @@ class LiveRankingApp:
                 self.cp_recs[key] = {"nr": self.cp_recs[twin]["nr"], "cp_nr": cpn, "abs": t["abs"],
                                      "status": "dup", "twin": twin}
                 return
-            if typ == "TN" and not recalled:
-                self.add_cp_offset(t["abs"])
+            if typ == "TN" and not recalled and (dev == "A" or not self.main_connected()):
+                self.add_cp_offset(t["abs"])  # Uhr des Hauptgeraets (Reserve-Zeiten sind schon umgerechnet)
             if recalled:
                 self.log(f"CP: Zeit Seq {seq} Eingang {ch} nachgeholt", tag="ok")
             if ch == CH_START:
@@ -9360,9 +9472,12 @@ class LiveRankingApp:
         if self.status.get(nr) == "DNS":
             self.status.pop(nr, None)
             self.log(f"Nr {nr} startet doch: Status DNS aufgehoben", tag="warn")
-        if rec["cp_nr"] > 0:
-            # CP 545 zaehlt selbst weiter, der TM550 (1.48) verbraucht die vorgeladene Nummer
+        if key[0] == "A" and rec["cp_nr"] > 0:
+            # CP 545 zaehlt selbst weiter, der TM550 (1.48) verbraucht die vorgeladene Nummer. Ein Start nur bei
+            # der Reserve aendert am Hauptgeraet nichts: dort bleibt die alte Nummer vorgeladen.
             self.cp_next_start = rec["cp_nr"] + 1 if self.cp_device != "tm550" else 0
+        elif key[0] == "B":
+            self.cp_b_next = None  # Reserve hat die Nummer verbraucht
         self.log(f"START Nr {nr} ({fmt_tod(rec['abs'] % 86400)})", tag="test" if self.is_test(nr) else "ok")
         self.on_new_starter(prev, nr)
         self.cp_sync_next("Start")
@@ -9512,13 +9627,18 @@ class LiveRankingApp:
                           f"Boot {rec['nr']}")
             return
         rec = self.cp_recs[key]
-        secs = trunc_secs(info["secs"], min(self.cp_prec, RESULT_DEC))
+        # CP 545: Resultat (RR, Papier) mit einer Stelle weniger als die Zeitzeilen (#WP 001 n: Zeiten n+1,
+        # Resultat n Stellen). Nur bei echter Abweichung auf der Genauigkeit des RR gilt der Wert des CP.
+        rr_dec = max(0, self.cp_prec - 1) if self.cp_device == "cp545" else self.cp_prec
         res = self.results.get(rec["nr"])
-        if res and res.get("cp") == list(key) and abs(res["secs"] - secs) > 0.011:
-            self.log(f"CP meldet für Nr {rec['nr']} {fmt_secs(secs, 2)}s, App rechnete {res['str']}s: "
-                     "Wert des CP übernommen", tag="warn")
-            res["secs"], res["str"] = secs, fmt_secs(secs, 2)
-            self.on_data_changed()
+        if res and res.get("cp") == list(key):
+            app_t = trunc_secs(res["secs"], rr_dec)
+            if abs(app_t - info["secs"]) > 0.6 * 10 ** -rr_dec:
+                secs = trunc_secs(info["secs"], min(rr_dec, RESULT_DEC))
+                self.log(f"CP meldet für Nr {rec['nr']} {fmt_secs(secs, min(rr_dec, RESULT_DEC))}s, App rechnete "
+                         f"{res['str']}s: Wert des CP übernommen", tag="warn")
+                res["secs"], res["str"] = secs, fmt_secs(secs)
+                self.on_data_changed()
 
     def store_cp_result(self, nr, secs, key):
         res = self.results.get(nr)
