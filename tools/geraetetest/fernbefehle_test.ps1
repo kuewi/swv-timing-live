@@ -411,7 +411,7 @@ function Read-023 {
     foreach ($l in (Send-Cmd "#RP 023")) { if ($l -match "^&P\s*023\s+(\d)\s+(\d)\s+(\d)\s+(\d)") { $d = ($Matches[1..4] -join " ") } }
     return $d
 }
-if (Ask "Q  Sperren ueber die Verbindung: #WP 023 und #WP 006 auf Eingang 1, je Impuls ausloesen, danach zurueck") {
+if (Ask "Q  Sperren ueber die Verbindung: #WP 023 auf Eingang 1, #WP 006 auf Eingang 1 und 4, je Buchse und Handtaste, danach zurueck") {
     $o23 = Read-023
     $q0 = Read-Inputs "Q0 vorher"
     $script:summary += ("{0,-22} {1}" -f "Q0 023 vorher", $o23)
@@ -435,12 +435,17 @@ if (Ask "Q  Sperren ueber die Verbindung: #WP 023 und #WP 006 auf Eingang 1, je 
             [void](Read-Inputs "Q2 zurueck")
         }
     }
-    foreach ($v in @("0", "2")) {
-        Log "--- Q3 #WP 006 01 $v ---"
-        [void](Send-Cmd "#WP 006 01 $v")
-        [void](Read-Inputs "Q3 nach 006 01 $v")
-        Note "Q3 Display 006=$v" "Was zeigt das Display bei E1 jetzt?"
-        [void](Observe "Q3 Impuls 006=$v" "Impuls auf Eingang 1 ausloesen: kommt eine Zeile?" 20)
+    foreach ($k in @(1, 4)) {
+        Log "--- Q3 #WP 006 0$k 0 (sperren), Buchse und gruene Taste, dann 1 (oeffnen) ---"
+        [void](Send-Cmd "#WP 006 0$k 0")
+        [void](Read-Inputs "Q3 E$k nach 006=0")
+        Note "Q3 E$k Display" "Steht bei E$k ein schwarzer Balken (j/n)?"
+        [void](Observe "Q3 E$k Buchse" "Impuls NUR ueber die Buchse $k ausloesen (Kabel/Taster), nicht mit der Taste am Geraet" 20)
+        $hand = $(if ($Device -eq "tm550") { "Taste E$k am Geraet" } else { "gruene Taste $k am Geraet" })
+        [void](Observe "Q3 E$k Handtaste" "Jetzt $hand druecken" 20)
+        [void](Send-Cmd "#WP 006 0$k 1")
+        [void](Read-Inputs "Q3 E$k nach 006=1")
+        Note "Q3 E$k offen" "Ist E$k wieder offen (j/n)?"
     }
     if ($o23) { [void](Send-Cmd "#WP 023 $o23") }
     if ($q0[0] -match "^\d$") { [void](Send-Cmd ("#WP 006 01 " + $q0[0])) }
