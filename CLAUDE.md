@@ -8,3 +8,4 @@
 - Release baut GitHub Actions automatisch bei neuer `APP_VERSION` auf `main`.
 - Benutzerhandbuch und Training (`docs/handbuch/`) nur aktualisieren, wenn Stefan «update Doku» schreibt.
   Bilder dazu: `python tools/doku_screenshots.py` mit Anzeige, legt `docs/handbuch/bilder/` neu an.
+  Danach `python3 tools/doku_pdf.py` (Chrome headless) für die PDF in `docs/handbuch/`.
