@@ -262,14 +262,14 @@ kommt er von der Buchse.
 | --- | --- | --- |
 | Werte 006 pro Eingang | 1 = offen, 0 = gesperrt (E2, E3 in NET TIME 0, Display Strich) | gleich wie 023: 0 = offen (grün, Pfeil nach oben), 1 = rot mit Pfeil nach unten (senden), 2 = rot (gesperrt) |
 | Start sperren über die App | `#WP 006 01 0`: Balken, Buchse 1 gesperrt, **grüne Taste 1 löst trotzdem aus** (`M1`). `#WP 006 01 1` öffnet | `#WP 023 2 2 2 0` bzw. `#WP 006 01 2`: rotes Kästchen, kein Impuls. `#WP 006 01 0` öffnet |
-| Ziel sperren über die App | `#WP 006 04 0`: AK C, zurückgelesen 0, aber kein Balken, Impulse auf E4 kommen weiter. **Geht nicht** | `#WP 006 04 1` schaltet auf 1 (senden), Taste E4 löste weiter aus. 2 auf E4 nicht einzeln geprüft |
+| Ziel sperren über die App | `#WP 006 04 0`: AK C, zurückgelesen 0. Im Test vermutlich E1 statt E4 ausgelöst; Stefan sah E4 am Display sperren und öffnen. Annahme: wie E1 | `#WP 006 04 1` schaltet auf 1 (senden), Taste E4 löste weiter aus. 2 auf E4 nicht einzeln geprüft |
 | `#WP 023` | AK F | AK C, schreibt alle vier Eingänge |
 | rote Sperrtaste 1 bzw. SHIFT + Ex | Balken, `#RP 006 01` = 0, aber Impulse über Buchse 1 kamen in beiden Durchgängen weiter (`TN 9`, `TN 14` ohne `M`) | jeder Druck schickt `&P 023` von selbst, 0 → 1 → 2 → 0 |
 | Meldung von selbst | keine (`#EE 1` AK R), nur Abfragen | `&P 023` bei jeder Änderung |
 | Uhr | stimmt | 06:11 statt 22:44, Tag 26001: Uhr am TM550 stellen (oder die App rechnet mit Versatz) |
 
 Folgerung für die App: TM550 Start und Ziel über `#WP 006 0k 2` sperren, `0` öffnen, Änderungen über `&P 023`.
-CP 545 nur den Start über `#WP 006 01 0` sperren, das Ziel weiter in der App. Die Sperrnummer bleibt nötig, weil die
+CP 545 Start und Ziel über `#WP 006 01 0` bzw. `#WP 006 04 0` sperren, `1` öffnen. Die Sperrnummer bleibt nötig, weil die
 grüne Taste am CP auch bei gesperrtem Eingang auslöst.
 
 Gruppe Q (`-Nur Q`) schreibt `#WP 023` und `#WP 006` auf Eingang 1 und 4 und prüft je mit Buchse und Taste.
