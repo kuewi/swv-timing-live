@@ -109,6 +109,7 @@ Das Skript fragt jede Gruppe mit `j`/`n` ab. Alle mit `j` beantworten.
 | M Zeitmessarten | siehe «Komplett-Test mit neuer Firmware» | Anzeige je Zeitmessart |
 | N Nummern zuordnen | siehe «Komplett-Test mit neuer Firmware» | Nummer am Display |
 | O Ziel zurücknehmen | Nr 40 ins Ziel, dann `#WP 026 04 0040` und nochmals Ziel, danach Tastatur «41 E4», «E4 allein» | Bekommt der zweite Zielimpuls Nr 40? Papier und Display |
+| P Eingänge | Zustand der Eingänge lesen, an der Tastatur sperren und öffnen, Ereignismeldungen, Sperren über die Verbindung | siehe «Test Gruppe P» |
 | F Format | 10 s zuhören | 1 Start- und 1 Ziel-Impuls auslösen |
 
 Einzelne Gruppen: `-Nur G` oder `-Nur A,G` anhängen.
@@ -214,6 +215,33 @@ Am Gerät notieren:
 | Gruppe M: Anzeigetafel über RS232 | | läuft in BASIC, TIMING, SPEED, LAP? |
 | Gruppe N: Nummer am Display und auf der Anzeigetafel | | nach Synchronisieren in der Smartphone-App |
 
+## Test Gruppe P: Eingänge gesperrt oder offen
+
+Frage: Merkt die App über USB oder Ethernet, wenn am CP 545 eine rote Sperrtaste oder am TM550
+SHIFT + E1 bis E4 gedrückt wird? Kann sie die Eingänge selbst sperren?
+
+Grundlage THCOM08: Parameter 006 «Input status» (0 = gesperrt, 1 = offen, lesen und schreiben pro Eingang),
+023 «Input direction» (0 = Out, 1 = In, 2 = Off), `#EE 1` schaltet Meldungen ein (`&P` bei Änderung eines
+Parameters, `&S 0..` bei jedem Tastendruck).
+
+Skript neu holen (Schritt 1). Gerät mit offenem Lauf, Start E1, Ziel E4, dann nur Gruppe P:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Ip 192.168.1.50 -Nur P
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51 -Nur P
+```
+
+| Schritt | Was das Skript macht | Was du tust |
+| --- | --- | --- |
+| P1 | liest `#RP 006 01` bis `04`, `#RP 023`, Sperrzeiten `#RP 004` | Display beschreiben (Symbole, Farben, Zeichen bei E1 bis E4) und eintippen |
+| P2 | `#EE 1` (falls abgelehnt: `#WC 013 1`) | nichts |
+| P3 | für E1 und E4: nach jedem Tastendruck 20 s zuhören, dann 006 und 023 lesen | CP: rote Sperrtaste unter der grünen Taste drücken. TM550: SHIFT, dann Ex. Display eintippen, Impuls auf dem gesperrten Eingang auslösen. TM550: ein zweites Mal für den dritten Zustand. Zum Schluss wieder öffnen |
+| P4 | 20 s zuhören | Handtasten 1 und 4 und eine Zifferntaste drücken |
+| P5 | `#WP 006 04 0` (Ziel sperren), lesen, `#WP 006 04 1` (öffnen), lesen | Display eintippen, Impuls auf E4 auslösen |
+| Ende | öffnet alle Eingänge, die am Anfang offen waren, `#EE 0` | prüfen, ob alles offen ist |
+
+Logdatei zurückgeben wie in Schritt 10.
+
 ## Ergebnisse 23.11.2026 (CP 545 VB16, TM550 1.48)
 
 | Befehl | CP 545 (VB16) | TM550 (1.48) |
@@ -234,6 +262,7 @@ Am Gerät notieren:
 | Tastatur / Smartphone-App | Umnummerieren: `T-` alte Nr, `T*` neue Nr (gleiche Zählnummer). Falschstart (E1): `TC`. DNF/DSQ (R 0): keine Zeile | AT START und AUTOMATIC: Nummer auf Start und Ziel. Korrektur in der Smartphone-App: `T*` neue Nr, gelöschte Zeit `TC`. MANUAL mit Smartphone-App: nur `CL/OP 05` im Wechsel, keine Zeiten (ungeklärt) |
 
 Offen für den nächsten Test:
+- Gruppe P: Sperren der Eingänge an der Tastatur und über `#WP 006` erkennen.
 - Gruppe O: Zielzeit zurücknehmen. Nimmt der CP `#WP 026 04` für ein Boot an, das für ihn schon im Ziel ist? Was
   machen «Nr E4» und «E4 allein» an der Tastatur?
 - TM550 MANUAL IDENTIFICATION ohne verbundene Smartphone-App, Gruppe N.

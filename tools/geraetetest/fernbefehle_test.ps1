@@ -10,9 +10,11 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
-#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O)
+#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P)
 #   M: Zeitmessarten nacheinander (TM550: BASIC, TIMING, SPEED, LAP; CP: z.B. NET TIME, PTB SEQ)
 #   N: Nummern zuordnen (TM550-Smartphone-App, Identifikation AT START / MANUAL / AUTOMATIC, CP-Tastatur)
+#   P: Eingaenge gesperrt/offen: #RP 006 und 023, Sperren an der Tastatur (CP rote Tasten, TM550 SHIFT+Ex),
+#      Ereignismeldungen #EE 1, Sperren per #WP 006. Am Ende werden die Eingaenge wieder geoeffnet.
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
     [string]$Ip = "",
@@ -335,6 +337,70 @@ if (Ask "O  Ziel zuruecknehmen: Nr 40 starten und ins Ziel, dann #WP 026 04 0040
     $script:summary += ("{0,-22} {1}" -f "Ziel 40 nochmals", $(if ($back -match "0040") { "angenommen" } else { "nicht angenommen" }))
     [void](Observe "O Ziel nochmals" "1 Ziel-Impuls: bekommt er Nr 40? Papier und Display notieren" 30)
     [void](Observe "O Tastatur" "CP: Start-Impuls (Nr 41), Ziel-Impuls, dann 41 E4 eingeben, nochmals Ziel-Impuls; danach E4 allein" 60)
+}
+
+# P: Eingaenge gesperrt oder offen. Was meldet das Geraet, wenn man an der Tastatur sperrt?
+function Note([string]$label, [string]$frage) {
+    $a = Read-Host $frage
+    Log ("Notiz $label`: " + $a)
+    $script:summary += ("{0,-22} {1}" -f ("Notiz " + $label), $a)
+}
+function Read-Inputs([string]$label) {
+    $st = @()
+    foreach ($k in 1..4) {
+        $v = "-"
+        foreach ($l in (Send-Cmd ("#RP 006 0" + $k))) { if ($l -match "^&P\s*006\s+0*$k\s+(\d)") { $v = $Matches[1] } }
+        $st += $v
+    }
+    $d = "-"
+    foreach ($l in (Send-Cmd "#RP 023")) { if ($l -match "^&P\s*023\s+(.+?)(\t|$)") { $d = $Matches[1].Trim() } }
+    $script:summary += ("{0,-22} {1}" -f $label, ("006 (0 gesperrt, 1 offen): " + ($st -join " ") + " | 023: " + $d))
+    return $st
+}
+if (Ask "P  Eingaenge: Zustand lesen, an der Tastatur sperren und oeffnen, Meldungen #EE 1, Sperren per #WP 006") {
+    $lockKey = $(if ($Device -eq "tm550") { "SHIFT und dann E{0}" } else { "rote Sperrtaste {0} (unter der gruenen Taste {0})" })
+    Log "--- P1 Zustand lesen ---"
+    $orig = Read-Inputs "P1 alle offen"
+    foreach ($k in 1..4) { [void](Send-Cmd ("#RP 004 0" + $k)) }
+    Note "P1 Display" "Was zeigt das Display ueber bzw. unter E1 bis E4 (Symbole, Farben, Zeichen)?"
+
+    Log "--- P2 Ereignismeldungen einschalten ---"
+    $ee = Send-Cmd "#EE 1"
+    if (-not ($ee -match "^AK\s*C")) { [void](Send-Cmd "#WC 013 1") }
+
+    foreach ($k in @(1, 4)) {
+        Log "--- P3 Eingang $k an der Tastatur ---"
+        $todo = ($lockKey -f $k)
+        [void](Observe "P3 E$k sperren" "$todo druecken (einmal)" 20)
+        [void](Read-Inputs "P3 E$k nach 1x")
+        Note "P3 E$k Display 1x" "Was zeigt das Display jetzt bei E$k?"
+        [void](Observe "P3 E$k Impuls" "Impuls auf Eingang $k ausloesen (Taste oder Buchse): kommt eine Zeile?" 20)
+        if ($Device -eq "tm550") {
+            [void](Observe "P3 E$k 2x" "$todo nochmals druecken (dritter Zustand)" 20)
+            [void](Read-Inputs "P3 E$k nach 2x")
+            Note "P3 E$k Display 2x" "Was zeigt das Display jetzt bei E$k?"
+            [void](Observe "P3 E$k Impuls 2" "Impuls auf Eingang $k ausloesen: kommt eine Zeile?" 20)
+        }
+        $back = $(if ($Device -eq "tm550") { "so oft, bis E$k wieder offen ist (gruen, Pfeil nach oben)" } else { "nochmals (wieder offen)" })
+        [void](Observe "P3 E$k oeffnen" "$todo $back" 30)
+        [void](Read-Inputs "P3 E$k wieder offen")
+    }
+    [void](Observe "P4 Tasten" "Handtasten 1 und 4 je einmal druecken, dann eine Zifferntaste: kommen &S-Zeilen?" 20)
+
+    Log "--- P5 Sperren ueber die Verbindung ---"
+    [void](Send-Cmd "#WP 006 04 0")
+    [void](Read-Inputs "P5 nach #WP 006 04 0")
+    Note "P5 Display" "Ist E4 am Display jetzt gesperrt?"
+    [void](Observe "P5 Impuls" "Impuls auf Eingang 4 ausloesen: kommt eine Zeile?" 20)
+    [void](Send-Cmd "#WP 006 04 1")
+    $end = Read-Inputs "P5 nach #WP 006 04 1"
+
+    # Aufraeumen: Eingaenge, die am Anfang offen waren, wieder oeffnen; Ereignismeldungen aus
+    foreach ($k in 1..4) {
+        if ($orig[$k - 1] -eq "1" -and $end[$k - 1] -ne "1") { [void](Send-Cmd ("#WP 006 0" + $k + " 1")) }
+    }
+    [void](Send-Cmd "#EE 0")
+    Note "P Ende" "Sind am Display alle benutzten Eingaenge wieder offen (j/n)?"
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen
