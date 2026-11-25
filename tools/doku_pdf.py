@@ -17,8 +17,10 @@ from reportlab.pdfgen import canvas
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOC = os.path.join(ROOT, "docs", "handbuch")
-DOCS = (("benutzerhandbuch.md", "SWV_Live-Ranking_Benutzerhandbuch.pdf", "Benutzerhandbuch"),
-        ("training.md", "SWV_Live-Ranking_Training.pdf", "Training"))
+VERSION = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', open(os.path.join(ROOT, "swv_live_ranking.py"),
+                    encoding="utf-8").read(), re.M).group(1)
+DOCS = (("benutzerhandbuch.md", f"SWV_Live-Ranking_Benutzerhandbuch_v{VERSION}.pdf", "Benutzerhandbuch"),
+        ("training.md", f"SWV_Live-Ranking_Training_v{VERSION}.pdf", "Training"))
 REPO = "https://github.com/kuewi/swv-timing-live/blob/main/"
 
 CSS = """
@@ -85,7 +87,7 @@ def to_html(md_name, title):
     logo = os.path.join(ROOT, "assets", "swv_logo.svg")
     cover = (f'<div class="titel">' + (f'<img class="logo" src="file://{logo}">' if logo else "") +
              f'<h1>{head}</h1><div class="unter">Speakerbildschirm für den Schweizer Wasserfahrverband</div>'
-             f'<div class="stand">{stand}<br>Aktuelle Fassung: github.com/kuewi/swv-timing-live › docs/handbuch'
+             f'<div class="stand">Software-Revision v{VERSION}<br>{stand}<br>Aktuelle Fassung: github.com/kuewi/swv-timing-live › docs/handbuch'
              f'</div></div>')
     return (f'<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><title>{head}</title>'
             f'<style>{CSS}</style></head><body>{cover}{html}</body></html>')
@@ -109,19 +111,22 @@ def number_pages(path, title):
             c = canvas.Canvas(buf, pagesize=A4)
             c.setFont("Helvetica", 8)
             c.setFillGray(0.45)
-            c.drawString(16 * 72 / 25.4, 10 * 72 / 25.4, f"SWV Live-Ranking · {title}")
+            c.drawString(16 * 72 / 25.4, 10 * 72 / 25.4, f"SWV Live-Ranking v{VERSION} · {title}")
             c.drawRightString(A4[0] - 16 * 72 / 25.4, 10 * 72 / 25.4, f"Seite {i + 1} von {total}")
             c.save()
             buf.seek(0)
             page.merge_page(PdfReader(buf).pages[0])
         writer.add_page(page)
-    writer.add_metadata({"/Title": f"SWV Live-Ranking {title}", "/Author": "SWV Live-Ranking"})
+    writer.add_metadata({"/Title": f"SWV Live-Ranking {title} v{VERSION}", "/Author": "SWV Live-Ranking"})
     with open(path, "wb") as fh:
         writer.write(fh)
 
 
 def main():
     chrome = find_chrome()
+    for name in os.listdir(DOC):  # alte Fassungen entfernen
+        if name.startswith("SWV_Live-Ranking_") and name.endswith(".pdf"):
+            os.remove(os.path.join(DOC, name))
     tmp = tempfile.mkdtemp()
     for md, pdf, title in DOCS:
         html_path = os.path.join(DOC, f"_{md}.html")  # neben bilder/, damit relative Pfade stimmen
@@ -134,6 +139,13 @@ def main():
         number_pages(out, title)
         print(out, len(PdfReader(out).pages), "Seiten")
     shutil.rmtree(tmp, ignore_errors=True)
+    # Links im README und in der Uebersicht auf die neuen Dateinamen
+    for path in (os.path.join(ROOT, "README.md"), os.path.join(DOC, "README.md")):
+        text = open(path, encoding="utf-8").read()
+        for _md, pdf, title in DOCS:
+            text = re.sub(r"SWV_Live-Ranking_" + title + r"(?:_v[0-9.]+)?\.pdf", pdf, text)
+        text = re.sub(r"Stand: App v[0-9.]+", f"Stand: App v{VERSION}", text)
+        open(path, "w", encoding="utf-8").write(text)
 
 
 if __name__ == "__main__":
