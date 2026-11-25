@@ -6,3 +6,5 @@
   Screenshot, CHANGELOG und Code im selben Commit.
 - Tests: `tests/test_*.py` (brauchen eine Anzeige).
 - Release baut GitHub Actions automatisch bei neuer `APP_VERSION` auf `main`.
+- Benutzerhandbuch und Training (`docs/handbuch/`) nur aktualisieren, wenn Stefan «update Doku» schreibt.
+  Bilder dazu: `python tools/doku_screenshots.py` mit Anzeige, legt `docs/handbuch/bilder/` neu an.

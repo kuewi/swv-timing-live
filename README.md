@@ -7,6 +7,8 @@ Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die 
 TAG Heuer Chronoprinter CP 545 oder des ITS/Vola TM550 und zeigt Live-Zeit, Zieleinlauf, Ranglisten pro Kategorie,
 nächste Starter, Ereignis-Ticker und Statistik.
 
+**Dokumentation:** [Benutzerhandbuch und Training](docs/handbuch/README.md)
+
 ## Verbindung zum Zeitmessgerät
 
 | Art | Anschluss | Funktion |
@@ -80,7 +82,7 @@ Notizen zu weiteren Geräten: [FDS TBox / DBox](docs/fds_tbox.md), [ALGE-TIMING]
 - Programm: `C:\Program Files\SWV Live-Ranking`
 - Daten: `Dokumente\SWV Live-Ranking` mit Einstellungen, Autosave, `logs` (Diagnose-Log),
   `rohdaten` (jede Zeile vom CP), `fehlerberichte` und `pdf`. Bleibt bei Update und Deinstallation.
-- Fehler melden: Knopf oben in der Seitenleiste oder F12. Die ZIP-Datei aus `fehlerberichte` weiterleiten.
+- Fehler melden: Knopf «Fehler melden» neben der Versionsnummer oder F12. Die ZIP-Datei aus `fehlerberichte` weiterleiten.
 
 ## Ablage
 
