@@ -253,22 +253,26 @@ Logdatei zurückgeben wie in Schritt 10.
 | `#WP 006 04 0` | AK C, keine Wirkung (zurückgelesen 1, Display unverändert, Impulse kamen) | nicht geprüft: ab 21:48 keine Antwort mehr über Ethernet |
 | Display oberste Zeile | E1 Laufnummer (02), E2 und E3 Strich, E4 Zeitmessart (NT) | E1 und E4 grün mit Pfeil, E2 und E3 rot (TIMING) |
 
-### Ergebnis Gruppe Q CP 545, 25.11.2026
+### Ergebnis Gruppe Q, 25.11.2026 (zwei Durchgänge CP 545, ein Durchgang TM550)
 
-| Punkt | Ergebnis |
-| --- | --- |
-| rote Sperrtaste 1, einmal | schwarzer Balken, `#RP 006 01` = 0; nochmals: offen, 1. Abfrage geht, Meldung von selbst nicht |
-| Impuls nach der Sperrtaste | Zeile kam (`TN 9`): vermutlich mit der grünen Taste ausgelöst, die laut Handbuch nicht gesperrt wird |
-| `#WP 006 01 0` | AK C, zurückgelesen 0, schwarzer Balken, Impuls kam **nicht** durch: Sperren über die App geht |
-| `#WP 006 01 1` | wieder offen |
-| `#WP 006 01 2` | AK C, gilt als offen (zurückgelesen 1) |
-| `#WP 023 …` | AK F, nicht schreibbar |
-| 006 bei E2/E3 | 0 (gesperrt), Display Strich: in NET TIME nicht benutzt |
-| offen | `#WP 006 04 0` hatte in Gruppe P keine Wirkung (zurückgelesen 1). Gruppe Q prüft jetzt E1 und E4, je mit Buchse und Handtaste |
+In den Zeitzeilen steht vor dem Kanal ein `M`, wenn der Impuls von der Taste am Gerät kommt (`M1`, `M4`), ohne `M`
+kommt er von der Buchse.
 
-Nachtest: Gruppe Q (`-Nur Q`) schreibt `#WP 023` und `#WP 006` auf Eingang 1 und prüft je mit einem Impuls.
-CP 545 zuerst mit der roten Sperrtaste, bis der schwarze Balken erscheint (Handbuch: «Die Eingänge sind gesperrt,
-wenn im LCD Display beim jeweiligen Kanal ein schwarzer Balken angezeigt wird»).
+| Punkt | CP 545 (VB16, NET TIME) | TM550 (1.48, TIMING) |
+| --- | --- | --- |
+| Werte 006 pro Eingang | 1 = offen, 0 = gesperrt (E2, E3 in NET TIME 0, Display Strich) | gleich wie 023: 0 = offen (grün, Pfeil nach oben), 1 = rot mit Pfeil nach unten (senden), 2 = rot (gesperrt) |
+| Start sperren über die App | `#WP 006 01 0`: Balken, Buchse 1 gesperrt, **grüne Taste 1 löst trotzdem aus** (`M1`). `#WP 006 01 1` öffnet | `#WP 023 2 2 2 0` bzw. `#WP 006 01 2`: rotes Kästchen, kein Impuls. `#WP 006 01 0` öffnet |
+| Ziel sperren über die App | `#WP 006 04 0`: AK C, zurückgelesen 0, aber kein Balken, Impulse auf E4 kommen weiter. **Geht nicht** | `#WP 006 04 1` schaltet auf 1 (senden), Taste E4 löste weiter aus. 2 auf E4 nicht einzeln geprüft |
+| `#WP 023` | AK F | AK C, schreibt alle vier Eingänge |
+| rote Sperrtaste 1 bzw. SHIFT + Ex | Balken, `#RP 006 01` = 0, aber Impulse über Buchse 1 kamen in beiden Durchgängen weiter (`TN 9`, `TN 14` ohne `M`) | jeder Druck schickt `&P 023` von selbst, 0 → 1 → 2 → 0 |
+| Meldung von selbst | keine (`#EE 1` AK R), nur Abfragen | `&P 023` bei jeder Änderung |
+| Uhr | stimmt | 06:11 statt 22:44, Tag 26001: Uhr am TM550 stellen (oder die App rechnet mit Versatz) |
+
+Folgerung für die App: TM550 Start und Ziel über `#WP 006 0k 2` sperren, `0` öffnen, Änderungen über `&P 023`.
+CP 545 nur den Start über `#WP 006 01 0` sperren, das Ziel weiter in der App. Die Sperrnummer bleibt nötig, weil die
+grüne Taste am CP auch bei gesperrtem Eingang auslöst.
+
+Gruppe Q (`-Nur Q`) schreibt `#WP 023` und `#WP 006` auf Eingang 1 und 4 und prüft je mit Buchse und Taste.
 
 ## Ergebnisse 23.11.2026 (CP 545 VB16, TM550 1.48)
 
@@ -290,7 +294,8 @@ wenn im LCD Display beim jeweiligen Kanal ein schwarzer Balken angezeigt wird»)
 | Tastatur / Smartphone-App | Umnummerieren: `T-` alte Nr, `T*` neue Nr (gleiche Zählnummer). Falschstart (E1): `TC`. DNF/DSQ (R 0): keine Zeile | AT START und AUTOMATIC: Nummer auf Start und Ziel. Korrektur in der Smartphone-App: `T*` neue Nr, gelöschte Zeit `TC`. MANUAL mit Smartphone-App: nur `CL/OP 05` im Wechsel, keine Zeiten (ungeklärt) |
 
 Offen für den nächsten Test:
-- Gruppe P: Sperren der Eingänge an der Tastatur und über `#WP 006` erkennen.
+- CP 545: wirkt die rote Sperrtaste nur auf die grüne Taste? Sperrtaste 1, dann je ein Impuls über Buchse 1 und grüne Taste 1.
+- TM550: `#WP 006 04 2` sperrt das Ziel? Impuls über Buchse 4 und Taste E4.
 - Gruppe O: Zielzeit zurücknehmen. Nimmt der CP `#WP 026 04` für ein Boot an, das für ihn schon im Ziel ist? Was
   machen «Nr E4» und «E4 allein» an der Tastatur?
 - TM550 MANUAL IDENTIFICATION ohne verbundene Smartphone-App, Gruppe N.
