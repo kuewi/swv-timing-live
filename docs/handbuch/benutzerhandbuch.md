@@ -1,6 +1,6 @@
 # Benutzerhandbuch SWV Live-Ranking
 
-Stand: App v1.20.0, CP 545 Firmware VB16, TM550 Firmware 1.48. Alle Namen in den Bildern sind erfunden.
+Stand: App v1.21.0, CP 545 Firmware VB16, TM550 Firmware 1.48. Alle Namen in den Bildern sind erfunden.
 
 ## Inhalt
 
@@ -60,11 +60,11 @@ Boote auf der Strecke), «In 8 Stunden» oder «Beim Beenden der App». Die App 
 
 | Bereich | Inhalt |
 | --- | --- |
-| Menüleiste oben | Version, «Fehler melden», ein Knopf pro Bereich (klappt nach unten auf), Hell/Dunkel (☀/☾), Seitenleiste anpinnen (⇥) |
+| Menüleiste oben | Version, «Fehler melden», «Handbuch ▾» (lädt Benutzerhandbuch oder Training als PDF in der aktuellen Fassung), ein Knopf pro Bereich (klappt nach unten auf), Hell/Dunkel (☀/☾), Seitenleiste anpinnen (⇥) |
 | Knopf «Verbindung» | grün: Haupt- und Reserve-Gerät verbunden, orange: eines, rot: keines |
 | blaues Feld LAUFEND | Boot auf der Strecke mit laufender Zeit, Bestzeit der Kategorie, möglicher Rang, Schalter «Start sperren» |
 | grünes Feld ZIEL | letzter Zieleinlauf mit Zeit und Rang, Schalter «Ziel sperren» |
-| linke Spalte | «Als nächstes am Start», «Auf Fahrstrecke», Ereignis-Ticker, «Empfangene Daten» |
+| linke Spalte | «Als nächstes am Start» (alle noch nicht gestarteten, mit Bestätigung), «Auf Fahrstrecke», Ereignis-Ticker, «Empfangene Daten» |
 | Karten | eine Rangliste pro Kategorie mit Nummernbereich |
 
 Ein Klick auf einen Bereichsknopf öffnet das Ausklappfeld, ein zweiter Klick oder Wegfahren mit der Maus
@@ -99,7 +99,8 @@ Name und Datum eintragen (TT.MM.JJJJ, «bis» leer bei einem Tag). Erscheint auf
 
 ![Import einer Startliste](bilder/05_import_dialog.png)
 
-  Die App erkennt die Spalten selbst (Nr, Name, Vorname, Verein, Kategorie, VNr, StaVer, FG, Bemerkung).
+  Die App erkennt die Spalten selbst (Nr, Name, Vorname, Verein, Kategorie, VNr, StaVer, FG, Bemerkung,
+  Bestätigt). Steht in «Bestätigt» x, ja oder 1, bekommt die Nummer einen blauen Haken.
   Die Vorschau zeigt die Startreihenfolge wie in der Datei. Der Schalter unten übernimmt Kategorien und
   Nummernbereiche aus der Startliste.
 
@@ -109,6 +110,24 @@ Name und Datum eintragen (TT.MM.JJJJ, «bis» leer bei einem Tag). Erscheint auf
 ![Startliste von Hand](bilder/06_startliste_eingeben.png)
 
 - «Startnummer»: nächste Nummer am Start setzen (z.B. nach einem Unterbruch).
+
+### 4.2a Nummern bestätigen («Als nächstes am Start»)
+
+Die Liste zeigt alle Nummern, die noch nicht gestartet sind, die nächste zuunterst. Sie lässt sich scrollen und
+springt dabei nicht zurück. Bestätigt wird, wer am Start bereit ist:
+
+| Bedienung | Wirkung |
+| --- | --- |
+| Klick auf eine Nummer | auswählen (nochmals Klick: abwählen) |
+| Ctrl + Klick | weitere Nummer dazu oder weg |
+| Shift + Klick | alle Nummern dazwischen |
+| ✓ | gewählte Nummern bestätigen (grüner Haken) |
+| ✕ | Bestätigung aufheben |
+| ↓ | zur nächsten Nummer scrollen |
+| Rechtsklick | bestätigen, aufheben, «Alle Bestätigungen zurücksetzen …», DNS, Nummer einfügen |
+
+Grüne Haken (von Hand) gehen vor blauen (Onlinetool oder Spalte «Bestätigt»). Unten steht «x von y bestätigt».
+Ist die nächste Nummer nicht bestätigt, steht sie orange. Bestätigungen bleiben beim neuen Import erhalten.
 - «Teilnehmer bearbeiten», «Notiz hinzufügen» (Notiz erscheint beim Speaker), «Startliste entfernen».
 
 ### 4.3 Kategorien und Nummernbereiche
@@ -165,11 +184,11 @@ Unter «Reserve-Gerät» Keines, Ethernet oder USB wählen und «Reserve verbind
 | Prellzeit Start / Ziel (ms) | weitere Impulse am selben Eingang innerhalb dieser Zeit werden ignoriert (Doppelkontakt) |
 | Mindestfahrzeit (s) | Zielimpulse vor dieser Fahrzeit gelten als Fehlimpuls, 0 = aus |
 | Eingang Start / Ziel (1 bis 4) | Eingang am Gerät für Start und Ziel, Standard Start 1, Ziel 4 |
-| Sperrnummer am Gerät | Nummer, die bei gesperrtem Start am Gerät vorgeladen wird, Standard 999 |
-| Start sperren / Ziel sperren | Impulse werden ignoriert und unter «Auf Fahrstrecke» als gesperrt aufgeführt |
+| Sperrnummer am Gerät | Nummer, die bei gesperrtem Start am Gerät vorgeladen wird, Standard 9999 |
+| Start sperren / Ziel sperren | sperrt den Eingang am Gerät (CP 545 und TM550, auch Reserve); Impulse, die trotzdem kommen, werden ignoriert und unter «Auf Fahrstrecke» als gesperrt aufgeführt |
 | Vereinswechsel auf CP drucken | der CP 545 druckt vor dem ersten Boot eines neuen Vereins eine Zeile |
 | Resultate aus Rohzeiten neu berechnen | nach Änderung von Prellzeit, Mindestfahrzeit oder Präzision |
-| Präzision (abschneiden) | 1 s, 1/10, 1/100, 1/1000; Zeiten werden abgeschnitten, nicht gerundet |
+| Präzision (abschneiden) | 1 s, 1/10 (Standard), 1/100, 1/1000; Zeiten werden abgeschnitten, nicht gerundet |
 | Präzision am Gerät einstellen | schreibt dieselbe Präzision in den CP 545, damit Papier und App übereinstimmen |
 
 Start oder Ziel sperren (z.B. Hindernis auf der Strecke, Arbeiten an der Lichtschranke):
@@ -178,6 +197,17 @@ Start oder Ziel sperren (z.B. Hindernis auf der Strecke, Arbeiten an der Lichtsc
 
 Der Schalter im Feld LAUFEND bzw. ZIEL leuchtet rot, «Auf Fahrstrecke» zeigt «Ziel gesperrt». Sind Boote
 auf der Strecke, fragt die App vor dem Sperren nach.
+
+Sperren am Gerät und in der App hängen zusammen:
+
+| Wo gesperrt | Was passiert |
+| --- | --- |
+| Schalter in der App | CP 545: schwarzer Balken beim Eingang. TM550: rotes Kästchen. Die App liest den Zustand zurück |
+| rote Sperrtaste am CP 545 | die App merkt es innert etwa 5 s und stellt den Schalter um (Eintrag im Ticker) |
+| SHIFT + E1 bis E4 am TM550 | die App stellt den Schalter sofort um |
+
+Die grüne Handtaste am CP 545 löst auch bei gesperrtem Eingang aus. Deshalb lädt die App bei gesperrtem Start
+zusätzlich die Sperrnummer 9999 vor: ein solcher Start verbraucht keine echte Startnummer.
 
 ## 7. Während des Rennens
 
@@ -211,55 +241,103 @@ gültigen Impuls (Lichtschranke ausgefallen, Handzeit).
 
 ### 8.1 Vor dem Rennen
 
-1. Gerät einschalten (Taste **ON**, unter F).
-2. **F › Einstellungen › Ethernet** einschalten (nur bei Ethernet, nach jedem Einschalten).
-3. Zeitmessart **NET TIME** wählen. Nur in NET TIME mit offenem Lauf nimmt der CP die Startnummern der App an.
-   In anderen Zeitmessarten nummeriert die App selbst aus der Startreihenfolge.
-4. Lauf öffnen (Menü F). In der App zeigt der Kopf von «Verbindung» den Lauf, das Display des CP zeigt
-   z.B. `OP 01 NET TIME`.
-5. In der App verbinden und «Präzision am Gerät einstellen».
+1. Gerät einschalten (Taste **ON**). Ausschalten: ON, Rückfrage «Gerät ausschalten?» mit \* (JA) bestätigen.
+2. Ethernet einschalten (nur bei Ethernet, nach jedem Einschalten): **F › Einstellungen › Ethernet ›
+   Std Connexion**. Die Adresse steht unter «User Connexion» (192.168.001.050).
+3. Zeitmessart: **F › Zeitmessart › NET TIME**, mit ↵ wählen. Nur in NET TIME mit offenem Lauf nimmt der CP die
+   Startnummern der App an. In anderen Zeitmessarten nummeriert die App selbst aus der Startreihenfolge.
+4. Lauf öffnen: **F › Neuen Lauf öffnen**, Rückfrage «NEUER LAUF NR. 3 Lauf hinzufügen?» mit \* (JA)
+   bestätigen. Über die Verbindung geht das nur in PTB SEQUENTIEL.
+5. In der App verbinden. Die App stellt die Präzision am Gerät ein.
 
-### 8.2 Tasten
+### 8.2 Display
+
+| Zeile | Inhalt |
+| --- | --- |
+| oben | Laufnummer (z.B. 03), Balken bei gesperrten oder unbenutzten Eingängen, Uhrzeit, Zeitmessart (NT = NET TIME, PT = PTB SEQUENTIEL). Ohne Lauf vier Balken |
+| zweite | links die nächste Startnummer mit ◁, rechts die nächste Zielnummer mit ▷ (leer: «____») |
+| unten | Boot auf der Strecke mit laufender Zeit (z.B. «1▷ 5.8»), nach dem Ziel Nr und Laufzeit |
+
+### 8.3 Tasten
 
 | Tasten | Wirkung | Zeile an die App |
 | --- | --- | --- |
-| grüne Tasten 1 bis 4 | Handimpuls auf Eingang 1 bis 4 (wie Lichtschranke) | `TN` |
+| grüne Tasten 1 bis 4 | Handimpuls auf Eingang 1 bis 4, auch bei gesperrtem Eingang | `TN … M1` |
+| rote Tasten unter den grünen | Eingang sperren (Balken) bzw. öffnen | |
 | Nr E1 | nächste Startnummer eingeben | |
 | E1 allein | Fehlstart: Nummer von der letzten Startzeit entfernen | `TC` |
 | \* E1 | Eingabe löschen, rückgängig | |
 | alte Nr R E1 neue Nr ↵ | Nummer umnummerieren | `T-` alte, `T*` neue |
 | Nr R 0 | ausgeschieden (DNF) | |
 | Nr R 0 \* | disqualifiziert (DSQ) | |
-| rote Sperrtasten 1 bis 4 (laut Handbuch CP 545) | Eingang sperren | |
-| F | Menü (Lauf, Zeitmessart, Ethernet) | |
-| ON | Ein/Aus | |
+| F | Menü öffnen bzw. zurück | |
+| ▲ ▼, ↵ | im Menü wählen; in Rückfragen \* = JA, ↵ = NEIN | |
+| ON | Ausschalten | |
 
-Die Startnummer lädt im Normalfall die App. Am CP nur eingreifen, wenn die App nicht verbunden ist oder der
-Starter eine andere Nummer meldet.
+Ein Impuls von der Buchse kommt als `TN … 1` (ohne M), von der grünen Taste als `TN … M1`.
 
-### 8.3 Papier
+### 8.4 Menü F
 
-Der CP druckt jede Zeit. Mit «Vereinswechsel auf CP drucken» kommt vor dem ersten Boot eines neuen Vereins eine
-Zeile mit dem Vereinsnamen. Die Präzision auf dem Papier entspricht der Einstellung in der App, sobald
-«Präzision am Gerät einstellen» gelaufen ist (die App macht das auch beim Verbinden).
+| Ohne offenen Lauf | Mit offenem Lauf |
+| --- | --- |
+| CP545 Ausschalten | Lauf schliessen |
+| Neuen Lauf öffnen | Rangliste |
+| Synchronisation (Manuell oder extern, Master/Slave RS232) | Rangliste Lauf |
+| Speicher löschen | Noch im Rennen |
+| Rangliste Lauf | Kopieren |
+| Rally Einstellungen | Zeit einfügen |
+| Zeitmessart (15 Arten) | Geschwindigkeit |
+| Einstellungen | Einstellungen |
+| Geschwindigkeit | Drucker |
+| Drucker | Lauf einfügen |
+| Herunterladen | |
+
+Unter **Einstellungen**: Präzision, Sperre (Sperrzeit pro Eingang), Numerierung, Status Eingänge, RFID Auto Inkrem.,
+LCD Kontrast, Hintergrundlicht, HG-Beleuchtung, LCD Dauer, Piep, RS232 (Zum PC, HL960/HL990, HL970/HL980, ALGE
+Display, Ext. Drucker), Ethernet, Sprache, Battery Type, Error Messages, Parameter drucken.
+
+### 8.5 Papier
+
+Der CP druckt jede Zeit, das Resultat als «R <Rang> Laufzeit». Mit «Vereinswechsel auf CP drucken» kommt vor dem
+ersten Boot eines neuen Vereins eine Zeile mit dem Vereinsnamen. «Sock error RST 0» und «TCP Schliessen socket 0»
+druckt der CP, wenn die Verbindung zum PC getrennt wird (abschalten unter Einstellungen › Error Messages).
 
 ## 9. Bedienung am TM550
 
-1. Gerät einschalten (**ON**).
-2. Ethernet: Adresse am Gerät unter Communication, z.B. 192.168.1.51, Port 7000. Werkseinstellung Port 2101
-   findet die Suche auch. USB: FTDI, 9600 Baud.
-3. Modus **TIMING**, Start E1, Ziel E4, MANUAL IDENTIFICATION, kurze Sperrzeit am Ziel.
-4. Lauf öffnen am Gerät (OK › Menü) oder in der App «Lauf öffnen (TM550)».
+1. Gerät einschalten (**ON** 5 s halten).
+2. Ethernet: Menü › Communication › Ethernet, z.B. 192.168.1.51, Port 7000. Werkseinstellung Port 2101 findet die
+   Suche auch. USB: Communication › USB › **9600 Bds** (nicht «9600 Bds Flow control»), in der App 9600 Baud.
+3. Timing modes › Timing › Activate On, Timing 1 mit Start E1 und Ziel E4. Identification mode: Manual
+   identification.
+4. Uhr: Synchronisation › Manual oder GPS, vor dem Öffnen des Laufs. Steht oben «WAIT GPS», ist die Uhr nicht
+   gestellt (die App meldet Datum und Uhrzeit des Geräts).
+5. Lauf öffnen am Gerät (Menü Run) oder in der App «Lauf öffnen (TM550)».
+
+### 9.1 Display
+
+| Bereich | Bedeutung |
+| --- | --- |
+| Kästchen über E1 bis E4 | grün mit Pfeil nach oben: offen; rot mit Pfeil nach unten: senden; rot: gesperrt |
+| Eingangsnamen | grün: in der Zeitmessart benutzt, blau: nicht benutzt |
+| Mitte | WAIT GPS (Uhr nicht gestellt) bzw. SYNC GPS |
+| rote Zeilen | pro Boot: Messung T1, Nr, Startzeit, Zielzeit (gelb), Laufzeit |
+| Statusleiste | Akku, Standort, Ton, Ethernet (durchgestrichen = nicht verbunden), Bluetooth, Drucker, Zeitmessart |
+
+### 9.2 Tasten und Menü
 
 | Tasten | Wirkung |
 | --- | --- |
-| E1 bis E4 | Handimpuls auf Eingang 1 bis 4 |
-| OK | Menü (Lauf, Zeitmessart BASIC, TIMING, SPEED, LAP) |
-| SHIFT + E1 bis E4 | Eingang sperren |
-| ▲ ▼ ◀ ▶ | im Menü bewegen |
+| E1 bis E4 | Handimpuls; bei gesperrtem Eingang kein Impuls |
+| SHIFT, dann E1 bis E4 | Eingang weiterschalten: offen → senden → gesperrt → offen |
+| ◀ | Menü Run (Current run, Close a run, Download run, Erase all runs), nochmals ◀: Hauptmenü |
+| ▲ ▼, OK oder ▶ | wählen; ◀ zurück |
+
+Hauptmenü: Status, Synchronisation, Run, Timing modes, Precision, Input blocking time, Options, Communication,
+Scoreboard, Update, Turn off.
 
 In TIMING lädt die App die nächste Startnummer vor, sonst vergibt sie die Nummern selbst. Der TM550 puffert bei
-einem Unterbruch nicht: fehlende Zeilen holt die App per Download des offenen Laufs. Der TM550 hat keinen Drucker.
+einem Unterbruch nicht: fehlende Zeilen holt die App per Download des offenen Laufs. Ein Drucker geht nur über die
+Smartphone-App (Printer BLE), nicht über die App am PC.
 
 Hinweis: Bananenstecker an E4 können prellen (Doppelkontakt). Die Prellzeit Ziel fängt das ab.
 
@@ -303,6 +381,9 @@ Namen in Rangliste, Notizen.
 3. «Link kopieren» oder «QR-Code» an Tablets, Handys oder einen zweiten Bildschirm geben.
 4. «Neuer Schlüssel» macht alte Links ungültig.
 
+Die Browser-Anzeige zeigt Laufend, Ziel, Ranglisten, «Als nächstes am Start», den Ereignis-Ticker (letzte 15) und
+die Speaker-Notiz des Boots auf der Strecke (nur mit Schalter «Notizen» unter Speaker-Anzeige).
+
 Nur lesend, nur private Netzwerke, Zugriff nur mit Schlüssel im Link.
 
 ## 12. Onlinetool
@@ -333,13 +414,15 @@ fehlende Zeiten holt «Lauf vom CP laden».
 
 | Anzeichen | Ursache | Abhilfe |
 | --- | --- | --- |
-| «Verbindung» rot, CP nicht gefunden | Ethernet am CP aus | F › Einstellungen › Ethernet einschalten |
+| «Verbindung» rot, CP nicht gefunden | Ethernet am CP aus | F › Einstellungen › Ethernet › Std Connexion |
+| USB am TM550 stumm | Baudrate oder Flow control | Communication › USB › 9600 Bds |
+| Meldung «Uhr … geht … vor/nach» | Uhr am Gerät falsch | TM550: Synchronisation; CP 545: F › Synchronisation |
 | Verbindung da, aber keine Startnummern im CP | keine NET TIME oder kein Lauf offen | NET TIME wählen, Lauf öffnen |
 | Ziel doppelt | Doppelkontakt, Bananenstecker | Prellzeit Ziel erhöhen, Zeitzeile unter «Auf Fahrstrecke» ungültig lassen |
 | Zielzeit beim falschen Boot | Überholen | Boot ziehen oder «Kommt als nächstes ins Ziel (überholt)», bei schon vergebener Zeit «Letzte Zielzeit gehört Nr …» |
 | Fehlimpuls am Ziel | Ast, Welle, Person in der Lichtschranke | «Zielzeit ungültig (Fehlimpuls), Boot wieder auf die Strecke» |
 | Kabel kurz ab | Unterbruch | App holt fehlende Zeiten selbst (`#RT`), sonst «Lauf vom CP laden» |
-| Gerät neu gestartet | Stromunterbruch | Ethernet einschalten, gleichen Lauf öffnen, «Lauf vom CP laden» |
+| Gerät neu gestartet | Stromunterbruch | Ethernet einschalten (F › Einstellungen › Ethernet › Std Connexion), gleichen Lauf öffnen, «Lauf vom CP laden» |
 | Papier zeigt andere Stellen als die App | Präzision am CP anders | «Präzision am Gerät einstellen» |
 
 Fehler melden: Knopf «Fehler melden» neben der Version oder **F12**. Der Zeitpunkt wird markiert. Kurz
@@ -354,7 +437,7 @@ beschreiben, was passiert ist und was erwartet war, «Bericht speichern». Die Z
 | --- | --- |
 | Vortag | Startliste laden, Kategorien prüfen, Wettkampf eintragen, Update installieren |
 | Aufbau | Lichtschranken an Eingang 1 (Start) und 4 (Ziel), Kabel zum PC, Reserve-Gerät parallel |
-| Gerät | ON, Ethernet einschalten, NET TIME (CP) bzw. TIMING (TM550), Lauf öffnen |
+| Gerät | ON, Ethernet einschalten, Uhr prüfen, NET TIME (CP) bzw. TIMING (TM550), Lauf öffnen, alle Eingänge offen |
 | App | verbinden, «Verbindung» grün, Präzision am Gerät einstellen, Testimpuls mit Testnummer 951 bis 999 |
-| Rennen | Startnummern im Blick («im CP»), Korrekturen sofort |
+| Rennen | Startnummern im Blick («im CP»), Boote am Start bestätigen, Korrekturen sofort |
 | Ende | PDF Rangliste, Export pro Verein, Daten sichern, dann trennen |

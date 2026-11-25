@@ -74,7 +74,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.20.0"
+APP_VERSION = "1.21.0"
 ORANGE = "#D9730D"   # Update geladen, wartet auf Installation
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
@@ -237,8 +237,8 @@ DEFAULT_SETTINGS = {
     "nav_layout": "top",    # "top": Menueleiste oben mit Ausklappfeldern (Standard), "side": Seitenleiste
     "cats_auto": True,
     "timing": {"prell_start_ms": 300, "prell_finish_ms": 300, "min_run_s": 0, "lock_start": False,
-               "lock_finish": False, "ch_start": 1, "ch_finish": 4, "print_club": True, "prec_digits": 2,
-               "lock_nr": 999},
+               "lock_finish": False, "ch_start": 1, "ch_finish": 4, "print_club": True, "prec_digits": 1,
+               "lock_nr": 9999},
     "conn": {"mode": "rs232", "device": "cp545", "cp_ip": "", "cp_ip_b": "", "backup_mode": "", "backup_wait_s": 3.0,
              "adapter": "",
              "usb_port": "", "usb_baud": 9600, "usb_ack": False},
@@ -406,6 +406,33 @@ def fetch_text(url, timeout=10):
     req = urllib.request.Request(url, headers={"User-Agent": f"SWV-Live-Ranking/{APP_VERSION}"})
     with _urlopen(req, timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
+
+
+DOC_API = "https://api.github.com/repos/kuewi/swv-timing-live/contents/docs/handbuch"
+DOC_PAGE = "https://github.com/kuewi/swv-timing-live/blob/main/docs/handbuch/README.md"
+DOC_HOSTS = UPDATE_HOSTS + ("raw.githubusercontent.com",)
+
+
+def fetch_doc_list(timeout=8):
+    """PDF im Ordner docs/handbuch auf GitHub: {Dateiname: Download-Adresse}. Nur lesen, ohne Anmeldung."""
+    req = urllib.request.Request(DOC_API, headers={"Accept": "application/vnd.github+json",
+                                                   "User-Agent": f"SWV-Live-Ranking/{APP_VERSION}"})
+    with _urlopen(req, timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    out = {}
+    for item in data if isinstance(data, list) else []:
+        name, url = item.get("name", ""), item.get("download_url") or ""
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+        if name.lower().endswith(".pdf") and url.startswith("https://") and host in DOC_HOSTS:
+            out[name] = url
+    return out
+
+
+def pick_doc(names, kind):
+    """Neuestes PDF einer Art (Benutzerhandbuch, Training) nach Versionsnummer im Namen."""
+    cands = [n for n in names if n.startswith(f"SWV_Live-Ranking_{kind}")]
+    return max(cands, key=lambda n: parse_version(re.search(r"_v([0-9.]+)\.pdf$", n).group(1))
+               if re.search(r"_v([0-9.]+)\.pdf$", n) else (0,), default=None)
 
 
 def documents_dir():
@@ -928,6 +955,7 @@ FIELD_DEFS = [
     ("staver", "StaVer (Startverschiebung)"),
     ("fg", "FG"),
     ("bemerkung", "Bemerkung"),
+    ("bestaetigt", "Bestätigt (Onlinetool)"),
 ]
 FIELD_ALIASES = {
     "nr": ["startnummer", "startnr", "stnr", "nr", "nummer"],
@@ -939,6 +967,7 @@ FIELD_ALIASES = {
     "staver": ["staver", "startverschiebung"],
     "fg": ["fg", "startblock", "block"],
     "bemerkung": ["bemerkungze", "bemerkung", "bem"],
+    "bestaetigt": ["bestaetigt", "bestätigt", "confirmed", "bestaetigung"],
 }
 
 
@@ -1543,6 +1572,8 @@ def build_startlist(rows, header_idx, mapping):
             "verein": get("verein"), "vnr": get("vnr"), "staver": get("staver"), "fg": get("fg"),
             "bemerkung": get("bemerkung"), "notiz": "", "strafpunkte": 0, "unknown": False,
         }
+        if get("bestaetigt").strip().lower() in ("1", "x", "ja", "yes", "true", "✓", "wahr"):
+            parts[nr]["best_online"] = True  # vom Onlinetool bestaetigt (blauer Haken)
         order.append(nr)
     return order, parts, issues
 
@@ -1942,7 +1973,7 @@ WEB_HTML = """<!DOCTYPE html>
 <link rel="stylesheet" href="/app.css?key=__KEY__"></head>
 <body data-key="__KEY__">
 <header><div id="live" class="bar blue"></div><div id="ziel" class="bar green"></div></header>
-<div id="wrap"><main id="cats"></main><aside id="next" hidden></aside></div>
+<div id="wrap"><main id="cats"></main><div id="side"><aside id="note" hidden></aside><aside id="next" hidden></aside><aside id="ticker" hidden></aside></div></div>
 <footer id="state">Verbinde ...</footer>
 <script src="/app.js?key=__KEY__"></script>
 </body></html>"""
@@ -1959,11 +1990,15 @@ header{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px}
 #wrap{display:flex;gap:10px;padding:0 10px 10px}
 #cats{flex:1;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
 .card,aside{background:#1c1c1e;border-radius:18px;padding:14px 16px}
-aside{width:320px}h2{margin:0 0 8px;font-size:15px;font-weight:600;color:#98989d;letter-spacing:.02em}
+#side{width:320px;display:flex;flex-direction:column;gap:10px}#note{border:2px solid #ffd60a}
+.tk{font-size:17px;margin:0 0 6px}.tk.new{font-weight:700}.tk .t{color:#98989d;font-size:13px;margin-right:6px}
+.tk.warn{color:#ffd60a}.tk.ziel{color:#30d158}.tk.test{color:#98989d}
+body.light .tk.warn{color:#8a5d00}body.light .tk.ziel{color:#1e8538}
+aside{width:auto}h2{margin:0 0 8px;font-size:15px;font-weight:600;color:#98989d;letter-spacing:.02em}
 .row{font-size:22px;font-weight:700;display:flex;gap:10px;align-items:baseline}.row.first{color:#ffd60a;font-size:26px}
 .pen{color:#ff9f0a;font-size:15px}.who{color:#98989d;font-size:14px;margin:0 0 6px}.empty{color:#98989d;font-size:18px}
 footer{padding:6px 14px 12px;font-size:12px;color:#98989d}footer.err{color:#ff453a}
-@media(max-width:700px){header{grid-template-columns:1fr}#wrap{flex-direction:column}aside{width:auto}}
+@media(max-width:700px){header{grid-template-columns:1fr}#wrap{flex-direction:column}#side{width:auto}}
 body.light{background:#f2f2f7;color:#000}body.light .card,body.light aside{background:#fff}
 body.light h2,body.light .who,body.light .empty,body.light footer{color:#5c5c60}
 body.light .row.first{color:#8a5d00}body.light .pen{color:#b34a00}body.light footer.err{color:#c9001a}
@@ -1994,6 +2029,16 @@ WEB_JS = r"""
     if(d.next&&d.next.length){nx.hidden=false;nx.appendChild(el('h2',null,'Als nächstes am Start'));
       d.next.forEach(function(n){nx.appendChild(el('div','row','Nr '+n.nr+'  '+n.name));nx.appendChild(el('div','who',n.info));});}
     else nx.hidden=true;
+    var no=document.getElementById('note');clear(no);
+    if(d.note&&d.note.length){no.hidden=false;no.appendChild(el('h2',null,'Notiz'));
+      d.note.forEach(function(t,i){no.appendChild(el('div',i===0?'row':'tk',t));});}
+    else no.hidden=true;
+    var tk=document.getElementById('ticker');clear(tk);
+    if(d.ticker){tk.hidden=false;tk.appendChild(el('h2',null,'Ereignis-Ticker'));
+      if(!d.ticker.length)tk.appendChild(el('div','empty','Noch keine Ereignisse'));
+      d.ticker.forEach(function(e,i){var r=el('div','tk'+(e.tag?' '+e.tag:'')+(i===0?' new':''));
+        r.appendChild(el('span','t',e.t));r.appendChild(document.createTextNode(e.text));tk.appendChild(r);});}
+    else tk.hidden=true;
   }
   function state(){
     var s=document.getElementById('state'), age=(Date.now()-lastOk)/1000;
@@ -2294,6 +2339,7 @@ CP_FIRST, CP_LAST = 50, 59
 CP_SCAN_PORT = 7000       # bis 4 Verbindungen, fuer die Suche (#SN)
 CP_DATA_PORT = 13500      # 1 Verbindung, Daten bleiben bei Abbruch gepuffert
 CH_START, CH_FINISH = 1, 4  # Net Time: Start Eingang 1, Ziel Eingang 4
+LOCK_POLL_S = 5.0  # CP 545: Sperrzustand der Eingaenge so oft abfragen
 CMD_TIMEOUT = 1.6
 HEARTBEAT_S = 15
 HEARTBEAT_LOST_S = 30
@@ -2491,7 +2537,7 @@ def apply_channels(timing):
     """Start- und Zieleingang aus den Einstellungen (Standard 1 und 4), Nachkommastellen der Resultate."""
     global CH_START, CH_FINISH, RESULT_DEC
     try:
-        RESULT_DEC = max(0, min(3, int(timing.get("prec_digits", 2))))
+        RESULT_DEC = max(0, min(3, int(timing.get("prec_digits", 1))))
     except (TypeError, ValueError):
         RESULT_DEC = 2
     try:
@@ -2821,6 +2867,12 @@ class SimCP:
         self.results = []
         self.run = 1
         self.drop_next = False
+        # Eingaenge (Gruppe P/Q, 25.11.2026). CP 545 Parameter 006: 1 offen, 0 gesperrt; in NET TIME E2/E3 0.
+        # TM550 006/023: 0 offen (gruen, Pfeil nach oben), 1 senden (rot, Pfeil nach unten), 2 gesperrt (rot).
+        self.inputs = {1: 0, 2: 2, 3: 2, 4: 0} if device == "tm550" else {1: 1, 2: 0, 3: 0, 4: 1}
+        self.manual = None        # Impuls von der Taste am Geraet (M1..M4) statt von der Buchse
+        self.err_msgs = True      # CP: Einstellungen › Error Messages EIN druckt Socket-Fehler
+        self.gps_sync = False     # TM550: WAIT GPS bis zur Synchronisation
         self.sock = socket.socket()
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(("127.0.0.1", port))
@@ -2840,9 +2892,11 @@ class SimCP:
         if self.device == "tm550":
             day += self.day_shift  # TM550 1.18: Tagesfeld weicht vom Datum ab
             nrs = f"{nr:04d}" if nr else "    "  # 1.48 mit Nummer: «TN 0150    2 01»
-            return f"{typ} {nrs} {seq:4d} {ch:02d} {int(h):2d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
+            chs = f"M{ch}" if self.manual else f"{ch:02d}"  # Taste am Geraet: M1 (Test 25.11.2026)
+            return f"{typ} {nrs} {seq:4d} {chs} {int(h):2d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
         nrs = f"{nr:4d}" if nr else "    "  # CP ohne Nummer: Feld leer
-        return f"{typ} {nrs} {seq:4d} M{ch} {int(h):02d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
+        chs = f" {ch}" if self.manual is False else f"M{ch}"  # Buchse ohne M (Test 25.11.2026)
+        return f"{typ} {nrs} {seq:4d} {chs} {int(h):02d}:{int(m):02d}:{sec:08.5f} {int(day):5d}"
 
     def _accept(self):
         while self.alive:
@@ -2956,7 +3010,7 @@ class SimCP:
             if not self.run_open:
                 self.send("AK F", c)  # ohne Lauf abgelehnt
                 return
-            if int(p[2]) == CH_FINISH and int(p[3]) != 999 and not any(x[0] == int(p[3]) for x in self.course):
+            if int(p[2]) == CH_FINISH and int(p[3]) not in (999, 9999) and not any(x[0] == int(p[3]) for x in self.course):
                 self.send("AK F", c)  # Annahme: Boot ist fuer den CP nicht auf der Strecke (noch nicht getestet)
                 return
             if "NET" in self.mode:
@@ -2970,8 +3024,18 @@ class SimCP:
             for (ch, seq), r in sorted(self.recs.items(), key=lambda x: x[1][2]):
                 self.send(self.fmt("A" + r[0][1], r[1], seq, ch, r[2]), c)
             self.send(f"DE {self.run:02d}", c)
-        elif t.startswith("#WC 013"):
+        elif t.startswith("#WC 013") or p[0] == "#EE":
             self.send("AK R", c)
+            return
+        elif p[:2] == ["#RP", "006"] and len(p) >= 3:
+            k = int(p[2])
+            self.send(f"&P 006 {k:02d} {self.inputs.get(k, 0)}", c)
+        elif p[:2] == ["#WP", "006"] and len(p) >= 4:
+            self.set_input(int(p[2]), 0 if int(p[3]) == 0 else 1)  # 2 gilt am CP als offen
+        elif p[:2] == ["#RP", "023"]:
+            self.send("&P 023 0 0 0 0", c)
+        elif p[:2] == ["#WP", "023"]:
+            self.send("AK F", c)
             return
         elif t.startswith("#"):
             pass
@@ -2979,7 +3043,55 @@ class SimCP:
             return
         self.send("AK C", c)
 
+    def _tm_inputs_cmd(self, p, c):
+        """TM550: Eingaenge lesen/schreiben (006 pro Eingang, 023 alle vier), #EE abgelehnt. True = erledigt."""
+        if p[0] == "#EE":
+            self.send("AK F", c)
+        elif p[:2] == ["#RP", "006"] and len(p) >= 3:
+            k = int(p[2])
+            self.send(f"&P 006 {k:02d} {self.inputs.get(k, 0)}", c)
+            self.send("AK C", c)
+        elif p[:2] == ["#WP", "006"] and len(p) >= 4:
+            self.send("AK C", c)
+            self.set_input(int(p[2]), max(0, min(2, int(p[3]))))
+        elif p[:2] == ["#RP", "023"]:
+            self.send(self.inputs_line(), c)
+            self.send("AK C", c)
+        elif p[:2] == ["#WP", "023"] and len(p) >= 6:
+            self.send("AK C", c)
+            for k in (1, 2, 3, 4):
+                self.inputs[k] = max(0, min(2, int(p[1 + k])))
+            self.send(self.inputs_line())
+        else:
+            return False
+        return True
+
+    def inputs_line(self):
+        return "&P 023 " + " ".join(str(self.inputs[k]) for k in (1, 2, 3, 4))
+
+    def input_locked(self, ch):
+        if self.device == "tm550":
+            return self.inputs.get(ch, 0) != 0  # gesperrt oder auf «senden»: auch die Taste loest nicht aus
+        return self.inputs.get(ch, 1) == 0 and not self.manual  # CP: gruene Taste loest trotzdem aus
+
+    def set_input(self, ch, value):
+        self.inputs[ch] = value
+        if self.device == "tm550":
+            self.send(self.inputs_line())  # meldet jede Aenderung von selbst
+            self.note(f"Eingang E{ch} " + ("offen", "senden", "gesperrt")[value])
+        else:
+            self.note(f"Eingang {ch} " + ("gesperrt" if value == 0 else "offen"))
+
+    def cycle_input(self, ch):
+        """Rote Sperrtaste am CP bzw. SHIFT + Ex am TM550."""
+        if self.device == "tm550":
+            self.set_input(ch, (self.inputs.get(ch, 0) + 1) % 3)
+        else:
+            self.set_input(ch, 1 if self.inputs.get(ch, 1) == 0 else 0)
+
     def _cmd_tm550(self, t, p, c):
+        if self._tm_inputs_cmd(p, c):
+            return
         if self.new_tm:
             return self._cmd_tm148(t, p, c)
         run = self.run if self.timing and self.run_open else 0
@@ -3205,8 +3317,18 @@ class SimCP:
         if self.on_event:
             self.on_event(text)
 
-    def impulse(self, ch):
-        """Impuls an Eingang ch (Bananenbuchse oder Taste E1..E4)."""
+    def impulse(self, ch, manual=None):
+        """Impuls an Eingang ch. manual True: Taste am Geraet (CP gruen 1..4, TM550 E1..E4), False: Buchse."""
+        prev, self.manual = self.manual, manual
+        try:
+            if self.input_locked(ch):
+                self.note(f"Eingang {ch} gesperrt, kein Impuls")
+                return
+            self._impulse(ch)
+        finally:
+            self.manual = prev
+
+    def _impulse(self, ch):
         if ch == CH_START:
             nr = self.start()
             self.note(f"Start Eingang {ch}" + (f" Nr {nr}" if nr else ""))
@@ -3295,6 +3417,9 @@ class SimCP:
         self.note("Kabel eingesteckt" if connected else "Kabel gezogen")
 
     def drop_clients(self):
+        if self.clients and self.device == "cp545" and self.err_msgs and self.on_line:
+            self.on_line("PL Sock error RST 0")      # CP druckt das bei «Error Messages EIN»
+            self.on_line("PL TCP Schliessen socket 0")
         for c in list(self.clients):
             try:
                 c.shutdown(socket.SHUT_RDWR)
@@ -4614,6 +4739,66 @@ class LiveRankingApp:
         except OSError:
             pass
 
+    def open_manual_menu(self, btn):
+        menu = self._menu()
+        menu.add_command(label="Benutzerhandbuch (PDF)", command=lambda: self.open_manual("Benutzerhandbuch"))
+        menu.add_command(label="Training (PDF)", command=lambda: self.open_manual("Training"))
+        menu.add_separator()
+        menu.add_command(label="Übersicht im Browser", command=lambda: self.open_url(DOC_PAGE))
+        try:
+            menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+        finally:
+            menu.grab_release()
+
+    def open_url(self, url):
+        import webbrowser
+        DIAG.info(f"Browser: {url}")
+        try:
+            webbrowser.open(url)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"Browser nicht geöffnet: {exc}", tag="warn")
+
+    def open_manual(self, kind):
+        """Aktuelle Fassung von GitHub laden und öffnen; ohne Internet die zuletzt geladene."""
+        folder = os.path.join(self.data_path, "handbuch")
+        os.makedirs(folder, exist_ok=True)
+        self.log(f"{kind}: aktuelle Fassung wird geladen ...", tag="ok")
+
+        def work():
+            try:
+                names = fetch_doc_list()
+                name = pick_doc(names, kind)
+                if not name:
+                    raise ValueError("kein PDF gefunden")
+                path = os.path.join(folder, name)
+                if not os.path.exists(path):
+                    url = names[name]
+                    req = urllib.request.Request(url, headers={"User-Agent": f"SWV-Live-Ranking/{APP_VERSION}"})
+                    with _urlopen(req, 30) as resp, open(path + ".part", "wb") as fh:
+                        fh.write(resp.read())
+                    os.replace(path + ".part", path)
+                self.q.put(("manual_open", (path, ""), None))
+            except Exception as exc:  # noqa: BLE001
+                local = pick_doc(os.listdir(folder), kind)
+                self.q.put(("manual_open", (os.path.join(folder, local) if local else "", str(exc)), None))
+        threading.Thread(target=work, daemon=True).start()
+
+    def manual_opened(self, payload):
+        path, err = payload
+        if err:
+            self.log(f"Handbuch nicht von GitHub geladen ({err})" + (", zuletzt geladene Fassung geöffnet" if path
+                                                                   else ", Übersicht im Browser"), tag="warn")
+        if not path:
+            return self.open_url(DOC_PAGE)
+        self.log(f"Geöffnet: {os.path.basename(path)}", tag="ok")
+        if IS_WINDOWS:
+            try:
+                subprocess.Popen(["explorer.exe", os.path.normpath(path)])
+            except OSError as exc:
+                self.log(f"PDF nicht geöffnet: {exc}", tag="warn")
+        else:
+            self.open_url("file://" + path)
+
     def open_folder(self, path=None):
         """Datenordner (oder den Ordner einer Datei, Datei markiert) im Explorer zeigen."""
         target = path or self.data_path
@@ -4862,7 +5047,17 @@ class LiveRankingApp:
         self.txt_next.bind("<Double-Button-1>", self.on_next_double)
         self.txt_next.bind("<Button-3>", self.on_next_right)
         self.txt_next.tag_configure("warn", foreground=ORANGE)
-        self.txt_next.bind("<Button-1>", lambda e: "break")
+        self.txt_next.tag_configure("ok_hand", foreground=GREEN_TEXT, font=self.f_panel_bold)
+        self.txt_next.tag_configure("ok_online", foreground=BLUE, font=self.f_panel_bold)
+        self.txt_next.bind("<Button-1>", self.on_next_click)
+        self.next_sel, self._next_anchor = set(), None
+        bar = tk.Frame(self.panel_next.inner, bg=PANEL)
+        bar.pack(side="bottom", fill="x", padx=10, pady=(0, 8))
+        self.lbl_next_count = tk.Label(bar, text="", bg=PANEL, fg=MUTED, font=self.f_ticker_time, anchor="w")
+        self.lbl_next_count.pack(side="left")
+        self._button(bar, "↓", self.next_scroll_to_next).pack(side="right", padx=(4, 0))
+        self._button(bar, "✕", lambda: self.confirm_numbers(None, False)).pack(side="right", padx=(4, 0))
+        self._button(bar, "✓", lambda: self.confirm_numbers(None, True), GREEN).pack(side="right")
         self.panel_course, self.txt_course = self._panel(self.right_panel, "Auf Fahrstrecke", 8, scroll=True,
                                                          hint="Klick auf ein Boot: Aktionen · ziehen: überholen")
         self.txt_course.bind("<Button-1>", self.on_course_press)
@@ -4915,8 +5110,10 @@ class LiveRankingApp:
         head2.pack(fill="x", padx=10, pady=(8, 0))
         self.lbl_version = self._version_label(head2)
         self.lbl_version.pack(side="left")
-        self._button(head2, "Fehler melden (F12)", self.open_report_dialog, RED).pack(
+        self._button(head2, "Fehler melden", self.open_report_dialog, RED).pack(
             side="left", padx=(8, 0), fill="x", expand=True)
+        self.btn_manual_side = self._button(head2, "Handbuch ▾", lambda: self.open_manual_menu(self.btn_manual_side))
+        self.btn_manual_side.pack(side="left", padx=(6, 0))
         self.side_heads = [head, head2]
         self.build_sidebar(side)
         self.build_topbar()
@@ -4933,7 +5130,9 @@ class LiveRankingApp:
         left.grid(row=0, column=0, sticky="nw")
         self.lbl_version_top = self._version_label(left)
         self.lbl_version_top.pack(side="left", padx=(4, 6))
-        self._button(left, "Fehler melden", self.open_report_dialog, RED).pack(side="left", padx=(0, 8))
+        self._button(left, "Fehler melden", self.open_report_dialog, RED).pack(side="left", padx=(0, 6))
+        self.btn_manual_top = self._button(left, "Handbuch ▾", lambda: self.open_manual_menu(self.btn_manual_top))
+        self.btn_manual_top.pack(side="left", padx=(0, 8))
         right = tk.Frame(bar, bg=BG)
         right.grid(row=0, column=2, sticky="ne")
         self._button(right, "☀" if THEME == "dark" else "☾", self.toggle_theme).pack(side="left", padx=(6, 0))
@@ -5223,7 +5422,9 @@ class LiveRankingApp:
             lh = tk.Label(frm, text=hint, bg=PANEL, fg=MUTED, font=self.f_ticker_time, anchor="w", justify="left")
             lh.pack(fill="x", padx=12)
             lh.bind("<Configure>", lambda e, w=lh: w.configure(wraplength=max(50, e.width - 4)))
+            box.hint_label = lh
         holder = tk.Frame(frm, bg=PANEL)
+        box.holder = holder
         holder.pack(fill="both", expand=True, pady=(0, 8))
         txt = tk.Text(holder, height=height, width=1, bg=PANEL, fg=TEXT, font=self.f_panel, relief="flat",
                       wrap="word", state="disabled", highlightthickness=0, padx=12, pady=4, cursor="arrow", bd=0)
@@ -5280,6 +5481,7 @@ class LiveRankingApp:
                                   self.var_conn, command=self.on_conn_mode_change, font=self.f_side_bold,
                                   scale=self.ui_scale)
         self.conn_seg.grid(row=1, column=0, sticky="ew", pady=(2, 8))
+        self.frm_conn_box = b
         net = self.frm_net = tk.Frame(b, bg=PANEL)
         net.columnconfigure(0, weight=1)
         self._label(net, "Netzwerkkarte am PC").grid(row=0, column=0, columnspan=2, sticky="w")
@@ -5373,13 +5575,13 @@ class LiveRankingApp:
         self.bk_seg.grid(row=1, column=0, sticky="ew", pady=(2, 6))
         be = self.frm_bk_eth = tk.Frame(bk, bg=PANEL)
         be.columnconfigure(0, weight=1)
-        self._label(be, "IP-Adresse (Liste oder eintippen)").grid(row=0, column=0, columnspan=2, sticky="w")
+        self._label(be, "IP-Adresse (Liste oder eintippen)").grid(row=2, column=0, columnspan=2, sticky="w")
         self.cmb_cp_b = self._combo(be)
-        self.cmb_cp_b.grid(row=1, column=0, sticky="ew", pady=(2, 6))
+        self.cmb_cp_b.grid(row=3, column=0, sticky="ew", pady=(2, 6))
         self.cmb_cp_b.bind("<<ComboboxSelected>>", lambda e: self.on_backup_target_change())
         self.cmb_cp_b.bind("<Return>", lambda e: self.on_backup_target_change())
         self._button(be, "Suchen", lambda: self.start_eth_job(connect=False)).grid(
-            row=1, column=1, sticky="e", padx=(6, 0), pady=(2, 6))
+            row=3, column=1, sticky="e", padx=(6, 0), pady=(2, 6))
         bu = self.frm_bk_usb = tk.Frame(bk, bg=PANEL)
         bu.columnconfigure(0, weight=1)
         self._label(bu, "COM-Port (USB)").grid(row=0, column=0, columnspan=2, sticky="w")
@@ -5446,7 +5648,7 @@ class LiveRankingApp:
         self._button(b, "Resultate aus Rohzeiten neu berechnen", self.ask_recompute).grid(
             row=r + 2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self._label(b, "Präzision (abschneiden)").grid(row=r + 3, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        self.var_prec = tk.StringVar(value=str(ts.get("prec_digits", 2)))
+        self.var_prec = tk.StringVar(value=str(ts.get("prec_digits", 1)))
         Segmented(b, (("0", "1 s"), ("1", "1/10"), ("2", "1/100"), ("3", "1/1000")), self.var_prec,
                   command=self.set_prec_digits, font=self.f_side_bold, scale=self.ui_scale).grid(
             row=r + 4, column=0, columnspan=2, sticky="ew", pady=(4, 0))
@@ -5689,7 +5891,7 @@ class LiveRankingApp:
                     val = int(val)
                     if val in self.participants:
                         messagebox.showwarning("Sperrnummer", f"Nr {val} steht in der Startliste. Als Sperrnummer "
-                                                              "eine Nummer wählen, die nicht startet (z.B. 999).")
+                                                              "eine Nummer wählen, die nicht startet (z.B. 9999).")
                         raise ValueError
                 elif val < 0 or val > (100000 if key.endswith("ms") else 3600):
                     raise ValueError
@@ -5711,7 +5913,7 @@ class LiveRankingApp:
             d = max(0, min(3, int(self.var_prec.get())))
         except (AttributeError, ValueError):
             return
-        if d == ts.get("prec_digits", 2):
+        if d == ts.get("prec_digits", 1):
             return
         ts["prec_digits"] = d
         apply_channels(ts)
@@ -5731,7 +5933,7 @@ class LiveRankingApp:
 
     def cp_write_precision(self, auto=False):
         """Praezision an Haupt- und Reserve-Geraet schicken (Knopf, und beim Verbinden automatisch)."""
-        digits = self.settings["timing"].get("prec_digits", 2)
+        digits = self.settings["timing"].get("prec_digits", 1)
         if self.cp is None or not self.cp.connected or self.cp_device not in ("cp545", "tm550"):
             if not auto:
                 messagebox.showinfo("Präzision", "Zuerst über Ethernet oder USB mit dem Gerät verbinden.")
@@ -5761,7 +5963,7 @@ class LiveRankingApp:
     def backup_write_precision(self):
         if self.cp_b is None or not self.cp_b.connected or self.cp_b_device not in ("cp545", "tm550"):
             return
-        w, _want = self.prec_write_value(self.settings["timing"].get("prec_digits", 2), self.cp_b_device)
+        w, _want = self.prec_write_value(self.settings["timing"].get("prec_digits", 1), self.cp_b_device)
         DIAG.debug(f"CP B> #WP 001 {w}")
         self.cp_b.send(f"#WP 001 {w}")
 
@@ -5776,23 +5978,140 @@ class LiveRankingApp:
                      "Die Boote auf der Strecke bleiben, neue Startimpulse werden ignoriert."))
             if not messagebox.askyesno(f"{what} sperren", text):
                 return
-        ts[key] = not ts[key]
+        self.set_lock(key, not ts[key])
+
+    def set_lock(self, key, on, from_device=""):
+        """Start/Ziel sperren oder freigeben. from_device: Name des Geraets, an dem gesperrt wurde (dann nichts
+        zurueck ans Geraet schreiben, nur Sperrnummer nachfuehren)."""
+        ts = self.settings["timing"]
+        ts[key] = bool(on)
         self.save_settings()
         self.cp_lock_preload(key, ts[key])
+        if not from_device:
+            self.device_lock_write(key, ts[key])
         for sw in (self.timing_switches.get(key), (getattr(self, "banner_locks", {}).get(key) or (None, None))[1]):
             if sw is not None:
                 sw.set(ts[key])
         what = "Start" if key == "lock_start" else "Ziel"
-        self.log(f"{what} {'gesperrt: Impulse werden ignoriert und unter «Auf Fahrstrecke» als gesperrt aufgeführt' if ts[key] else 'freigegeben'}",
+        src = f" (am {from_device})" if from_device else ""
+        self.log(f"{what}{src} {'gesperrt: Impulse werden ignoriert und unter «Auf Fahrstrecke» als gesperrt aufgeführt' if ts[key] else 'freigegeben'}",
                  tag="warn" if ts[key] else "ok")
-        self.add_ticker(f"{what} {'gesperrt' if ts[key] else 'freigegeben'}", "warn" if ts[key] else None)
+        self.add_ticker(f"{what}{src} {'gesperrt' if ts[key] else 'freigegeben'}", "warn" if ts[key] else None)
         self.update_panels()
+
+    # Eingang am Geraet sperren (Gruppe P/Q, 25.11.2026): Parameter 006 pro Eingang.
+    # CP 545: 0 gesperrt (schwarzer Balken), 1 offen; die gruene Taste loest trotzdem aus.
+    # TM550 1.48: 0 offen, 1 senden, 2 gesperrt; aendert es sich am Geraet, meldet er «&P 023 a b c d».
+    @staticmethod
+    def lock_value(device, on):
+        if device == "tm550":
+            return 2 if on else 0
+        return 0 if on else 1
+
+    @staticmethod
+    def value_locked(device, value):
+        return value != 0 if device == "tm550" else value == 0
+
+    def device_lock_write(self, key, on):
+        ch = CH_START if key == "lock_start" else CH_FINISH
+        exp = self.__dict__.setdefault("_dev_lock_expect", {})
+        if self.eth_mode() and self.cp is not None and self.cp.connected and self.cp_device in ("cp545", "tm550"):
+            dev, name = self.cp_device, self.dev_name()
+            exp[("A", ch)] = bool(on)
+
+            def check(info):
+                try:
+                    locked = self.value_locked(dev, int(info["values"][1]))
+                except (IndexError, ValueError):
+                    return
+                self.device_lock_seen("A", ch, locked)
+                if locked != bool(on):
+                    self.log(f"{name}: Eingang E{ch} ist am Gerät nicht {'gesperrt' if on else 'offen'}. "
+                             "Die App ignoriert die Impulse trotzdem" if on else
+                             f"{name}: Eingang E{ch} ist am Gerät noch gesperrt, bitte am Gerät öffnen.", tag="warn")
+
+            self.cp_query(f"#WP 006 {ch:02d} {self.lock_value(dev, on)}", "ack",
+                          on_ok=lambda _i: self.cp_query(f"#RP 006 {ch:02d}", ("param", "006", ch), on_ok=check),
+                          on_fail=lambda r: self.log(f"{name}: Eingang E{ch} am Gerät nicht "
+                                                     f"{'gesperrt' if on else 'geöffnet'} ({r})", tag="warn"))
+        if self.backup_connected() and self.cp_b_device in ("cp545", "tm550"):
+            exp[("B", ch)] = bool(on)
+            self.cp_b.send(f"#WP 006 {ch:02d} {self.lock_value(self.cp_b_device, on)}")
+            self.root.after(800, lambda: self.cp_b.send(f"#RP 006 {ch:02d}") if self.backup_connected() else None)
+
+    def device_lock_read(self, dev="A"):
+        """Zustand von Start- und Zieleingang lesen (CP 545 meldet Aenderungen nicht von selbst)."""
+        for ch in (CH_START, CH_FINISH):
+            if dev == "A":
+                self.cp_query(f"#RP 006 {ch:02d}", ("param", "006", ch))
+            elif self.backup_connected():
+                self.cp_b.send(f"#RP 006 {ch:02d}")
+
+    def device_param_event(self, info, dev):
+        """&P 002 / 006 / 023 vom Geraet (Antwort oder von selbst)."""
+        device = self.cp_device if dev == "A" else self.cp_b_device
+        vals, pid = info.get("values") or [], info.get("id")
+        try:
+            if pid == "006" and len(vals) >= 2:
+                self.device_lock_seen(dev, int(vals[0]), self.value_locked(device, int(vals[1])))
+            elif pid == "023" and device == "tm550" and len(vals) >= 4:
+                for ch in (CH_START, CH_FINISH):
+                    self.device_lock_seen(dev, ch, self.value_locked(device, int(vals[ch - 1])))
+            elif pid == "002" and device == "tm550" and len(vals) >= 4:
+                self.check_tm_channels(dev, vals)
+        except ValueError:
+            pass
+
+    def device_lock_seen(self, dev, ch, locked):
+        key = "lock_start" if ch == CH_START else ("lock_finish" if ch == CH_FINISH else None)
+        if key is None:
+            return
+        seen = self.__dict__.setdefault("_dev_lock", {})
+        exp = self.__dict__.setdefault("_dev_lock_expect", {})
+        prev = seen.get((dev, ch))
+        seen[(dev, ch)] = locked
+        if exp.get((dev, ch)) is not None:
+            if exp[(dev, ch)] == locked:
+                exp.pop((dev, ch))  # eigener Befehl ist angekommen
+            return
+        what = "Start" if key == "lock_start" else "Ziel"
+        name = self.dev_name() if dev == "A" else ("Reserve " + self.DEVICE_LABEL.get(self.cp_b_device or "cp545",
+                                                                                       "Gerät"))
+        app_on = bool(self.tset().get(key))
+        if prev is None:
+            if locked != app_on:  # erster Wert nach dem Verbinden: nur melden (CP lieferte anfangs teils 0)
+                self.log(f"{name}: Eingang E{ch} ({what}) ist am Gerät {'gesperrt' if locked else 'offen'}, "
+                         f"in der App {'gesperrt' if app_on else 'offen'}.", tag="warn")
+            return
+        if prev == locked:
+            return
+        if dev == "A" and locked != app_on:
+            self.set_lock(key, locked, from_device=name)
+        else:
+            self.log(f"{name}: Eingang E{ch} ({what}) am Gerät {'gesperrt' if locked else 'geöffnet'}", tag="warn")
+            self.add_ticker(f"{name}: {what} am Gerät {'gesperrt' if locked else 'offen'}", "warn")
+
+    def check_tm_channels(self, dev, vals):
+        """TM550 &P 002: Zeitmessart, dann Timing 1 (an, Start-, Zieleingang). Einmal pro Verbindung warnen,
+        wenn die Eingaenge nicht zu Start/Ziel in der App passen."""
+        told = self.__dict__.setdefault("_tm_ch_told", set())
+        if dev in told or vals[1] not in ("01", "1"):
+            return
+        st, fi = int(vals[2]), int(vals[3])
+        if (st, fi) == (CH_START, CH_FINISH):
+            return
+        told.add(dev)
+        name = self.dev_name() if dev == "A" else "Reserve TM550"
+        self.log(f"{name} misst Start E{st}, Ziel E{fi}, die App erwartet Start E{CH_START}, Ziel E{CH_FINISH}. "
+                 "Am TM550 unter Timing modes › Timing › Timing 1 oder in der App unter Zeitmessung › Eingang "
+                 "anpassen.", tag="warn")
+        self.add_ticker(f"{name}: Eingänge Start/Ziel anders als in der App", "warn")
 
     def lock_number(self):
         try:
-            return max(1, min(9999, int(self.settings["timing"].get("lock_nr", 999))))
+            return max(1, min(9999, int(self.settings["timing"].get("lock_nr", 9999))))
         except (TypeError, ValueError):
-            return 999
+            return 9999
 
     def cp_lock_preload(self, key, on):
         """Sperre am Geraet nachfuehren: CP 545 (und TM550 in TIMING) bekommen die Sperrnummer vorgeladen,
@@ -5801,9 +6120,6 @@ class LiveRankingApp:
         if not self.eth_mode() or self.cp is None or not self.cp.connected:
             return
         nr = self.lock_number()
-        if self.cp_device == "tm550":
-            self.log(f"TM550: {'Eingang E' + str(ch) + ' am Gerät mit SHIFT + E' + str(ch) + ' sperren' if on else 'Sperre am Gerät mit SHIFT + E' + str(ch) + ' aufheben'}. "
-                     "Die App ignoriert die Impulse in jedem Fall.", tag="warn" if on else "ok")
         if on:
             if self.cp_caps.get("preload") and (ch == CH_START or self.cp_device != "tm550"):
                 self.cp_write_param("026", ch, nr, "Sperrnummer")
@@ -6021,6 +6337,18 @@ class LiveRankingApp:
             frame.pack_forget()
         self._note_visible = False
         self.txt_stats.configure(height=len(self.categories) + 3)
+        # Spalte links (Menue oben): «Als naechstes» und «Auf Fahrstrecke» kuerzer (beide scrollen), damit der
+        # Ereignis-Ticker ueber «Empfangene Daten» Platz fuer etwa 6 Eintraege hat
+        left = self.left_column()
+        self.txt_next.configure(height=4 if left else NEXT_COUNT * 2 + 3)
+        self.txt_course.configure(height=3 if left else 8)
+        for box in (self.panel_next, self.panel_course):  # Bedienhinweise in der schmalen Spalte weglassen
+            lh = getattr(box, "hint_label", None)
+            if lh is not None:
+                if left:
+                    lh.pack_forget()
+                elif not lh.winfo_manager():
+                    lh.pack(fill="x", padx=12, before=box.holder)
         vis = dict(show)
         vis["course"] = self.eth_mode()
         if self.panel_orient == "right":
@@ -6308,7 +6636,7 @@ class LiveRankingApp:
         self.f_panel.configure(size=-pp)
         self.f_panel_bold.configure(size=-pp)
         self.f_panel_head.configure(size=-pp)
-        tp = int(pp * 1.33)
+        tp = int(pp * (1.0 if self.left_column() else 1.33))  # schmale Spalte links: Ticker wie die Listen
         self.f_ticker.configure(size=-tp)
         self.f_ticker_bold.configure(size=-tp)
         self.f_ticker_time.configure(size=-max(int(10 * s), int(tp * 0.78)))
@@ -6794,19 +7122,24 @@ class LiveRankingApp:
             if not self.start_order:
                 seg.append(("Keine Startliste geladen", "sub"))
             else:
-                nxt = self.next_starters(count=80)
+                nxt = self.next_starters(count=len(self.start_order))  # alle noch nicht gestarteten
                 if not nxt:
                     seg.append(("Keine weiteren Starts in der Startliste", "sub"))
                 # naechste Nummer zuunterst, darueber die folgenden
+                used = any(self.confirm_state(n) for n in self.start_order)
                 for i, nr in reversed(list(enumerate(nxt))):
                     p = self.participants.get(nr, {})
                     cat = self.category_of(nr)
                     row = f"row{nr}"
                     first = i == 0
+                    st = self.confirm_state(nr)
+                    seg.append(("✓ " if st else "   ", (("ok_hand" if st == "hand" else "ok_online") if st
+                                                         else "nr", row)))
                     head = f"Nr {nr}  {display_name(p, mode) or '-'}"
                     if first and self.eth_mode() and self.cp is not None and self.cp_next_start == nr:
                         head += "   ✓ im CP"
-                    seg.append((head + "\n", ("nr", row) + (("next",) if first else ())))
+                    extra = ("warn",) if first and used and not st else ()
+                    seg.append((head + "\n", ("nr", row) + (("next",) if first else ()) + extra))
                     info = "  ·  ".join(x for x in (p.get("verein", ""), cat["name"] if cat else
                                                     ("Test" if self.is_test(nr) else "")) if x)
                     seg.append((f"{info}\n", ("sub", row)))
@@ -6821,6 +7154,9 @@ class LiveRankingApp:
                 else:
                     self.txt_next.yview_moveto(top)
                 self._next_seen = True
+            self.paint_next_selection()
+            done = sum(1 for n in nxt if self.confirm_state(n)) if self.start_order else 0
+            self.lbl_next_count.configure(text=f"{done} von {len(nxt)} bestätigt" if self.start_order else "")
         if self.eth_mode():
             self.update_course_panel()
         if show.get("ticker"):
@@ -6843,6 +7179,65 @@ class LiveRankingApp:
             if tag.startswith(prefix) and tag[len(prefix):].isdigit():
                 return int(tag[len(prefix):])
         return None
+
+    def confirm_state(self, nr):
+        """'hand' (gruen, von Hand) geht vor 'online' (blau, vom Onlinetool), sonst None."""
+        p = self.participants.get(nr) or {}
+        return "hand" if p.get("best_hand") else ("online" if p.get("best_online") else None)
+
+    def on_next_click(self, event):
+        nr = self._tag_nr(self.txt_next, event, "row")
+        if nr is None:
+            return "break"
+        order = self.next_starters(count=len(self.start_order))
+        if event.state & 0x0001 and self._next_anchor in order and nr in order:  # Shift: Bereich
+            a, b = sorted((order.index(self._next_anchor), order.index(nr)))
+            self.next_sel |= set(order[a:b + 1])
+        elif event.state & 0x0004:  # Ctrl: einzeln dazu oder weg
+            self.next_sel ^= {nr}
+            self._next_anchor = nr
+        else:
+            self.next_sel = set() if self.next_sel == {nr} else {nr}
+            self._next_anchor = nr
+        self.paint_next_selection()
+        return "break"
+
+    def paint_next_selection(self):
+        txt = self.txt_next
+        for tag in txt.tag_names():
+            if tag.startswith("row") and tag[3:].isdigit():
+                txt.tag_configure(tag, background=mix(PANEL, BLUE, 0.35) if int(tag[3:]) in self.next_sel else "")
+
+    def confirm_numbers(self, nrs, on):
+        """Gewaehlte (oder angegebene) Nummern von Hand bestaetigen bzw. die Bestaetigung aufheben."""
+        nrs = sorted(nrs if nrs is not None else self.next_sel)
+        if not nrs:
+            self.log("Als nächstes am Start: zuerst Nummern anklicken (Ctrl/Shift für mehrere)", tag="warn")
+            return
+        for nr in nrs:
+            p = self.participants.get(nr)
+            if p is not None:
+                if on:
+                    p["best_hand"] = True
+                else:
+                    p.pop("best_hand", None)
+        self.log(f"{'Bestätigt' if on else 'Bestätigung aufgehoben'}: Nr " + ", ".join(map(str, nrs)), tag="ok")
+        self.next_sel = set()
+        self.save_autosave()
+        self.update_panels()
+
+    def reset_confirmations(self):
+        if not self.message_dialog("ask", "Bestätigungen zurücksetzen",
+                                   "Alle Bestätigungen von Hand (grüne Haken) entfernen? Die blauen Haken vom "
+                                   "Onlinetool bleiben."):
+            return
+        for p in self.participants.values():
+            p.pop("best_hand", None)
+        self.save_autosave()
+        self.update_panels()
+
+    def next_scroll_to_next(self):
+        self.txt_next.see("end")
 
     def on_next_double(self, event):
         nr = self._tag_nr(self.txt_next, event, "row")
@@ -7225,6 +7620,12 @@ class LiveRankingApp:
         menu = self._menu()
         menu.add_command(label=self.order_label(nr), state="disabled")
         menu.add_separator()
+        sel = sorted(self.next_sel | {nr})
+        lab = f"Nr {nr}" if len(sel) == 1 else f"{len(sel)} Nummern"
+        menu.add_command(label=f"{lab} bestätigen", command=lambda: self.confirm_numbers(sel, True))
+        menu.add_command(label=f"Bestätigung {lab} aufheben", command=lambda: self.confirm_numbers(sel, False))
+        menu.add_command(label="Alle Bestätigungen zurücksetzen ...", command=self.reset_confirmations)
+        menu.add_separator()
         menu.add_command(label="Nummer darunter einfügen ...", command=lambda: self.open_insert_dialog(nr))
         menu.add_command(label="Nicht gestartet (DNS)", command=lambda: self.set_status(nr, "DNS"))
         absent = [n for n in self.start_order if self.status.get(n) == "DNS"]
@@ -7326,6 +7727,9 @@ class LiveRankingApp:
                 kind, payload, reader = self.q.get_nowait()
                 if kind.startswith("update_"):
                     self.handle_update_event(kind, payload)
+                    continue
+                if kind == "manual_open":
+                    self.manual_opened(payload)
                     continue
                 if kind.startswith(("eth_", "net_")):
                     self.handle_eth_event(kind, payload, reader)
@@ -7519,8 +7923,11 @@ class LiveRankingApp:
                 f.grid(row=2, column=0, sticky="ew")
             else:
                 f.grid_remove()
-        if mode == "ethernet" or (mode == "usb" and bk == "ethernet"):
-            self.frm_net.grid(row=2, column=0, sticky="ew")
+        # Netzwerkkarte nur bei Ethernet: beim Hauptgeraet, sonst (Haupt USB, Reserve Ethernet) bei der Reserve
+        if mode == "ethernet":
+            self.frm_net.grid(in_=self.frm_conn_box, row=2, column=0, columnspan=2, sticky="ew")
+        elif mode == "usb" and bk == "ethernet":
+            self.frm_net.grid(in_=self.frm_bk_eth, row=0, column=0, columnspan=2, sticky="ew")
         else:
             self.frm_net.grid_remove()
 
@@ -8468,6 +8875,8 @@ class LiveRankingApp:
         take_buffer = again or self.cp_session_seen
         self.cp_session_seen = True
         self.cp_last_rx = self.cp_last_hb = time.time()
+        self.cp_rx_lines = 0  # Zeilen seit dem Verbinden: fuer den Hinweis bei stummer USB-Verbindung
+        self._usb_silent_told = False
         self.set_connected(True, f"CP {ip} verbunden")
         self.refresh_conn_head()
         if again:
@@ -8496,9 +8905,14 @@ class LiveRankingApp:
                       on_fail=self._on_next_unread)
         self.cp_query("#RP 001", ("param", "001"), on_ok=self._on_prec)
         self.cp_query("#!T", "sync")
+        self.__dict__.setdefault("_dev_lock", {}).pop(("A", CH_START), None)
+        self.__dict__["_dev_lock"].pop(("A", CH_FINISH), None)
+        self.__dict__.setdefault("_dev_lock_expect", {}).clear()
+        self.__dict__.setdefault("_tm_ch_told", set()).discard("A")
         for k in ("lock_start", "lock_finish"):
             if self.tset().get(k):
-                self.root.after(4000, lambda k=k: self.cp_lock_preload(k, True))
+                self.root.after(4000, lambda k=k: (self.cp_lock_preload(k, True), self.device_lock_write(k, True)))
+        self.root.after(4500, lambda: self.device_lock_read("A") if self.main_connected() else None)
         self.root.after(3000, lambda: self.cp_write_precision(auto=True))  # eingestellte Praezision ans Geraet
         if not self.cp_recs and self.last_start_nr is None:  # noch kein Start: Ueberschrift fuer den ersten Verein
             self.root.after(2500, lambda: self.print_next_club(None, event="connect"))
@@ -8542,6 +8956,18 @@ class LiveRankingApp:
                      f"Startreihenfolge. Für Nummern vom Gerät: Zeitmessart {need}.", tag="warn")
             self.add_ticker(f"Startnummern vergibt die App ({name} ohne {need.split(' und')[0]} / Lauf)", "warn")
         self.update_panels()
+
+    def usb_silent_hint(self):
+        """USB ohne eine einzige Zeile vom Geraet: meist Baudrate oder Flow control am TM550 (bzw. CP)."""
+        if (self.settings["conn"]["mode"] != "usb" or getattr(self, "cp_rx_lines", 0)
+                or getattr(self, "_usb_silent_told", False) or getattr(self, "cp_noanswer", 0) < 2):
+            return
+        self._usb_silent_told = True
+        baud = self.settings["conn"].get("usb_baud", 9600)
+        self.log(f"USB: vom Gerät kommt nichts an. TM550: am Gerät Communication › USB › {baud} Bds wählen, nicht "
+                 f"«9600 Bds Flow control», dieselbe Baudrate wie in der App ({baud}). CP 545: USB-Ausgabe auf "
+                 f"{baud} Baud prüfen. Sonst anderen COM-Port wählen.", tag="error")
+        self.add_ticker("USB: keine Antwort vom Gerät (Baudrate/Flow control prüfen)", "warn")
 
     def _sn_retry(self, reason):
         """Keine Antwort auf #SN ohne Pruefsumme: TM550 versteht Befehle nur mit Pruefsumme."""
@@ -8637,6 +9063,7 @@ class LiveRankingApp:
             self.cp_noanswer = 0
         elif reason == "keine Antwort":
             self.cp_noanswer = getattr(self, "cp_noanswer", 0) + 1
+            self.usb_silent_hint()
             if (self.cp_noanswer >= 3 and time.time() - self.cp_last_rx < 120
                     and not getattr(self, "_noanswer_told", False)):
                 self._noanswer_told = True
@@ -8954,6 +9381,7 @@ class LiveRankingApp:
     def handle_eth_line(self, raw, dev="A"):
         if dev == "A":
             self.cp_last_rx = time.time()
+            self.cp_rx_lines = getattr(self, "cp_rx_lines", 0) + 1
         text = strip_frame(raw)
         info = parse_thcom(raw)
         DIAG.debug(f"CP {dev}< {raw.strip()}")
@@ -8968,6 +9396,7 @@ class LiveRankingApp:
             # mehr als einen Tag vom PC ab, gilt der Tag vom PC.
             pc_day = day_from_pc(info["tod"])
             if abs(info["day"] - pc_day) > 1:
+                info["day_raw"] = info["day"]
                 info["day"] = pc_day
                 info["abs"] = info["day"] * 86400 + info["tod"]
         self.raw_log(dev, raw)
@@ -8989,6 +9418,9 @@ class LiveRankingApp:
                 self.cp_b.checksum = True
             self.root.after(100, lambda: self.cp_sync_next("Reserve verbunden"))
             self.root.after(600, self.backup_write_precision)
+            self.__dict__.setdefault("_dev_lock", {}).pop(("B", CH_START), None)
+            self.__dict__["_dev_lock"].pop(("B", CH_FINISH), None)
+            self.root.after(1200, lambda: self.device_lock_read("B"))
             self.log(f"Reserve-Gerät: {info['type']} Nr {info['serial']} {info['version']}".strip(), tag="ok")
             return
         if dev == "A" and self.cp_backlog is not None:
@@ -9007,6 +9439,8 @@ class LiveRankingApp:
         if info["kind"] == "note":
             text = f"{text}  ({info['label']}, wird nicht ausgewertet)"
         self.log(("CP " if dev == "A" else "CP Reserve ") + text, focus=False, tag=None if not quiet else "test")
+        if info["kind"] == "param" and info.get("id") in ("002", "006", "023"):
+            self.device_param_event(info, dev)
         if quiet:
             if dev == "A":
                 self.cp_check_reply(info)
@@ -9218,7 +9652,7 @@ class LiveRankingApp:
     def check_device_clock(self, info, dev):
         """Uhr des Geraets gegen den PC: zwei Zeilen hintereinander mit gleicher Abweichung ueber 60 s -> Warnung,
         einmal pro Verbindung. Gepufferte Zeilen beim Verbinden laufen nicht hierher."""
-        diff = info["abs"] - local_abs()
+        diff = info.get("day_raw", info["day"]) * 86400 + info["tod"] - local_abs()
         if not hasattr(self, "_clock_prev"):
             self._clock_prev, self._clock_told = {}, {}
         prev = self._clock_prev.get(dev)
@@ -9235,8 +9669,16 @@ class LiveRankingApp:
             amount = f"{int(a // 3600)} h {int(a % 3600 // 60)} min"
         else:
             amount = f"{int(a // 60)} min {int(a % 60)} s"
-        msg = (f"Uhr {name} geht {amount} {'vor' if diff > 0 else 'nach'} (gegenüber dem PC). Laufzeiten stimmen, "
-               "Startzeiten und Uhrzeit im Ranking nicht. In einer Pause Datum und Uhrzeit am Gerät stellen.")
+        try:
+            date = (EPOCH_2000 + datetime.timedelta(days=int(info.get("day_raw", info["day"])))).strftime("%d.%m.%Y")
+        except (OverflowError, ValueError, KeyError):
+            date = "?"
+        tod = int(info["tod"])
+        tm = (self.cp_device if dev == "A" else self.cp_b_device) == "tm550"
+        where = "Synchronisation › Manual oder GPS" if tm else "F › Synchronisation"
+        msg = (f"Uhr {name} geht {amount} {'vor' if diff > 0 else 'nach'} (Gerät {date} {tod // 3600:02d}:"
+               f"{tod // 60 % 60:02d}, PC {time.strftime('%d.%m.%Y %H:%M')}). Laufzeiten stimmen, Startzeiten und "
+               f"Uhrzeit im Ranking nicht. In einer Pause, vor dem Öffnen des Laufs, am Gerät unter {where} stellen.")
         self.log(msg, tag="warn")
         self.add_ticker(f"Uhr {name} falsch gestellt", "warn")
 
@@ -9799,6 +10241,10 @@ class LiveRankingApp:
                 self.cp_last_hb = now
                 self.cp_query("#RP 003", ("param", "003"), on_ok=self._on_run)
                 self.cp_probe()
+            elif (self.cp_device == "cp545" and now - getattr(self, "_lock_poll_t", 0) > LOCK_POLL_S
+                  and self.cp_inflight is None and not self.cp_cmds and self.cp_backlog is None):
+                self._lock_poll_t = now  # CP 545 meldet die rote Sperrtaste nicht von selbst
+                self.device_lock_read("A")
             if now - self.cp_last_rx > HEARTBEAT_LOST_S:
                 self.cp_last_rx = now
                 self.log("CP antwortet nicht mehr, Verbindung wird neu aufgebaut", tag="warn")
@@ -9890,7 +10336,7 @@ class LiveRankingApp:
         sim.on_event = lambda text: tq.append(("note", text))
         sim.on_line = lambda line: tq.append(("line", line))
         self.tr = {"buf": "", "state": "", "nr": None, "new": "", "device": device, "log": [], "flash": {},
-                   "rows": []}
+                   "rows": [], "menu": [], "runs": [], "vals": {}}
         name = self.DEVICE_LABEL[device]
         win = self.trainer = self._toplevel(f"Üben: {name} (nachgebaut)")
         front = tk.Frame(win, bg=PANEL)
@@ -9930,11 +10376,13 @@ class LiveRankingApp:
         hint = ("CP 545 (nach Handbuch 03/2015): grüne Tasten 1 bis 4 = Handimpuls auf dem Eingang. "
                 "Nr E1 = nächste Startnummer, E1 allein = Falschstart (Nummer von der letzten Startzeit "
                 "entfernen), Nr R 0 = ausgeschieden, Nr R 0 * = disqualifiziert, alte Nr R E1 neue Nr ↵ = "
-                "umnummerieren, * = Eingabe löschen, F = Menü (Lauf, Zeitmessart, Ethernet). ON = Ein/Aus."
+                "umnummerieren, * = Eingabe löschen. Rote Tasten unter den grünen = Eingang sperren/öffnen (Balken im "
+                "Display, die grüne Taste löst trotzdem aus). F = Menü wie am Gerät (▲ ▼, ↵ wählen, * = JA, F "
+                "zurück). Ethernet nach dem Einschalten: F › Einstellungen › Ethernet › Std Connexion. ON = Aus."
                 if device == "cp545" else
-                "TM550 (Firmware 1.48): E1 bis E4 = Handimpuls. OK öffnet das Menü (Lauf, Zeitmessart BASIC, "
-                "TIMING, SPEED, LAP). In TIMING lädt die App die nächste Startnummer vor, sonst vergibt sie "
-                "die Nummern. SHIFT + E1..E4 sperrt einen Eingang.")
+                "TM550 (Firmware 1.48): E1 bis E4 = Handimpuls. ◀ öffnet das Menü Run, nochmals ◀ das Hauptmenü "
+                "(▲ ▼, OK oder ▶ wählen, ◀ zurück). In TIMING lädt die App die nächste Startnummer vor. SHIFT + "
+                "E1..E4 schaltet den Eingang weiter: offen (grün ↑), senden (rot ↓), gesperrt (rot).")
         tk.Label(right, text=hint, bg=PANEL, fg=MUTED, font=self.f_side, wraplength=int(360 * self.ui_scale),
                  justify="left").pack(anchor="w", pady=(8, 0))
         win.protocol("WM_DELETE_WINDOW", self.trainer_close)
@@ -9996,9 +10444,10 @@ class LiveRankingApp:
             f = tk.Frame(ch, bg=grey)
             f.grid(row=0, column=i, padx=8)
             self._tr_key(f, str(i), cmd=lambda c=i: self.trainer_key(f"K{c}"), bg="#2E9E4F", fg="white").pack()
-            led = tk.Canvas(f, width=14, height=14, bg=grey, highlightthickness=0)
-            led.create_oval(2, 2, 12, 12, fill="#5A1A16", outline="", tags="led")
+            led = tk.Canvas(f, width=18, height=18, bg=grey, highlightthickness=0, cursor="hand2")
+            led.create_oval(2, 2, 16, 16, fill="#B8322A", outline="#5A1A16", tags="led")
             led.pack(pady=(3, 0))
+            led.bind("<Button-1>", lambda e, c=i: self.trainer_key(f"L{c}"))  # rote Sperrtaste
             self.tr_leds[i] = led
 
     def _trainer_front_tm(self, parent):
@@ -10058,7 +10507,7 @@ class LiveRankingApp:
             cv.create_oval(x - 17 * s, 66 * s, x + 17 * s, 100 * s, fill="#222", outline="#555", width=2)
             cv.create_oval(x - 7 * s, 76 * s, x + 7 * s, 90 * s, fill="#000", outline="")
             cv.create_text(x, 110 * s, text=str(ch), fill="white", font=self.f_side_bold)
-            cv.tag_bind(tag, "<Button-1>", lambda e, c=ch: self.trainer_do(lambda: self.sim.impulse(c),
+            cv.tag_bind(tag, "<Button-1>", lambda e, c=ch: self.trainer_do(lambda: self.sim.impulse(c, manual=False),
                                                                           f"Buchse {c}"))
             cv.tag_bind(tag, "<Button-3>", lambda e, c=ch: self.trainer_do(lambda: self.sim.double_contact(c),
                                                                           f"Buchse {c} Doppelkontakt"))
@@ -10121,6 +10570,15 @@ class LiveRankingApp:
                                        f"{fmt_tod(info['abs'] % 86400)}")
                     if info["type"] in ("TN", "T+", "T="):
                         self.tr["flash"][info["ch"]] = now + 0.4
+                        runs = self.tr["runs"]
+                        if info["ch"] == CH_START:
+                            runs.append({"nr": info["nr"], "st": info["abs"], "fi": None})
+                        elif info["ch"] == CH_FINISH:
+                            r = next((x for x in runs if x["fi"] is None and info["nr"] and x["nr"] == info["nr"]),
+                                     next((x for x in runs if x["fi"] is None), None))
+                            if r is not None:
+                                r["fi"] = info["abs"]
+                        self.tr["runs"] = runs[-8:]
                     self.tr["rows"] = (self.tr["rows"] + [(info["type"], info["ch"], info["seq"],
                                                             info["abs"] % 86400)])[-5:]
                 elif info and info["kind"] in ("open", "close"):
@@ -10133,62 +10591,90 @@ class LiveRankingApp:
         sim = self.sim
         if sim is not None:
             tod = (sim.now_abs()) % 86400
-            st = self.tr["state"]
-            entry = self.tr["buf"]
-            if st == "R":
-                entry = f"{self.tr['nr']} R {self.tr['buf']}"
-            elif st == "RE1":
-                entry = f"{self.tr['nr']} R E1 {self.tr['new']}"
             if sim.device == "cp545":
-                nxt = sim.next.get(CH_START)
-                head = f"{'OP' if sim.run_open else 'CL'} {sim.run:02d} {sim.mode}"
-                rows = [f"{typ} {('E' + str(ch))} {seq:>3} {fmt_tod(t_)[:11]}" for typ, ch, seq, t_ in
-                        self.tr["rows"][-4:]]
-                rows += [""] * (4 - len(rows))
-                lines = [head, fmt_tod(tod)[:8] + ("  ETH AUS" if sim.eth_off else
-                                                    ("  OFFLINE" if sim.offline else f"  {len(sim.clients)} PC"))]
-                lines += rows
-                lines += [(self.tr.get("last") or "")[:21],
-                          f"> {entry}" if entry else (f"NEXT {nxt}" if nxt and sim.numbered() else "READY")]
+                lines = self._lcd_cp_lines() if self.tr["menu"] else self._cp_home_lines(tod)
+                lines = (lines + [""] * 8)[:8]
                 self.tr_disp.configure(text="\n".join(l[:21] for l in lines))
                 for ch, led in self.tr_leds.items():
-                    led.itemconfigure("led", fill="#FF3B2F" if self.tr["flash"].get(ch, 0) > now else "#5A1A16")
+                    led.itemconfigure("led", fill="#FF6B5F" if sim.inputs.get(ch) == 0 else "#B8322A")
             else:
                 self._trainer_draw_tm(sim, tod, now)
         win.after(150, self.trainer_poll)
 
     def _trainer_draw_tm(self, sim, tod, now):
-        """Farbdisplay TM550: Uhrzeit, Eingaenge E1-E4, letzte Zeiten, Statuszeile."""
+        """Farbdisplay TM550 nach Fotos (25.11.2026): Kaestchen ueber E1-E4 (gruen ↑ offen, rot ↓ senden, rot
+        gesperrt), Uhrzeit, Eingangsnamen (gruen benutzt, blau nicht benutzt), WAIT/SYNC GPS, Zeilen pro Boot
+        (Messung, Nr, Start, Ziel gelb, Laufzeit) oder Menue, Statusleiste."""
         cv, s = self.tr_disp, self.ui_scale
         cv.delete("all")
         W, H = int(cv["width"]), int(cv["height"])
         mono = ("Consolas", int(8 * s), "bold")
-        cv.create_text(W / 2, 12 * s, text=fmt_tod(tod)[:8], fill="white", font=("Consolas", int(10 * s), "bold"))
-        cv.create_line(6 * s, 32 * s, W - 6 * s, 32 * s, fill="#3A8DDE", width=2)
+        xs = [22, 62, 168, 208]
+        mode = sim.tm_mode if sim.new_tm else ("TIMING" if sim.timing else "BASIC")
+        used = {1, 2, 3, 4} if mode == "BASIC" else {1, 4}
         for i in range(4):
-            x = [26, 66, 166, 206][i] * s
-            lit = self.tr["flash"].get(i + 1, 0) > now
-            cv.create_rectangle(x - 13 * s, 25 * s, x + 13 * s, 39 * s, fill="#5BE35B" if lit else "#1F6B2A",
-                                outline="#9AF59A")
-            cv.create_text(x, 32 * s, text=f"E{i + 1}", fill="#04220A" if lit else "white", font=mono)
-        mode = {"CIRCUIT": "LAP"}.get(sim.tm_mode, sim.tm_mode) if sim.new_tm else (
-            "TIMING" if sim.timing else "BASIC")
-        cv.create_rectangle(W / 2 - 30 * s, 26 * s, W / 2 + 30 * s, 38 * s, fill="#C8102E", outline="")
-        cv.create_text(W / 2, 32 * s, text=f"{mode} {sim.run:02d}", fill="white", font=mono)
-        y = 48 * s
-        for typ, ch, seq, t in self.tr["rows"][-4:]:
-            cv.create_rectangle(4 * s, y - 2 * s, W - 4 * s, y + 18 * s,
-                                fill="#C8102E" if typ in ("TN", "T+", "T=") else "#555", outline="")
-            cv.create_text(8 * s, y + 8 * s, anchor="w", fill="white", font=mono,
-                           text=f"E{ch} {seq:>3}  {fmt_tod(t)}" + ("  annulliert" if typ == "TC" else ""))
-            y += 22 * s
-        entry = self.tr["buf"]
+            x, ch = xs[i] * s, i + 1
+            st = sim.inputs.get(ch, 0)
+            col = "#3DDC5A" if st == 0 else "#E5352B"
+            cv.create_rectangle(x - 9 * s, 4 * s, x + 9 * s, 20 * s, outline=col, width=2)
+            if st == 0:
+                cv.create_text(x, 12 * s, text="↑", fill="#5BB8FF", font=mono)
+            elif st == 1:
+                cv.create_text(x, 12 * s, text="↓", fill="#5BB8FF", font=mono)
+            lit = self.tr["flash"].get(ch, 0) > now
+            name_col = ("#3DDC5A" if ch in used else "#5BB8FF")
+            cv.create_rectangle(x - 12 * s, 26 * s, x + 12 * s, 38 * s, outline=name_col, width=2,
+                                fill=name_col if lit else "")
+            cv.create_text(x, 32 * s, text=f"E{ch}", fill="#04220A" if lit else name_col, font=mono)
+        cv.create_text(W / 2, 12 * s, text=fmt_tod(tod)[:8], fill="white",
+                       font=("Consolas", int(10 * s), "bold"))
+        cv.create_line(4 * s, 32 * s, W - 4 * s, 32 * s, fill="#3A8DDE", width=1)
+        gps = getattr(sim, "gps_sync", False)
+        lab, col = (("SYNC GPS", "#2FA84F") if gps == "gps" else ("SYNC MAN", "#2F6FD8") if gps == "manual"
+                    else ("WAIT GPS", "#E5532B"))
+        cv.create_rectangle(W / 2 - 34 * s, 26 * s, W / 2 + 20 * s, 38 * s, fill=col, outline="")
+        cv.create_text(W / 2 - 7 * s, 32 * s, text=lab, fill="white", font=mono)
+        y = 46 * s
+        if self.tr["menu"]:
+            node = self.tr["menu"][-1]
+            if node["kind"] == "confirm":
+                cv.create_text(W / 2, 80 * s, text=node["text"], fill="white", font=mono)
+                cv.create_text(W / 2, 110 * s, text="OK = Ja   ◀ = Nein", fill="#9AF59A", font=mono)
+            elif node["kind"] == "info":
+                for line in node["lines"][node["top"]:node["top"] + 6]:
+                    cv.create_text(8 * s, y + 8 * s, anchor="w", fill="white", font=mono, text=line)
+                    y += 15 * s
+                if node["top"] + 6 < len(node["lines"]):
+                    cv.create_text(W - 8 * s, H - 30 * s, text="↓", fill="#5BB8FF", font=mono)
+            else:
+                items, cur = node["items"], node["cur"]
+                top = max(0, min(cur - 3, len(items) - 6))
+                for i in range(top, min(len(items), top + 6)):
+                    if i == cur:
+                        cv.create_rectangle(4 * s, y, W - 4 * s, y + 14 * s, fill="#E6E7EA", outline="")
+                    cv.create_text(8 * s, y + 7 * s, anchor="w", font=mono, text=items[i][0][:30],
+                                   fill="#111" if i == cur else "white")
+                    y += 15 * s
+        else:
+            for r in self.tr["runs"][-4:]:
+                cv.create_rectangle(4 * s, y, W - 4 * s, y + 18 * s, fill="#C8102E", outline="")
+                st = fmt_tod(r["st"] % 86400)[:12]
+                fi = fmt_tod(r["fi"] % 86400)[:12] if r["fi"] else ""
+                el = (r["fi"] if r["fi"] else sim.now_abs()) - r["st"]
+                cv.create_text(6 * s, y + 9 * s, anchor="w", fill="white", font=("Consolas", int(7 * s), "bold"),
+                               text=f"T1 {r['nr'] or '':>3} {st}")
+                cv.create_text(W * 0.62, y + 9 * s, anchor="w", fill="#FFE14D", font=("Consolas", int(7 * s), "bold"),
+                               text=fi[3:] if fi else "")
+                cv.create_text(W - 6 * s, y + 9 * s, anchor="e", fill="white", font=("Consolas", int(7 * s), "bold"),
+                               text=f"{el:.3f}" if r["fi"] else f"{el:.1f}")
+                y += 22 * s
         cv.create_rectangle(0, H - 18 * s, W, H, fill="#111", outline="")
-        cv.create_text(6 * s, H - 9 * s, anchor="w", fill="#9AF59A", font=mono, text="■ 80%")
-        cv.create_rectangle(W / 2 - 34 * s, H - 16 * s, W / 2 + 34 * s, H - 2 * s, fill="#7FB8F0", outline="")
-        cv.create_text(W / 2, H - 9 * s, text="Temps", fill="#0A2A4A", font=mono)
-        cv.create_text(W - 6 * s, H - 9 * s, anchor="e", fill="#FFB3B3" if sim.offline else "white", font=mono,
-                       text="OFFLINE" if sim.offline else (f"> {entry}" if entry else f"{len(sim.clients)} PC"))
+        icons = "▮100%  ⌖ " + ("Ton✕" if self._lcd_val("sound", "Off") == "Off" else "Ton") + \
+                ("  ETH" if sim.clients else "  ETH✕") + "  BT✕"
+        cv.create_text(6 * s, H - 9 * s, anchor="w", fill="#9AF59A", font=mono, text=icons)
+        cv.create_rectangle(W - 70 * s, H - 16 * s, W - 2 * s, H - 2 * s, fill="#7FB8F0", outline="")
+        cv.create_text(W - 36 * s, H - 9 * s, fill="#0A2A4A", font=mono,
+                       text={"CIRCUIT": "Lap"}.get(mode, mode.capitalize()))
 
     def trainer_key(self, k):
         sim, t = self.sim, self.tr
@@ -10196,29 +10682,29 @@ class LiveRankingApp:
             return
         self.trainer_log(f"Taste {k}")
         if k.startswith("K") and k[1:].isdigit():
-            sim.impulse(int(k[1:]))
+            sim.impulse(int(k[1:]), manual=True)  # gruene Taste
             return
-        if k in ("⇧", "ON", "SHIFT"):
-            if k == "SHIFT":
-                t["shift"] = not t.get("shift")
+        if k.startswith("L") and k[1:].isdigit():
+            sim.cycle_input(int(k[1:]))  # rote Sperrtaste
+            return
+        if k == "SHIFT":
+            t["shift"] = not t.get("shift")
+            return
+        if k == "ON":
+            if sim.device == "cp545":
+                t["menu"] = [self._lcd_confirm("Gerät ausschalten?", self._lcd_power_off)]
+            return
+        if k == "⇧":
             return
         if k in ("E1", "E2", "E3", "E4") and sim.device == "tm550":
-            if t.get("shift"):  # SHIFT + Ex sperrt bzw. entsperrt den Eingang
+            if t.get("shift"):  # SHIFT + Ex: offen -> senden -> gesperrt -> offen
                 t["shift"] = False
-                locked = t.setdefault("tm_locked", set())
-                ch = int(k[1])
-                locked.symmetric_difference_update({ch})
-                sim.note(f"Eingang E{ch} {'gesperrt' if ch in locked else 'frei'}")
+                sim.cycle_input(int(k[1]))
                 return
-            if int(k[1]) in t.get("tm_locked", set()):
-                sim.note(f"E{k[1]} gesperrt, kein Impuls")
-                return
-            sim.impulse(int(k[1]))
+            sim.impulse(int(k[1]), manual=True)
             return
-        if k in ("▲", "▼", "◀", "▶", "OK", "F"):
-            if sim.device == "cp545" and k in ("▲", "▼"):
-                return
-            return self.trainer_menu()
+        if t["menu"] or k in ("◀", "F") or (sim.device == "tm550" and k in ("▲", "▼", "▶", "OK")):
+            return self.lcd_menu_key(k)
         if k == "." and not (t["state"] == "R" and t["buf"] == "0"):
             t.update(buf="", state="", nr=None, new="")  # * = Eingabe loeschen
             return
@@ -10256,6 +10742,357 @@ class LiveRankingApp:
         if t["state"] == "R" and t["nr"] == nr and t["buf"] == "0":
             self.sim.cancel(nr)
             t.update(buf="", state="", nr=None)
+
+    # ---------- Menues im Display (Fotos vom Geraet, 25.11.2026) ---------- #
+    CP_MODES = ("PTB SEQUENTIEL 1-4", "PTB SEQUENTIEL 5-8", "NET TIME", "NET TIME + 2 INTER", "PARALLELE SEQ",
+                "PARALLELE DIFF", "START - FINISH", "START INTER FINISH", "TRAINING", "SPLIT 1-4", "SPLIT 5-8",
+                "SPLIT/LAP", "JUMPING", "JUMPING 2 PHASE", "JUMPING SNG PHASE")
+    CP_MODE_ABBR = {"NET TIME": "NT", "NET TIME + 2 INTER": "NT", "PTB SEQUENTIEL 1-4": "PT",
+                    "PTB SEQUENTIEL 5-8": "PT", "PARALLELE SEQ": "PS", "PARALLELE DIFF": "PD",
+                    "START - FINISH": "SF", "START INTER FINISH": "SI", "TRAINING": "TR"}
+
+    def _lcd_menu(self, title, items, cur=0):
+        return {"kind": "menu", "title": title, "items": items, "cur": cur}
+
+    def _lcd_confirm(self, text, yes):
+        return {"kind": "confirm", "text": text, "yes": yes}
+
+    def _lcd_info(self, title, lines):
+        return {"kind": "info", "title": title, "lines": list(lines), "top": 0}
+
+    def _lcd_choice(self, title, options, get, put):
+        """Auswahlliste; der Cursor steht beim Oeffnen auf dem eingestellten Wert."""
+        def make():
+            cur = get()
+            items = [(o, (lambda o=o: (put(o), "back")[1])) for o in options]
+            return self._lcd_menu(title, items, options.index(cur) if cur in options else 0)
+        return make
+
+    def _lcd_val(self, key, default):
+        return self.tr["vals"].get(key, default)
+
+    def _lcd_set(self, key):
+        def put(v):
+            self.tr["vals"][key] = v
+            self.trainer_log(f"Gerät: {key} = {v}")
+        return put
+
+    def _lcd_power_off(self):
+        sim = self.sim
+        sim.restart()
+        self.trainer_paper("→ Gerät aus und wieder ein" + (": Ethernet ist aus (F › Einstellungen › Ethernet › "
+                                                          "Std Connexion)" if sim.device == "cp545" else ""))
+
+    def _cp_menu_main(self):
+        sim = self.sim
+        v, st = self._lcd_val, self._lcd_set
+
+        def runs_list():
+            return self._lcd_info("Liste der Läufe", [f"{sim.run:02d}+{sim.run - 1:02d}" if sim.run > 1 else ""] +
+                                  [f"{r:02d}" for r in range(sim.run, 0, -1)])
+
+        def ranking():
+            rows = sorted(sim.results, key=lambda x: x[1])
+            return self._lcd_info("Rangliste", [f"{i + 1:>2}. {n:>4} {secs:>8.1f}" for i, (n, secs) in
+                                                enumerate(rows)] or ["keine Zeiten"])
+
+        def still_running():
+            now = sim.now_abs()
+            return self._lcd_info("Noch im Rennen", [f"{n:>4} {now - t:>9.1f}" for n, t, _s in sim.course] or
+                                  ["kein Boot"])
+
+        def settings():
+            def prec_get():
+                return ("1", "1/10", "1/100", "1/1000", "1/10'000")[max(0, min(4, sim.prec - 1))]
+
+            def prec_put(o):
+                i = ("1", "1/10", "1/100", "1/1000", "1/10'000").index(o)
+                sim.prec = max(1, min(5, i + 1))  # wie #WP 001 i: Resultat i, Zeiten i+1 Stellen
+                sim.note(f"Präzision {o}")
+
+            def lock_times():
+                return self._lcd_menu("Sperre", [(f"Eingang {k}", (lambda k=k: self._lcd_info(
+                    f"Eingang {k}", ["", f"   {'1.00' if k == 1 else '0.10'} Sek.", "", "Use Up & Dn Arrow"])))
+                    for k in (1, 2, 3, 4)])
+
+            def status_inputs():
+                return self._lcd_info("Status Eingänge", [" ↑   ↑        ↑   ↑", "", "  Status Eingänge",
+                                                          "     E1 bis E4", "", "", "           OK -> ↵"])
+
+            def ethernet():
+                def std():
+                    sim.enable_ethernet()
+                    return "back"
+                return self._lcd_menu("Ethernet", [("Std Connexion", std), ("User Connexion", lambda: self._lcd_info(
+                    "IP eingeben", ["", "  192.168.001.050", "", "", "Löschen -> *  OK -> ↵"]))])
+
+            def print_params():
+                for k in (1, 2, 3, 4):
+                    self.trainer_paper(f"EINGANG {k} SPERRE {'1.00' if k == 1 else '0.10'}s")
+                self.trainer_paper(f"{sim.mode}  PRÄZISION {prec_get()}")
+                return None
+
+            def slider(title, val):
+                return lambda: self._lcd_info(title, ["", f"     {val}", "  |=====|----------|", "",
+                                                      "Use Up & Dn Arrow"])
+
+            items = [("Präzision", self._lcd_choice("Präzision [Sek]", ("1", "1/10", "1/100", "1/1000",
+                                                                        "1/10'000"), prec_get, prec_put)),
+                     ("Sperre", lock_times),
+                     ("Numerierung", lambda: self._lcd_info("Numerierung", ["Eingang 1: Automatisch",
+                                                                            "Eingang 4: Automatisch"])),
+                     ("Status Eingänge", status_inputs),
+                     ("RFID Auto Inkrem.", self._lcd_choice("RFID Auto Inkrem.", ("AUS", "0.5 sek", "1 sek"),
+                                                            lambda: v("rfid", "AUS"), st("rfid"))),
+                     ("LCD Kontrast", slider("LCD Kontrast", "40 %")),
+                     ("Hintergrdlicht (Batt)", slider("Hintergrdlicht (Batt)", "30 %")),
+                     ("HGbeleuchtung", slider("HGbeleuchtung", "60 Sek.")),
+                     ("LCD Dauer", slider("LCD Dauer", "5 Sek.")),
+                     ("Piep", self._lcd_choice("Piep", ("AUS", "EIN"), lambda: v("piep", "AUS"), st("piep"))),
+                     ("RS232", self._lcd_choice("RS232", ("Zum PC", "TAGHeuer HL960/HL990", "TAGHeuer HL970/HL980",
+                                                          "ALGE Display", "zu Ext. Drucker"),
+                                                lambda: v("rs232", "TAGHeuer HL970/HL980"), st("rs232"))),
+                     ("Ethernet", ethernet),
+                     ("Sprache", self._lcd_choice("Sprache", ("English", "Francais", "Deutsch", "Italiano",
+                                                              "Espanol"), lambda: v("sprache", "Deutsch"),
+                                                  st("sprache"))),
+                     ("Battery Type", self._lcd_choice("Battery Type", ("Non-Rechargeable", "NIMH charge enabled",
+                                                                        "NIMH charge disabled"),
+                                                       lambda: v("bat", "Non-Rechargeable"), st("bat"))),
+                     ("Error Messages", self._lcd_choice("Error Messages", ("AUS", "EIN"),
+                                                         lambda: "EIN" if sim.err_msgs else "AUS",
+                                                         lambda o: setattr(sim, "err_msgs", o == "EIN"))),
+                     ("Parameter drucken", print_params)]
+            return self._lcd_menu("Einstellungen", items)
+
+        def modes():
+            items = [(md, (lambda md=md: (sim.set_mode(md), "back")[1])) for md in self.CP_MODES]
+            return self._lcd_menu("Zeitmessart", items)  # Cursor oben wie am Geraet
+
+        common = [("Geschwindigkeit", self._lcd_choice("Geschw.-Einheit", ("m/s", "Km/h", "Mph", "Knoten"),
+                                                       lambda: v("speed", "Km/h"), st("speed"))),
+                  ("Einstellungen", settings),
+                  ("Drucker", self._lcd_choice("Drucker", ("AUS", "EIN"), lambda: v("drucker", "AUS"),
+                                               st("drucker")))]
+        if sim.run_open:
+            items = [("Lauf schliessen", lambda: (sim.close_run(), "close")[1]),
+                     ("Rangliste", ranking), ("Rangliste Lauf", runs_list), ("Noch im Rennen", still_running),
+                     ("Kopieren", lambda: self._lcd_info("Kopieren", ["nicht nachgebaut"])),
+                     ("Zeit einfügen", lambda: self._lcd_info("Zeit einfügen", ["nicht nachgebaut"]))] + common + [
+                     ("Lauf einfügen", lambda: self._lcd_info("Lauf einfügen", ["nicht nachgebaut"]))]
+            return self._lcd_menu("Hauptmenü", items, 1)
+        items = [("CP545 Ausschalten", lambda: self._lcd_confirm("Gerät ausschalten?", self._lcd_power_off)),
+                 ("Neuen Lauf öffnen", lambda: self._lcd_confirm(f"NEUER LAUF NR. {sim.run + 1}\nLauf hinzufügen?",
+                                                                 lambda: sim.open_run())),
+                 ("Synchronisation", lambda: self._lcd_menu("Synchroart", [("Manuell oder extern", None),
+                                                                          ("Master/Slave RS232", None)])),
+                 ("Speicher löschen", lambda: self._lcd_confirm("Speicher löschen", lambda: sim.note(
+                     "Speicher gelöscht"))),
+                 ("Rangliste Lauf", runs_list),
+                 ("Rally Einstellungen", lambda: self._lcd_menu("Rally Einstellungen",
+                                                                [("Rally Drucker Einstellungen", None)])),
+                 ("Zeitmessart", modes)] + common + [
+                 ("Herunterladen", lambda: self._lcd_menu("Herunterladen", [("Zum Drucker", None), ("Zum USB", None),
+                                                                           ("Zum RS232 AUX", None),
+                                                                           ("Zu Chrono RS232", None)]))]
+        return self._lcd_menu("Hauptmenü", items, 1)
+
+    def _tm_menu_run(self):
+        sim = self.sim
+        first = ((f"Current run n°{sim.run}", None) if sim.run_open else
+                 ("Open a run", lambda: (sim.open_run(), "close")[1]))
+        return self._lcd_menu("Run", [first, ("Close a run", lambda: (sim.close_run(), "close")[1]),
+                                      ("Download run", None),
+                                      ("Erase all runs", lambda: self._lcd_confirm("Erase all runs?",
+                                                                                   lambda: sim.note("Läufe gelöscht")))])
+
+    def _tm_menu_main(self):
+        sim = self.sim
+        v, st = self._lcd_val, self._lcd_set
+        precs = ("1 second", "1/10 second", "1/100 second", "1/1000 second", "1/10000 second", "1/100000 second")
+
+        def prec_put(o):
+            sim.prec = precs.index(o)
+            sim.note(f"Precision {o}")
+
+        def status():
+            day = int(sim.now_abs() // 86400)
+            d = EPOCH_2000 + datetime.timedelta(days=day)
+            return self._lcd_info("Status", [f"S/N : 59   V{sim.fw}", f"Date : {d:%Y/%m/%d}", "Free memory : 99 %",
+                                             f"Precision : {precs[max(0, min(5, sim.prec))]}",
+                                             "E1 : 0.10 s", "E2 : 0.10 s", "E3 : 0.10 s", "E4 : 0.10 s",
+                                             "USB : 9600 Bds", "IP : 192.168.1.51", "Port : 7000",
+                                             f"RS232 : {v('rs232', 'Scoreboard')}", "RS232 : 9600 Bds",
+                                             "Battery temperature : 29°C"])
+
+        def sync():
+            def manual():
+                sim.gps_sync = "manual"
+                sim.note("Uhr von Hand gestellt (gilt ab dem nächsten Impuls)")
+                return "back"
+
+            def gps():
+                sim.note("Suche GPS ...")
+                self.root.after(5000, lambda: (setattr(sim, "gps_sync", "gps"), sim.note("SYNC GPS")))
+                return "back"
+            return self._lcd_menu("Synchronisation", [("Manual", manual), ("GPS", gps)])
+
+        def mode_menu(name, val, extra):
+            def activate():
+                sim.set_mode(val)
+                return "back"
+            on = (sim.tm_mode == val)
+            return lambda: self._lcd_menu(name, [(f"Activate          {'On' if on else 'Off'}", activate)] + extra)
+
+        def timing_modes():
+            tim = [(f"Timing {i}" + ("      E1  E4" if i == 1 else ""), None) for i in (1, 2, 3, 4)]
+            spd = [(f"Speed {i}", None) for i in (1, 2, 3, 4)]
+            return self._lcd_menu("Timing modes", [
+                ("Basic", mode_menu("Basic", "BASIC", [])), ("Speed", mode_menu("Speed", "SPEED", spd)),
+                ("Timing", mode_menu("Timing", "TIMING", tim)),
+                ("Lap", mode_menu("Lap", "CIRCUIT", [("Configuration", None)])),
+                ("Identification mode", self._lcd_choice("Identification mode", (
+                    "Manual identification", "Identification at start", "Automatic identification"),
+                    lambda: v("ident", "Automatic identification"), st("ident")))])
+
+        def onoff(key, title, default="Off"):
+            return self._lcd_choice(title, ("On", "Off"), lambda: v(key, default), st(key))
+
+        items = [("Status", status), ("Synchronisation", sync), ("Run", self._tm_menu_run),
+                 ("Timing modes", timing_modes),
+                 ("Precision", self._lcd_choice("Precision", precs, lambda: precs[max(0, min(5, sim.prec))], prec_put)),
+                 ("Input blocking time", lambda: self._lcd_info("Input blocking time",
+                                                                [f"E{k} : 0.10 s" for k in (1, 2, 3, 4)])),
+                 ("Options", lambda: self._lcd_menu("Options", [
+                     ("Screen", None), ("Sound", onoff("sound", "Sound")),
+                     ("Languages", self._lcd_choice("Languages", ("English", "Français"),
+                                                    lambda: v("lang", "English"), st("lang"))),
+                     ("Factory settings", lambda: self._lcd_confirm("Factory settings?", lambda: sim.note(
+                         "Werkseinstellungen (Port wieder 2101)")))])),
+                 ("Communication", lambda: self._lcd_menu("Communication", [
+                     ("Ethernet", lambda: self._lcd_info("Ethernet", ["IP : 192.168.1.51", "Port : 7000"])),
+                     ("Bluetooth", onoff("bt", "Bluetooth")),
+                     ("RS232", self._lcd_choice("RS232", ("To PC", "Scoreboard"), lambda: v("rs232", "Scoreboard"),
+                                                st("rs232"))),
+                     ("USB", self._lcd_choice("USB", ("2400 Bds", "9600 Bds", "9600 Bds Flow control", "19200 Bds",
+                                                      "38400 Bds"), lambda: v("usb", "9600 Bds"), st("usb"))),
+                     ("Printer BLE", onoff("ble", "Printer BLE", "On")),
+                     ("Protocol dock", self._lcd_choice("Protocol dock", ("DOCK", "PRINTER"),
+                                                        lambda: v("dock", "DOCK"), st("dock")))])),
+                 ("Scoreboard", lambda: self._lcd_menu("Scoreboard", [
+                     ("Display protocol", self._lcd_choice("Display protocol", ("TAG HEUER THDIS08", "ITS"),
+                                                           lambda: v("disp", "TAG HEUER THDIS08"), st("disp"))),
+                     ("Display parameters", lambda: self._lcd_menu("Display parameters", [
+                         ("Line", lambda: self._lcd_info("Line", [f"Line 0{i} : -" for i in (1, 2, 3, 4)])),
+                         ("Freeze time", lambda: self._lcd_info("Freeze time", ["10 s"]))])),
+                     ("ID competitor", onoff("idc", "ID competitor", "On"))])),
+                 ("Update", lambda: self._lcd_info("Update", ["über ITS Updater"])),
+                 ("Turn off", lambda: self._lcd_confirm("Turn off?", self._lcd_power_off))]
+        return self._lcd_menu("Menu", items)
+
+    def lcd_menu_key(self, k):
+        """Tasten im Menue: CP F (auf/zurueck), ▲ ▼, ↵, * = JA; TM550 ◀ (auf/zurueck), ▲ ▼, OK/▶."""
+        sim, stack = self.sim, self.tr["menu"]
+        cp = sim.device == "cp545"
+        if not stack:
+            if cp and k == "F":
+                stack.append(self._cp_menu_main())
+            elif not cp and k == "◀":
+                stack.append(self._tm_menu_run())
+            return
+        node = stack[-1]
+        back = (k == "F") if cp else (k == "◀")
+        if node["kind"] == "confirm":
+            if k == ".":
+                stack.pop()
+                node["yes"]()
+                stack.clear()
+            elif k in ("Enter",) or back or (not cp and k == "◀"):
+                stack.pop()
+            elif not cp and k == "OK":
+                stack.pop()
+                node["yes"]()
+                stack.clear()
+            return
+        if back:
+            if not cp and node.get("title") == "Run" and len(stack) == 1:
+                stack[-1] = self._tm_menu_main()  # ◀ aus Run fuehrt ins Hauptmenue
+                return
+            stack.pop()
+            return
+        if node["kind"] == "info":
+            if k == "▼":
+                node["top"] = min(max(0, len(node["lines"]) - 5), node["top"] + 1)
+            elif k == "▲":
+                node["top"] = max(0, node["top"] - 1)
+            elif k in ("Enter", "OK", "▶"):
+                stack.pop()
+            return
+        n = len(node["items"])
+        if k == "▼":
+            node["cur"] = min(n - 1, node["cur"] + 1)
+        elif k == "▲":
+            node["cur"] = max(0, node["cur"] - 1)
+        elif k in ("Enter", "OK", "▶"):
+            _lab, act = node["items"][node["cur"]]
+            if act is None:
+                return
+            res = act()
+            if res == "back":
+                stack.pop()
+            elif res == "close":
+                stack.clear()
+            elif isinstance(res, dict):
+                stack.append(res)
+
+    def _lcd_cp_lines(self):
+        """Menue im CP-Display: Titel, Strich, 5 Eintraege mit ▶, △/▽ am Rand."""
+        node = self.tr["menu"][-1]
+        if node["kind"] == "confirm":
+            body = node["text"].split("\n")
+            return [""] + [f"{b:^21}" for b in body] + [""] * (6 - len(body)) + ["JA -> *     NEIN -> ↵"]
+        title = node["title"]
+        lines = [f"{title:^21}", "─" * 21]
+        if node["kind"] == "info":
+            return lines + node["lines"][node["top"]:node["top"] + 6]
+        items, cur = node["items"], node["cur"]
+        top = max(0, min(cur - 2, len(items) - 5))
+        for i in range(top, min(len(items), top + 5)):
+            mark = "▶" if i == cur else " "
+            end = "△" if i == top and top > 0 else ("▽" if i == top + 4 and top + 5 < len(items) else "")
+            lines.append(f"{mark}{items[i][0][:19]:<19}{end}")
+        return lines
+
+    def _cp_home_lines(self, tod):
+        """Grundanzeige CP 545 (Fotos 25.11.2026): Laufnummer, Balken der gesperrten Eingaenge, Uhrzeit,
+        Zeitmessart; darunter naechste Start- und Zielnummer, unten das Boot auf der Strecke."""
+        sim, bar = self.sim, "▬▬"
+        on = sim.run_open
+        c1 = f"{sim.run:02d}" if on and sim.inputs.get(1) else bar
+        c2 = "  " if sim.inputs.get(2) else bar
+        c3 = "  " if sim.inputs.get(3) else bar
+        c4 = self.CP_MODE_ABBR.get(sim.mode, sim.mode[:2]) if on and sim.inputs.get(4) else bar
+        l1 = f"{c1} {c2} {fmt_tod(tod)[:8]} {c3} {c4}"
+        nxt = sim.next.get(CH_START) if sim.numbered() or not on else None
+        left = f"{nxt:>4} ◁" if nxt else "      "
+        fin = f"{sim.course[0][0]}" if sim.course and sim.course[0][0] else "____"
+        l2 = f"{left}{'▷ ' + fin:>15}"
+        l3 = "▯" + ("  ETHERNET AUS" if sim.eth_off else ("  KABEL AB" if sim.offline else ""))
+        entry = self.tr["buf"]
+        if self.tr["state"] == "R":
+            entry = f"{self.tr['nr']} R {self.tr['buf']}"
+        elif self.tr["state"] == "RE1":
+            entry = f"{self.tr['nr']} R E1 {self.tr['new']}"
+        if sim.course:
+            nr, t0, _s = sim.course[0]
+            el = sim.now_abs() - t0
+            bottom = f"{(str(nr) if nr else '') + '▷':<8}{el:>13.1f}"
+        elif sim.results:
+            nr, secs = sim.results[-1]
+            bottom = f"{nr} <  {nr}>{secs:>13.1f}"[:21]
+        else:
+            bottom = ""
+        return [l1, l2, l3, (self.tr.get("last") or "")[:21], "", f"> {entry}" if entry else "", "", bottom]
 
     def trainer_menu(self):
         sim = self.sim
@@ -10306,7 +11143,7 @@ class LiveRankingApp:
         sim = self.sim
         self.trainer_do(sim.restart, "Übungsfall: Gerät aus und wieder ein")
         if sim.device == "cp545":
-            self.trainer_paper("→ Ethernet ist aus: F › Einstellungen › Ethernet einschalten")
+            self.trainer_paper("→ Ethernet ist aus: F › Einstellungen › Ethernet › Std Connexion")
         else:
             self.trainer_paper("→ TM550 verbindet wieder, Uhrzeit am Gerät prüfen")
 
@@ -10991,6 +11828,8 @@ class LiveRankingApp:
                 if old:
                     p["notiz"] = old.get("notiz", "")
                     p["strafpunkte"] = old.get("strafpunkte", 0)
+                    if old.get("best_hand"):
+                        p["best_hand"] = True
             self.participants = parts
             self.start_order = order
             self._club_printed, self._print_prev_club = set(), None  # neue Startliste: Vereinsdruck neu
@@ -11558,6 +12397,11 @@ class LiveRankingApp:
         except (OSError, ValueError):
             data = {}
         settings = deep_merge(DEFAULT_SETTINGS, data)
+        # v1.21: Sperrnummer 999 wird einmal auf 9999 umgestellt (999 kann eine Testnummer sein)
+        if not settings.get("_mig_lock9999"):
+            if settings["timing"].get("lock_nr") == 999:
+                settings["timing"]["lock_nr"] = 9999
+            settings["_mig_lock9999"] = True
         if settings["wettkampf"] not in ("einzel", "paar"):
             settings["wettkampf"] = "einzel"
         if not re.fullmatch(r"[A-Za-z0-9_\-]{16,}", settings["web"]["key"]):
@@ -11875,8 +12719,14 @@ class LiveRankingApp:
                             "info": "  ·  ".join(x for x in (p.get("verein", ""), cat["name"] if cat else "") if x)})
         live = [self.live_labels[0].cget("text"), self.who_line(self.current_nr), self.live_labels[2].cget("text")]
         ziel = [self.ziel_labels[0].cget("text"), self.who_line(self.ziel_nr), self.ziel_labels[2].cget("text")]
+        show = self.settings["show"]
+        ticker = None
+        if show.get("ticker"):
+            ticker = [{"t": t, "text": text, "tag": tag if tag in ("warn", "ziel", "test") else ""}
+                      for t, text, tag in list(self.ticker)[:15]]
+        note = [t.strip() for t, _tag in self.note_segments() if t.strip()]  # leer ohne Schalter «Notizen»
         data = {"time": time.strftime("%H:%M:%S"), "live": live, "ziel": ziel, "cats": cats, "next": nxt,
-                "theme": THEME}
+                "ticker": ticker, "note": note, "theme": THEME}
         return json.dumps(data, ensure_ascii=False).encode("utf-8")
 
     def build_api(self):

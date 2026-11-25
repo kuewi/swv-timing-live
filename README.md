@@ -1,13 +1,13 @@
 # SWV Timing Live (SWV Live-Ranking)
 
-![Oberfläche v1.20.0](docs/screenshots/ui_v1.20.0.png)
+![Oberfläche v1.21.0](docs/screenshots/ui_v1.21.0.png)
 
 
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des
 TAG Heuer Chronoprinter CP 545 oder des ITS/Vola TM550 und zeigt Live-Zeit, Zieleinlauf, Ranglisten pro Kategorie,
 nächste Starter, Ereignis-Ticker und Statistik.
 
-**Dokumentation (PDF):** [Benutzerhandbuch](https://github.com/kuewi/swv-timing-live/raw/main/docs/handbuch/SWV_Live-Ranking_Benutzerhandbuch_v1.20.0.pdf) · [Training](https://github.com/kuewi/swv-timing-live/raw/main/docs/handbuch/SWV_Live-Ranking_Training_v1.20.0.pdf) · [Übersicht](docs/handbuch/README.md)
+**Dokumentation (PDF):** [Benutzerhandbuch](https://github.com/kuewi/swv-timing-live/raw/main/docs/handbuch/SWV_Live-Ranking_Benutzerhandbuch_v1.21.0.pdf) · [Training](https://github.com/kuewi/swv-timing-live/raw/main/docs/handbuch/SWV_Live-Ranking_Training_v1.21.0.pdf) · [Übersicht](docs/handbuch/README.md)
 
 ## Verbindung zum Zeitmessgerät
 
@@ -28,7 +28,7 @@ nummeriert die App die Starts aus der Startreihenfolge.
 ### TM550 (ITS/Vola)
 
 USB (FTDI, 9600 Baud) oder Ethernet (Port 7000, Adresse am Gerät unter Communication). Die App erkennt
-das Gerät an der Seriennummer. Einstellung am TM550: Modus TIMING, Start E1, Ziel E4, NO IDENTIFICATION,
+das Gerät an der Seriennummer. Einstellung am TM550: Modus TIMING, Start E1, Ziel E4, MANUAL IDENTIFICATION,
 Lauf offen, kurze Sperrzeit am Ziel. Die Startnummern vergibt die App aus der Startreihenfolge.
 Verlorene Zeilen holt sie per Download des offenen Laufs; der TM550 puffert bei Unterbruch nicht. Ist kein Lauf offen,
 öffnet «Lauf öffnen (TM550)» einen über die Verbindung.
@@ -51,8 +51,8 @@ brauchen dieselben Start- und Zielimpulse (Verteilung elektrisch mit ITS/TAG Heu
 
 ### Üben
 
-![Simulator CP 545 v1.20.0](docs/screenshots/sim_cp545_v1.20.0.png)
-![Simulator TM550 v1.20.0](docs/screenshots/sim_tm550_v1.20.0.png)
+![Simulator CP 545 v1.21.0](docs/screenshots/sim_cp545_v1.21.0.png)
+![Simulator TM550 v1.21.0](docs/screenshots/sim_tm550_v1.21.0.png)
 
 Unter Simulator: «Üben: CP 545 mit Tastatur» bzw. «Üben: TM550» öffnet ein nachgebautes Gerät
 (Vorderseite mit Display und Tastenfeld nach Foto, Rückseite mit Bananenbuchsen und Anschlüssen) und

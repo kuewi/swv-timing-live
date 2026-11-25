@@ -1,13 +1,13 @@
 # Training SWV Live-Ranking
 
-Stand: App v1.20.0. Alle Übungen laufen ohne echtes Gerät mit dem eingebauten Simulator. Die App ist mit dem
+Stand: App v1.21.0. Alle Übungen laufen ohne echtes Gerät mit dem eingebauten Simulator. Die App ist mit dem
 Simulator verbunden wie mit einem echten CP 545 oder TM550. Nachschlagen im [Benutzerhandbuch](benutzerhandbuch.md).
 
 | Stufe | Ziel | Dauer |
 | --- | --- | --- |
 | [1 Einsteiger](#stufe-1-einsteiger) | App kennen, Startliste laden, einen Lauf ohne Störung begleiten | 45 min |
-| [2 Fortgeschritten](#stufe-2-fortgeschritten) | Korrekturen: Fehlstart, falsche Nummer, Überholen, Fehlimpuls, DNS, DNF, DSQ | 60 min |
-| [3 Profi](#stufe-3-profi) | Störungen: Kabel ab, Gerät neu gestartet, Lauf neu geöffnet, Reserve-Gerät, Sperren | 60 min |
+| [2 Fortgeschritten](#stufe-2-fortgeschritten) | Korrekturen: Fehlstart, falsche Nummer, Überholen, Fehlimpuls, DNS, DNF, DSQ, Nummern bestätigen | 60 min |
+| [3 Profi](#stufe-3-profi) | Störungen: Kabel ab, Gerät neu gestartet, Lauf neu geöffnet, Reserve-Gerät, Sperren in App und am Gerät | 60 min |
 
 ## Vorbereitung
 
@@ -22,15 +22,19 @@ Simulator verbunden wie mit einem echten CP 545 oder TM550. Nachschlagen im [Ben
 | Teil des Fensters | Bedienung |
 | --- | --- |
 | Papierstreifen oben | was der CP druckt |
-| Display (8 Zeilen à 21 Zeichen) | Lauf, Zeitmessart, letzte Zeiten, nächste Nummer (`NEXT`) |
+| Display | wie am echten CP: oben Lauf, Balken der gesperrten Eingänge, Uhrzeit, NT/PT; dann nächste Start- und Zielnummer, Boote mit laufender Zeit |
 | Tastenfeld | wie am echten CP (E1 bis E4, Ziffern, R, \*, F, ON, Pfeile, ↵) |
-| grüne Tasten 1 bis 4 | Handimpuls auf Eingang 1 bis 4 |
+| grüne Tasten 1 bis 4 | Handimpuls auf Eingang 1 bis 4 (Zeile mit M, löst auch bei gesperrtem Eingang aus) |
+| rote Tasten darunter | Eingang sperren bzw. öffnen |
 | Rückseite | Klick auf eine Buchse = Impuls, Rechtsklick = Doppelkontakt, Klick auf Ethernet = Kabel ab/an |
 | Übungsfälle | Knöpfe für Störungen, siehe unten |
 | «Protokoll speichern» | Übungsprotokoll in `Dokumente\SWV Live-Ranking\training` |
 
-Taste **F** öffnet das Menü des Simulators: «Lauf schliessen», «Neuen Lauf öffnen», «Lauf mit gleicher Nummer neu
-öffnen», Zeitmessart (NET TIME, PTB SEQUENTIEL 1-4, START - FINISH), «Einstellungen › Ethernet einschalten».
+Taste **F** öffnet das Menü wie am echten CP 545 (Liste im [Benutzerhandbuch, Abschnitt 8.4](benutzerhandbuch.md#84-menü-f)).
+▲ ▼ wählen, ↵ öffnet, F geht zurück. Rückfragen: \* = JA, ↵ = NEIN.
+
+Der Simulator TM550 hat ebenfalls das echte Menü: ◀ öffnet Run, nochmals ◀ das Hauptmenü, OK oder ▶ wählt.
+SHIFT und dann E1 bis E4 schaltet den Eingang weiter: offen (grün), senden (rot, Pfeil nach unten), gesperrt (rot).
 
 ## Stufe 1: Einsteiger
 
@@ -56,7 +60,8 @@ Kontrolle: «Als nächstes am Start» zeigt Nr 1 zuoberst, drei leere Ranglisten
 
 ### Übung 1.3 Erster Lauf am CP 545
 
-1. Simulator CP 545 öffnen. Im Display steht `OP 01 NET TIME`, die App lädt Nr 1 (`NEXT 1`, in der App «im CP»).
+1. Simulator CP 545 öffnen. Oben im Display stehen Lauf 01 und NT, links in der zweiten Zeile «1 ◁»: die App hat
+   Nr 1 geladen (in der App «im CP»).
 2. Grüne Taste **1** (Start). Nr 1 erscheint unter «Auf Fahrstrecke», das blaue Feld zeigt die laufende Zeit.
 3. Grüne Taste **1** nochmals (Start Nr 2), dann nochmals (Start Nr 3).
 4. Grüne Taste **4** (Ziel). Nr 1 bekommt die Zeit, das grüne Feld ZIEL zeigt Rang und Zeit.
@@ -132,6 +137,15 @@ Kontrolle: das Boot ist wieder auf der Strecke, die nächste Zielzeit gehört ih
 | DSQ nach dem Ziel | Rechtsklick in der Rangliste › «Disqualifiziert (DSQ)» | |
 | DSQ zurücknehmen | Klick › «DSQ aufheben» | |
 
+### Übung 2.5a Nummern bestätigen
+
+1. In «Als nächstes am Start» Nr 3 anklicken, Shift + Klick auf Nr 6, dann **✓**. Vier grüne Haken.
+2. Ctrl + Klick auf Nr 5, **✕**: Haken weg.
+3. In der Startliste die Spalte «Bestätigt» bei einer Nummer mit x füllen und neu importieren: blauer Haken.
+4. Rechtsklick › «Alle Bestätigungen zurücksetzen …».
+
+Kontrolle: unten steht «x von y bestätigt», die nächste unbestätigte Nummer ist orange.
+
 ### Übung 2.6 Manuelle Zeit
 
 1. «Manuelle Zeiterfassung ▾», Startnummer eintragen, «Zeit manuell erfassen».
@@ -152,7 +166,7 @@ Kontrolle: die Zielzeit während des Unterbruchs ist in der Rangliste. Falls nic
 ### Übung 3.2 Gerät neu gestartet
 
 1. Übungsfall «Gerät neu gestartet».
-2. CP 545: Ethernet ist aus. **F › Einstellungen › Ethernet einschalten**. Die App verbindet wieder.
+2. CP 545: Ethernet ist aus. **F › Einstellungen › Ethernet › Std Connexion**. Die App verbindet wieder.
 3. TM550: verbindet wieder, Uhrzeit am Gerät prüfen.
 4. Fehlende Zeiten: «Lauf vom CP laden».
 
@@ -177,14 +191,27 @@ Kontrolle: die Zielzeit während des Unterbruchs ist in der Rangliste. Falls nic
 
 ![Ziel gesperrt](bilder/12_ziel_gesperrt.png)
 
-Bei gesperrtem Start lädt die App die Sperrnummer (Standard 999) in den CP.
+Kontrolle: am Simulator CP steht beim gesperrten Eingang ein Balken in der obersten Zeile.
+
+Bei gesperrtem Start lädt die App die Sperrnummer (Standard 9999) in den CP. Grüne Taste 1 bei gesperrtem Start:
+das Boot läuft als 9999, keine echte Nummer wird verbraucht.
+
+### Übung 3.5a Sperren am Gerät
+
+1. Simulator CP 545: rote Taste unter E4 drücken. Innert etwa 5 s stellt die App «Ziel sperren» ein, der Ticker
+   meldet es.
+2. Rote Taste nochmals: die App gibt das Ziel frei.
+3. Simulator TM550: SHIFT, dann E4. Die App sperrt das Ziel sofort. SHIFT, E4 noch zweimal: wieder offen.
+4. Rückseite: Klick auf die Buchse bei gesperrtem Eingang löst nichts aus.
+
+Kontrolle: Schalter in der App und Anzeige am Gerät stimmen immer überein.
 
 ### Übung 3.6 Präzision
 
-1. «Zeitmessung ▾ › Präzision (abschneiden)» auf 1/10 stellen, «Präzision am Gerät einstellen».
+1. «Zeitmessung ▾ › Präzision (abschneiden)» auf 1/100 stellen (Standard ist 1/10), «Präzision am Gerät einstellen».
 2. Boot starten und ins Ziel bringen.
 
-Kontrolle: Papier, Display und App zeigen eine Stelle nach dem Komma. Zeiten werden abgeschnitten, nicht gerundet.
+Kontrolle: Papier, Display und App zeigen zwei Stellen nach dem Komma. Zeiten werden abgeschnitten, nicht gerundet.
 
 ### Übung 3.7 Reserve-Gerät (mit echter Hardware)
 

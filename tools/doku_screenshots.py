@@ -163,7 +163,9 @@ def main():
             for k in ("E1", "E1", "E4"):
                 app.trainer_key(k)
                 pump(0.6)
-        pump(1.0)
+        pump(2.0)
+        win.lift()
+        pump(0.5)
         shot(f"21_trainer_{dev}_lauf", win)
         app.trainer_close()
         pump(0.5)

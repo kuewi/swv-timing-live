@@ -1,5 +1,23 @@
 # Änderungen
 
+## v1.21.0 (26.11.2026)
+Nach den Gerätetests P und Q vom 25.11.2026 (Eingänge sperren) und den Fotos der Gerätemenüs:
+- Start und Ziel sperren sperrt jetzt auch den Eingang am Gerät: CP 545 mit `#WP 006 0k 0` (schwarzer Balken), TM550 mit `#WP 006 0k 2` (rotes Kästchen). Freigeben öffnet ihn wieder. Die App liest den Zustand zurück und warnt, wenn er nicht stimmt. Gilt für Haupt- und Reserve-Gerät
+- Sperren am Gerät: rote Sperrtaste am CP 545 (Abfrage alle 5 s) und SHIFT + E1 bis E4 am TM550 (Meldung `&P 023` von selbst) schalten «Start sperren» bzw. «Ziel sperren» in der App mit, mit Eintrag im Ticker
+- Sperrnummer 9999 statt 999 (gespeicherte 999 wird einmal umgestellt). Sie bleibt bei gesperrtem Start vorgeladen, weil die grüne Taste am CP auch bei gesperrtem Eingang auslöst
+- Präzision ab Werk 1/10 (gespeicherte Einstellungen bleiben)
+- TM550: meldet `&P 002` andere Eingänge für Start/Ziel als die App, kommt eine Warnung
+- Falsche Uhr am Gerät: die Meldung nennt Datum und Uhrzeit des Geräts und den Menüweg (TM550: Synchronisation › Manual oder GPS, CP 545: F › Synchronisation)
+- USB ohne eine Zeile vom Gerät: Hinweis auf Baudrate und «9600 Bds Flow control» am TM550
+- «Als nächstes am Start»: ganze Liste der noch nicht gestarteten Nummern, Nummern bestätigen von Hand (grüner Haken) oder aus der Startliste/Onlinetool (Spalte «Bestätigt», blauer Haken, grün geht vor). Mehrfachauswahl mit Ctrl und Shift, Knöpfe «✓ Bestätigen», «Aufheben», «↓» zur nächsten Nummer, Zähler «x von y bestätigt», unbestätigte nächste Nummer orange, Rechtsklick mit «Alle Bestätigungen zurücksetzen»
+- Menü oben: Ereignis-Ticker in der linken Spalte wieder sichtbar («Als nächstes» und «Auf Fahrstrecke» kürzer, beide scrollen)
+- Browser-Anzeige: Ereignis-Ticker (letzte 15) und Speaker-Notiz des Boots auf der Strecke (nur mit Schalter «Notizen»)
+- Knopf «Handbuch ▾» neben «Fehler melden»: lädt Benutzerhandbuch bzw. Training (PDF) in der aktuellen Fassung von GitHub, ohne Internet die zuletzt geladene
+- «Netzwerkkarte am PC» nur bei Ethernet: beim Hauptgerät, bei Hauptgerät USB und Reserve Ethernet bei der Reserve
+- Simulator CP 545: Display wie am Gerät (Laufnummer, Balken der gesperrten Eingänge, Uhrzeit, NT/PT, nächste Start- und Zielnummer, Boot mit laufender Zeit), rote Sperrtasten, Menü F mit Hauptmenü, Einstellungen (16 Einträge), Zeitmessart (15), Rückfragen mit * = JA, Ethernet über Einstellungen › Ethernet › Std Connexion, Papier «Sock error RST 0» beim Trennen
+- Simulator TM550: Kästchen über E1 bis E4 (offen, senden, gesperrt), Eingangsnamen grün/blau, WAIT GPS, Zeilen pro Boot mit Start, Ziel und Laufzeit, Menü Run und Hauptmenü (11 Einträge mit Untermenüs), SHIFT + Ex schaltet 0 → 1 → 2 → 0 und meldet `&P 023`
+- Gerätetest: Gruppen P und Q (Eingänge lesen, sperren, Buchse und Taste)
+
 ## v1.20.0 (25.11.2026)
 Aus den Fehlerberichten vom 24.11.2026 (CP 545 über USB, TM550 1.48 als Reserve):
 - Reserve mit falscher Uhr (TM550 nach dem Firmware-Update: 07:39 statt 22:57, Tag 26001): Bis ein Impuls-Paar den genauen Uhrversatz liefert, schätzt die App ihn aus der Eingangszeit am PC (etwa ±0,3 s). Die Laufzeit hängt nie mehr an der Uhr der Reserve (vorher z.B. 522:17 bei Nr 204). Die Rückfrage nennt «Uhr der Reserve geschätzt»
