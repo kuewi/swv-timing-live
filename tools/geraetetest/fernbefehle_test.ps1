@@ -10,11 +10,12 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
-#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P)
+#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P Q)
 #   M: Zeitmessarten nacheinander (TM550: BASIC, TIMING, SPEED, LAP; CP: z.B. NET TIME, PTB SEQ)
 #   N: Nummern zuordnen (TM550-Smartphone-App, Identifikation AT START / MANUAL / AUTOMATIC, CP-Tastatur)
 #   P: Eingaenge gesperrt/offen: #RP 006 und 023, Sperren an der Tastatur (CP rote Tasten, TM550 SHIFT+Ex),
 #      Ereignismeldungen #EE 1, Sperren per #WP 006. Am Ende werden die Eingaenge wieder geoeffnet.
+#   Q: Sperren ueber die Verbindung mit #WP 023 (Status Eingaenge) und #WP 006, Sperrtaste bis zum Balken.
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
     [string]$Ip = "",
@@ -401,6 +402,50 @@ if (Ask "P  Eingaenge: Zustand lesen, an der Tastatur sperren und oeffnen, Meldu
     }
     [void](Send-Cmd "#EE 0")
     Note "P Ende" "Sind am Display alle benutzten Eingaenge wieder offen (j/n)?"
+}
+
+# Q: Sperren ueber die Verbindung. 023 = Status Eingaenge (CP-Handbuch 5.9.4: senden, gesperrt, empfangen;
+# TM550 1.48 meldet SHIFT+Ex als &P 023: 0 offen, 1 ?, 2 gesperrt). Danach immer den alten Wert zurueck.
+function Read-023 {
+    $d = ""
+    foreach ($l in (Send-Cmd "#RP 023")) { if ($l -match "^&P\s*023\s+(\d)\s+(\d)\s+(\d)\s+(\d)") { $d = ($Matches[1..4] -join " ") } }
+    return $d
+}
+if (Ask "Q  Sperren ueber die Verbindung: #WP 023 und #WP 006 auf Eingang 1, je Impuls ausloesen, danach zurueck") {
+    $o23 = Read-023
+    $q0 = Read-Inputs "Q0 vorher"
+    $script:summary += ("{0,-22} {1}" -f "Q0 023 vorher", $o23)
+    if ($Device -eq "cp545") {
+        [void](Observe "Q1 Sperrtaste" "rote Sperrtaste 1 druecken, bis bei E1 ein schwarzer Balken steht (mehrmals oder laenger halten)" 30)
+        [void](Read-Inputs "Q1 nach Sperrtaste")
+        Note "Q1 Display" "Steht bei E1 ein Balken? Was hast du gedrueckt (einmal, mehrmals, gehalten)?"
+        [void](Observe "Q1 Impuls" "Impuls auf Buchse 1 ausloesen: kommt eine Zeile?" 20)
+        [void](Observe "Q1 oeffnen" "rote Sperrtaste 1 wieder druecken, bis E1 wieder die Laufnummer zeigt" 30)
+        [void](Read-Inputs "Q1 wieder offen")
+    }
+    if ($o23) {
+        $rest = ($o23 -split " ")[1..3] -join " "
+        foreach ($v in @("2", "1")) {
+            Log "--- Q2 #WP 023 mit E1 = $v ---"
+            [void](Send-Cmd "#WP 023 $v $rest")
+            [void](Read-Inputs "Q2 nach 023 E1=$v")
+            Note "Q2 Display E1=$v" "Was zeigt das Display bei E1 jetzt?"
+            [void](Observe "Q2 Impuls E1=$v" "Impuls auf Eingang 1 ausloesen (Buchse, beim TM550 auch Taste E1): kommt eine Zeile?" 20)
+            [void](Send-Cmd "#WP 023 $o23")
+            [void](Read-Inputs "Q2 zurueck")
+        }
+    }
+    foreach ($v in @("0", "2")) {
+        Log "--- Q3 #WP 006 01 $v ---"
+        [void](Send-Cmd "#WP 006 01 $v")
+        [void](Read-Inputs "Q3 nach 006 01 $v")
+        Note "Q3 Display 006=$v" "Was zeigt das Display bei E1 jetzt?"
+        [void](Observe "Q3 Impuls 006=$v" "Impuls auf Eingang 1 ausloesen: kommt eine Zeile?" 20)
+    }
+    if ($o23) { [void](Send-Cmd "#WP 023 $o23") }
+    if ($q0[0] -match "^\d$") { [void](Send-Cmd ("#WP 006 01 " + $q0[0])) }
+    [void](Read-Inputs "Q Ende")
+    Note "Q Ende" "Ist E1 am Display wieder offen (j/n)? Sonst von Hand oeffnen."
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen

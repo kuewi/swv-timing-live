@@ -242,6 +242,21 @@ powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -I
 
 Logdatei zurückgeben wie in Schritt 10.
 
+### Ergebnis Gruppe P, 25.11.2026
+
+| Punkt | CP 545 (VB16) | TM550 (1.48) |
+| --- | --- | --- |
+| `#RP 006 01..04` | AK C, Werte 0/1 ohne erkennbaren Bezug zum Display (E1 offen und 0, später 1) | AK C, gleiche Werte wie 023 (0 offen, 2 gesperrt) |
+| `#RP 023` | immer `0 0 0 0` | Zustand pro Eingang, 0 = grünes Kästchen mit Pfeil nach oben, 2 = rotes Kästchen, 1 = dritter Zustand |
+| SHIFT + Ex bzw. rote Sperrtaste | kein Balken am Display, Impulse auf Buchse 1 und 4 kamen weiter | jeder Druck schickt sofort `&P 023 …` und schaltet weiter: 0 → 1 → 2 → 0 |
+| `#EE 1`, `#WC 013 1` | AK R | AK F (nicht nötig, 023 kommt von selbst) |
+| `#WP 006 04 0` | AK C, keine Wirkung (zurückgelesen 1, Display unverändert, Impulse kamen) | nicht geprüft: ab 21:48 keine Antwort mehr über Ethernet |
+| Display oberste Zeile | E1 Laufnummer (02), E2 und E3 Strich, E4 Zeitmessart (NT) | E1 und E4 grün mit Pfeil, E2 und E3 rot (TIMING) |
+
+Nachtest: Gruppe Q (`-Nur Q`) schreibt `#WP 023` und `#WP 006` auf Eingang 1 und prüft je mit einem Impuls.
+CP 545 zuerst mit der roten Sperrtaste, bis der schwarze Balken erscheint (Handbuch: «Die Eingänge sind gesperrt,
+wenn im LCD Display beim jeweiligen Kanal ein schwarzer Balken angezeigt wird»).
+
 ## Ergebnisse 23.11.2026 (CP 545 VB16, TM550 1.48)
 
 | Befehl | CP 545 (VB16) | TM550 (1.48) |
