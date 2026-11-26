@@ -165,6 +165,16 @@ function Ask($title) {
 $script:summary = @()
 Log "=== Fernbefehle-Test $Device, Pruefsumme: $UseCs ==="
 Open-Device
+if (-not $UseCs) {
+    # Ueber USB erwartet der CP 545 Befehle mit Pruefsumme, wenn er selbst mit Pruefsumme sendet (wie die App:
+    # keine Antwort auf #SN ohne Pruefsumme -> mit Pruefsumme weiter)
+    $sn = Send-Cmd "#SN"
+    if (-not ($sn | Where-Object { $_ -match "^(SN|AK)" })) {
+        $UseCs = $true
+        Log "Keine Antwort ohne Pruefsumme: Befehle ab jetzt mit Pruefsumme"
+        [void](Send-Cmd "#SN")
+    }
+}
 $fw = Read-Host "Firmware am Geraet (z.B. VB16 bzw. 1.48)"
 Log "Firmware laut Stefan: $fw"
 Start-Sleep -Milliseconds 500

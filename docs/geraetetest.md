@@ -341,6 +341,12 @@ powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -C
 | `#WC 007 03` | `AK F` | `AK F` |
 | Sync von Hand am CP | `&P 010 02 10 22:41 26/11/26 00` kommt von selbst (Ereignismeldung) | |
 
+Wiederholung CP 545 nach Aus/Ein (23:29, Ethernet): `#WC 014 04 0000 … 09826` und mit Nr 0001 (Tag 5-stellig): `AK R`.
+`#WC 008 04`: `AK C`, Nr 2 im Ziel (12.9). `#WC 007 02 23:34 26/11/26` (mit `/`): `AK F`. `#!T`: `AK C` ohne Zeile.
+Ergebnis: Der CP 545 VB16 kann über die Verbindung keine Zeit einfügen und keine Uhr stellen, nur einen Handimpuls
+auslösen. Über USB (23:40) antwortete er wieder auf nichts, schickte aber Zeilen mit Prüfsumme: das Skript fragt
+seither ohne Antwort mit Prüfsumme nach (wie die App).
+
 Danach antwortete der CP 545 weder über Ethernet (Papier «TCP Schliessen socket 0») noch über USB auf Befehle,
 schickte über USB aber noch gepufferte Zeilen. Die Läufe ab 22:58 sind deshalb nicht auswertbar.
 
