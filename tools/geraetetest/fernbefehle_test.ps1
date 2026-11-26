@@ -615,8 +615,8 @@ if (Ask "W  Zeit von aussen: #WC 014 Zielzeit einfuegen, #WC 008 Handimpuls Ziel
         [void](Send-Cmd ("#WC 014 04 0000 " + $fin + " " + $day))
         [void](Collect 3000 5000)
         Note "W1 Display" "Steht das Boot jetzt im Ziel mit Laufzeit 5 s (Display/Papier)? Was genau steht da?"
-        Note "W1 Nr" "Welche Startnummer hat das Boot auf der Strecke (Display)? Nur die Zahl"
-        $bn = (Read-Host "Nochmals die Startnummer (fuer den zweiten Versuch)").Trim()
+        $bn = (Read-Host "Welche Startnummer hat das Boot auf der Strecke (Display)? Nur die Zahl").Trim()
+        Log "Notiz W1 Nr: $bn"
         if ($bn -match "^\d+$") {
             [void](Send-Cmd ("#WC 014 04 " + $bn.PadLeft(4, "0") + " " + (Plus-Seconds $t[0] 6) + " " + $day))
             Note "W1 mit Nr" "Zweite eingefuegte Zeit (mit dieser Nr, Laufzeit 6 s): Boot jetzt im Ziel? Was zeigt das Geraet?"
