@@ -300,6 +300,26 @@ powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -C
 
 Logdatei zurückgeben wie in Schritt 10.
 
+## Test Gruppen U, V (Wiederholung #126, #127)
+
+Skript neu holen (Schritt 1). Lauf offen, Start E1, Ziel E4, E4 offen, App geschlossen. Jeder Schritt hat ein
+eigenes Fenster von 15 bis 20 s: nur das tun, was angezeigt wird, dann warten, bis die nächste Aufforderung kommt.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51 -Nur U,V
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Ip 192.168.1.50 -Nur U,V
+```
+
+| Schritt | Was das Skript macht | Was du tust |
+| --- | --- | --- |
+| U1 TM550 | `#WP 006 04 0`, dann `1`, dann `2`, je lesen | Kästchen über E4 beschreiben; dann genau einmal Buchse 4 (Taste nicht), dann genau einmal Taste E4 (Buchse nicht) |
+| U2 TM550 | liest nach jedem SHIFT | SHIFT + E4 einmal, Kästchen beschreiben, Buchse einmal, Taste einmal; das Ganze zweimal; dann SHIFT + E4 bis wieder grün |
+| U1 CP 545 | `#WP 006 04 0` (Balken) | Balken bestätigen; einmal Buchse 4, einmal grüne Taste 4 |
+| U2 CP 545 | liest nach der roten Taste | rote Sperrtaste 4 bis zum Balken; einmal Buchse, einmal grüne Taste; wieder öffnen |
+| V | Sperrzeit E4 auf 2 s, danach alter Wert | Buchse 4 zweimal innerhalb 1 s, 5 s warten, einmal; Anzahl Zeiten auf Display/Papier eintippen; dasselbe mit der Taste |
+
+Die Zusammenfassung zählt pro Fenster die Zeitzeilen («Buchse: 0 Zeit(en), Taste: 1 Zeit(en)»).
+
 ### Ergebnis Gruppen R, S, T, 26.11.2026 (CP 545 VB16 Ethernet, TM550 1.48 Ethernet)
 
 | Punkt | CP 545 | TM550 |

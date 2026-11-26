@@ -10,7 +10,7 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
-#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P Q R S T)
+#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P Q R S T U V)
 #   M: Zeitmessarten nacheinander (TM550: BASIC, TIMING, SPEED, LAP; CP: z.B. NET TIME, PTB SEQ)
 #   N: Nummern zuordnen (TM550-Smartphone-App, Identifikation AT START / MANUAL / AUTOMATIC, CP-Tastatur)
 #   P: Eingaenge gesperrt/offen: #RP 006 und 023, Sperren an der Tastatur (CP rote Tasten, TM550 SHIFT+Ex),
@@ -19,6 +19,8 @@
 #   R: Sperrzeit #WP 004 (Doppelkontakt), CP: rote Sperrtaste gegen Buchse, TM550: #WP 006 04 2.
 #   S: Uhr synchronisieren am Geraet (00:00 und Impuls): welche Zeilen kommen, Uhr danach.
 #   T: Ethernet-Menue CP 545 (Std/User Connexion): nur Fragen.
+#   U: Sperrzustaende einzeln: je Zustand (per Befehl und per Taste) zuerst NUR Buchse, dann NUR Taste.
+#   V: Sperrzeit 004 auf 2 s: zwei Impulse innerhalb 2 s, kommt nur einer? Je Buchse und Taste.
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
     [string]$Ip = "",
@@ -522,6 +524,65 @@ if ($Device -eq "cp545" -and (Ask "T  Ethernet-Menue CP 545: Std Connexion und U
     Note "T1 Std" "F > Einstellungen > Ethernet > Std Connexion: welche Adresse, Maske, Port zeigt der CP (abschreiben)?"
     Note "T2 Std an" "Ist Ethernet nach Std Connexion eingeschaltet (verbindet die App bzw. dieses Skript per IP) (j/n)?"
     Note "T3 User" "F > Einstellungen > Ethernet > User Connexion: welche Adresse, Maske, Port?"
+}
+
+# U: Sperrzustaende einzeln pruefen. Pro Zustand zwei getrennte Fenster: erst nur Buchse, dann nur Taste.
+function Count-T($lines) { return @($lines | Where-Object { $_ -match "^T[N+=]" }).Count }
+function Try-Both([string]$label, [int]$k) {
+    $hand = $(if ($Device -eq "tm550") { "Taste E$k am Geraet" } else { "gruene Taste $k am Geraet" })
+    $b = Observe "$label Buchse" "GENAU EINMAL Impuls ueber Buchse $k (Kabel/Taster), Taste am Geraet NICHT druecken" 15
+    $t = Observe "$label Taste" "GENAU EINMAL $hand druecken, Buchse NICHT benutzen" 15
+    $script:summary += ("{0,-22} {1}" -f "$label Ergebnis", ("Buchse: " + (Count-T $b) + " Zeit(en), Taste: " + (Count-T $t) + " Zeit(en)"))
+}
+if (Ask "U  Sperrzustaende E4 einzeln: per Befehl und per Taste, je nur Buchse und nur Taste") {
+    $o = Read-Inputs "U0 vorher"
+    if ($Device -eq "tm550") {
+        foreach ($v in @("0", "1", "2")) {
+            Log "--- U1 #WP 006 04 $v ---"
+            [void](Send-Cmd "#WP 006 04 $v")
+            [void](Read-Inputs "U1 006=$v")
+            Note "U1 Display $v" "Kaestchen ueber E4 jetzt: Farbe und Pfeil (z.B. gruen hoch, rot runter, rot ohne Pfeil)?"
+            Try-Both "U1 006=$v" 4
+        }
+        [void](Send-Cmd "#WP 006 04 0")
+        foreach ($n in 1..2) {
+            [void](Observe "U2 SHIFT $n" "SHIFT, dann E4 druecken (einmal), dann nichts mehr" 15)
+            [void](Read-Inputs "U2 nach SHIFT $n")
+            Note "U2 Display $n" "Kaestchen ueber E4 jetzt: Farbe und Pfeil?"
+            Try-Both "U2 SHIFT $n" 4
+        }
+        [void](Observe "U2 zurueck" "SHIFT, dann E4 nochmals (wieder gruen, Pfeil nach oben)" 15)
+    } else {
+        Log "--- U1 #WP 006 04 0 ---"
+        [void](Send-Cmd "#WP 006 04 0")
+        [void](Read-Inputs "U1 006=0")
+        Note "U1 Display" "Steht bei E4 ein Balken (j/n)?"
+        Try-Both "U1 006=0" 4
+        [void](Send-Cmd "#WP 006 04 1")
+        [void](Observe "U2 rote Taste" "rote Sperrtaste 4 druecken, bis bei E4 ein Balken steht" 20)
+        [void](Read-Inputs "U2 nach roter Taste")
+        Try-Both "U2 rote Taste" 4
+        [void](Observe "U2 zurueck" "rote Sperrtaste 4 wieder druecken, bis E4 offen ist" 20)
+    }
+    if ($o[3] -match "^\d$") { [void](Send-Cmd ("#WP 006 04 " + $o[3])) }
+    [void](Read-Inputs "U Ende")
+    Note "U Ende" "Ist E4 wieder offen (j/n)? Sonst von Hand oeffnen."
+}
+
+# V: Sperrzeit wirkt? Auf 2 s stellen, damit zwei Impulse von Hand sicher innerhalb der Sperrzeit liegen.
+if (Ask "V  Sperrzeit E4 auf 2 s: zwei Impulse innerhalb 2 s (Buchse, dann Taste), danach alter Wert") {
+    $o4 = Read-004 4
+    $two = $(if ($Device -eq "tm550") { "2000" } else { "0200" })
+    [void](Send-Cmd "#WP 004 04 $two")
+    $script:summary += ("{0,-22} {1}" -f "V 004 E4", ((Read-004 4) + " (vorher " + $o4 + ")"))
+    $hand = $(if ($Device -eq "tm550") { "Taste E4 am Geraet" } else { "gruene Taste 4 am Geraet" })
+    $b = Observe "V1 Buchse" "Buchse 4 ZWEIMAL innerhalb 1 s ausloesen, dann 5 s warten, dann noch EINMAL" 20
+    Note "V1 Display" "Wie viele Zielzeiten zeigt das Display bzw. Papier fuer diese 3 Impulse?"
+    $t = Observe "V2 Taste" "$hand ZWEIMAL innerhalb 1 s druecken, dann 5 s warten, dann noch EINMAL" 20
+    Note "V2 Display" "Wie viele Zielzeiten zeigt das Display bzw. Papier fuer diese 3 Tastendruecke?"
+    $script:summary += ("{0,-22} {1}" -f "V Ergebnis", ("Buchse: " + (Count-T $b) + " Zeit(en) fuer 3, Taste: " + (Count-T $t) + " Zeit(en) fuer 3"))
+    if ($o4 -match "^\d+$") { [void](Send-Cmd ("#WP 004 04 " + $o4.PadLeft(4, "0"))) }
+    $script:summary += ("{0,-22} {1}" -f "V 004 E4 zurueck", (Read-004 4))
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen
