@@ -97,7 +97,7 @@ def main():
     pump(0.8)
     close_dialogs()
     for nr, secs in TIMES.items():
-        app.register_final(nr, secs, f"{secs:.2f}", source="Demo")
+        app.register_final(nr, secs, m.fmt_secs(secs), source="Demo")
     pump(0.5)
 
     sim = m.SimCP()
@@ -107,8 +107,9 @@ def main():
     pump(3.0)
     for _ in range(2):
         sim.start()
-        pump(1.2)
+        pump(2.5)  # naechste Nummer ist vorgeladen, bevor das naechste Boot startet
     pump(2.0)
+    close_dialogs()
     shot("02_uebersicht")
 
     for key, name in (("verbindung", "03_verbindung"), ("zeitmessung", "04_zeitmessung"),

@@ -63,7 +63,7 @@ class E:  # Ereignis-Ersatz
 x, y = center(23); app.on_course_press(E(x, y))
 x2, y2 = center(21); app.on_course_motion(E(x, y + 20)); app.on_course_motion(E(x2, y2))
 check("Ziel beim Ziehen markiert", app._crs_drag["target"] == 21 and app.txt_course.tag_ranges("drop"))
-app.on_course_release(E(x2, y2)); pump(0.5)
+app.on_course_release(E(x2, y2)); pump(1.5)  # Befehle nach dem Verbinden (Sperren lesen) koennen vorne sein
 check("23 kommt als nächstes", [c[1] for c in app.course] == [23, 21, 22, 24])
 check("CP auf 23 nachgeführt", sim.next[4] == 23)
 check("Anzeige (überholt)", "(überholt)" in app.txt_course.get("1.0", "end"))

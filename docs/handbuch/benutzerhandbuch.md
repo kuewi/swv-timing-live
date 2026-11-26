@@ -1,6 +1,6 @@
 # Benutzerhandbuch SWV Live-Ranking
 
-Stand: App v1.21.0, CP 545 Firmware VB16, TM550 Firmware 1.48. Alle Namen in den Bildern sind erfunden.
+Stand: App v1.22.0, CP 545 Firmware VB16, TM550 Firmware 1.48. Alle Namen in den Bildern sind erfunden.
 
 ## Inhalt
 
@@ -62,9 +62,10 @@ Boote auf der Strecke), «In 8 Stunden» oder «Beim Beenden der App». Die App 
 | --- | --- |
 | Menüleiste oben | Version, «Fehler melden», «Handbuch ▾» (lädt Benutzerhandbuch oder Training als PDF in der aktuellen Fassung), ein Knopf pro Bereich (klappt nach unten auf), Hell/Dunkel (☀/☾), Seitenleiste anpinnen (⇥) |
 | Knopf «Verbindung» | grün: Haupt- und Reserve-Gerät verbunden, orange: eines, rot: keines |
+| linke Spalte (ab der Menüleiste) | «Als nächstes am Start» (alle noch nicht gestarteten, mit Bestätigung, füllt die Höhe), «Auf Fahrstrecke» (eine Zeile pro Boot: Nr und Name, das nächste im Ziel grün mit ▸), «Empfangene Daten» |
 | blaues Feld LAUFEND | Boot auf der Strecke mit laufender Zeit, Bestzeit der Kategorie, möglicher Rang, Schalter «Start sperren» |
-| grünes Feld ZIEL | letzter Zieleinlauf mit Zeit und Rang, Schalter «Ziel sperren» |
-| linke Spalte | «Als nächstes am Start» (alle noch nicht gestarteten, mit Bestätigung), «Auf Fahrstrecke», Ereignis-Ticker, «Empfangene Daten» |
+| grünes Feld ZIEL | letzter Zieleinlauf mit Zeit und Rang, Schalter «Ziel sperren». Ist das Feld zu schmal, fällt die Kategorie in der ersten Zeile weg |
+| rechts daneben | Speaker-Notiz des Boots auf der Strecke (gelb umrandet, nur wenn eine Notiz da ist) und Ereignis-Ticker |
 | Karten | eine Rangliste pro Kategorie mit Nummernbereich |
 
 Ein Klick auf einen Bereichsknopf öffnet das Ausklappfeld, ein zweiter Klick oder Wegfahren mit der Maus
@@ -181,7 +182,7 @@ Unter «Reserve-Gerät» Keines, Ethernet oder USB wählen und «Reserve verbind
 
 | Einstellung | Bedeutung |
 | --- | --- |
-| Prellzeit Start / Ziel (ms) | weitere Impulse am selben Eingang innerhalb dieser Zeit werden ignoriert (Doppelkontakt) |
+| Prellzeit Start / Ziel (ms) | weitere Impulse am selben Eingang innerhalb dieser Zeit werden ignoriert (Doppelkontakt). Die App schreibt den Wert beim Verbinden und bei jeder Änderung als Sperrzeit des Eingangs ans Gerät (CP 545: Einstellungen › Sperre, TM550: Input blocking time), damit auch das Gerät den Zweitimpuls nicht dem nächsten Boot gibt |
 | Mindestfahrzeit (s) | Zielimpulse vor dieser Fahrzeit gelten als Fehlimpuls, 0 = aus |
 | Eingang Start / Ziel (1 bis 4) | Eingang am Gerät für Start und Ziel, Standard Start 1, Ziel 4 |
 | Sperrnummer am Gerät | Nummer, die bei gesperrtem Start am Gerät vorgeladen wird, Standard 9999 |
@@ -189,7 +190,7 @@ Unter «Reserve-Gerät» Keines, Ethernet oder USB wählen und «Reserve verbind
 | Vereinswechsel auf CP drucken | der CP 545 druckt vor dem ersten Boot eines neuen Vereins eine Zeile |
 | Resultate aus Rohzeiten neu berechnen | nach Änderung von Prellzeit, Mindestfahrzeit oder Präzision |
 | Präzision (abschneiden) | 1 s, 1/10 (Standard), 1/100, 1/1000; Zeiten werden abgeschnitten, nicht gerundet |
-| Präzision am Gerät einstellen | schreibt dieselbe Präzision in den CP 545, damit Papier und App übereinstimmen |
+| Präzision am Gerät einstellen | schreibt dieselbe Präzision ins Gerät, damit Papier und App übereinstimmen. Geschieht auch beim Verbinden und bei jeder Änderung der Präzision von selbst (Haupt- und Reserve-Gerät) |
 
 Start oder Ziel sperren (z.B. Hindernis auf der Strecke, Arbeiten an der Lichtschranke):
 
@@ -205,9 +206,11 @@ Sperren am Gerät und in der App hängen zusammen:
 | Schalter in der App | CP 545: schwarzer Balken beim Eingang. TM550: rotes Kästchen. Die App liest den Zustand zurück |
 | rote Sperrtaste am CP 545 | die App merkt es innert etwa 5 s und stellt den Schalter um (Eintrag im Ticker) |
 | SHIFT + E1 bis E4 am TM550 | die App stellt den Schalter sofort um |
+| beim Verbinden am Hauptgerät gesperrt | die App schaltet «Start sperren» bzw. «Ziel sperren» ein (Eintrag «beim Verbinden»). Ist in der App gesperrt, sperrt die App am Gerät. Die Reserve bekommt den Zustand der App |
 
 Die grüne Handtaste am CP 545 löst auch bei gesperrtem Eingang aus. Deshalb lädt die App bei gesperrtem Start
-zusätzlich die Sperrnummer 9999 vor: ein solcher Start verbraucht keine echte Startnummer.
+zusätzlich die Sperrnummer 9999 vor: ein solcher Start verbraucht keine echte Startnummer. Beim Ziel gilt das
+gleiche; nach «Ziel freigeben» schreibt die App die Nummer des nächsten Boots wieder an den CP.
 
 ## 7. Während des Rennens
 
@@ -339,7 +342,8 @@ In TIMING lädt die App die nächste Startnummer vor, sonst vergibt sie die Numm
 einem Unterbruch nicht: fehlende Zeilen holt die App per Download des offenen Laufs. Ein Drucker geht nur über die
 Smartphone-App (Printer BLE), nicht über die App am PC.
 
-Hinweis: Bananenstecker an E4 können prellen (Doppelkontakt). Die Prellzeit Ziel fängt das ab.
+Hinweis: Bananenstecker an E4 können prellen (Doppelkontakt, im Test 0,1 s). Die Prellzeit Ziel fängt das ab;
+die App schreibt sie auch als Sperrzeit ans Gerät.
 
 ## 10. Hauptgerät und Reserve-Gerät
 
@@ -352,6 +356,11 @@ Beide Geräte hängen an denselben Start- und Zielimpulsen. Mögliche Kombinatio
   Reserve alle Zeiten.
 - «Wartezeit auf das Hauptgerät (s)»: so lange wartet die App auf den Impuls des Hauptgeräts, bevor sie den
   Impuls der Reserve verwendet.
+- Zwei Impulse gelten als derselbe, wenn sie nach Umrechnung der Uhr höchstens 0,05 s plus die Auflösung des
+  gröberen Geräts auseinanderliegen (CP 545 bei 1/10: Zeitzeilen 1/100; TM550 bei 1/10: Zeitzeilen 1/10, also
+  0,15 s). Bei mehreren passt der nächstgelegene.
+- Ein Zweitimpuls innerhalb der Prellzeit, der nur an einem Gerät ankommt (Doppelkontakt), wird ohne Rückfrage
+  verworfen. Ein Handimpuls am Hauptgerät (grüne Taste) erwartet keinen Impuls der Reserve.
 
 Hat nur die Reserve einen Impuls, fragt die App:
 
@@ -414,7 +423,8 @@ fehlende Zeiten holt «Lauf vom CP laden».
 
 | Anzeichen | Ursache | Abhilfe |
 | --- | --- | --- |
-| «Verbindung» rot, CP nicht gefunden | Ethernet am CP aus | F › Einstellungen › Ethernet › Std Connexion |
+| «Verbindung» rot, CP nicht gefunden | Ethernet am CP aus oder andere Adresse | F › Einstellungen › Ethernet › Std Connexion, Adresse unter «User Connexion» mit dem Suchbereich in der Meldung vergleichen |
+| Meldung «nur beim Reserve-Gerät» bei jedem Impuls | Uhr der Reserve springt oder Präzision verschieden | Präzision am Gerät einstellen, Uhr der Reserve stellen |
 | USB am TM550 stumm | Baudrate oder Flow control | Communication › USB › 9600 Bds |
 | Meldung «Uhr … geht … vor/nach» | Uhr am Gerät falsch | TM550: Synchronisation; CP 545: F › Synchronisation |
 | Verbindung da, aber keine Startnummern im CP | keine NET TIME oder kein Lauf offen | NET TIME wählen, Lauf öffnen |

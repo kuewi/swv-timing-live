@@ -6,6 +6,7 @@ import swv_live_ranking as m
 D = os.path.join(tempfile.gettempdir(), "swv_test_ad4f"); shutil.rmtree(D, ignore_errors=True); os.makedirs(D)
 m.data_dir = lambda: D
 m.DEFAULT_SETTINGS["timing"]["prec_digits"] = 2  # Bericht mit 1/100
+m.DEFAULT_SETTINGS["_mig_prec10"] = True
 ok = []
 def check(name, cond): ok.append(bool(cond)); print(("OK  " if cond else "FEHLER ") + name)
 root = tk.Tk(); root.geometry("1600x900+0+0")

@@ -1,5 +1,21 @@
 # Änderungen
 
+## v1.22.0 (26.11.2026)
+Aus den Fehlerberichten vom 26.11.2026 (CP 545 über USB als Hauptgerät, TM550 über USB als Reserve):
+- Ziel freigeben schreibt die echte Zielnummer wieder an den CP. Vorher blieb dort die Sperrnummer 9999: der Zielimpuls von Nr 1 ging am CP an 9999, Nr 1 lief am CP weiter (überholen von 202 schien dann schiefzugehen)
+- Abgleich Haupt- und Reserve-Gerät: Toleranz 0,05 s plus Auflösung des gröberen Geräts (TM550 auf 1/10 schneidet Zehntel ab, vorher fest 0,05 s: «nur beim Reserve-Gerät» bei 301, 302, 304 und «Reserve hat den Impuls nicht erhalten»). Bei mehreren Impulsen gilt der nächstgelegene (204/301 wurden vertauscht)
+- Doppelkontakt: Zweitimpuls innerhalb der Prellzeit nur an einem Gerät wird ohne Rückfrage «Abweichung» verworfen. Die Prellzeit Start/Ziel der App geht als Sperrzeit der Eingänge an CP 545 (1/100 s) und TM550 (1/1000 s), damit der CP einen Zweitimpuls nicht dem nächsten Boot gibt (00:59:26.18 ging am CP an Nr 301)
+- Handimpuls am Hauptgerät (z.B. Boot am CP mit der grünen Taste beenden): keine Warnung mehr, die Reserve habe ihn nicht erhalten
+- Beim Verbinden gelten gesperrte Eingänge des Hauptgeräts auch in der App (Start/Ziel sperren eingeschaltet, Eintrag «beim Verbinden»). Die Reserve bekommt den Zustand der App. Ist in der App gesperrt, wird am Gerät gesperrt
+- Präzision einmal auf 1/10 umgestellt (aus alten Versionen stand noch 1/100). Eine Änderung in der App geht bei verbundenem Gerät sofort an Haupt- und Reserve-Gerät
+- Resultate immer mit der Präzision der App (vorher nach «Präzision am Gerät einstellen» 1:30.30 statt 1:30.3, bei Nr 1 33.70). Die Warnung «CP meldet 22.6s, App rechnete 22.60s» kommt nur noch bei echter Abweichung
+- Menü oben: Spalte links ab der Menüleiste mit «Als nächstes am Start» (füllt die Höhe), «Auf Fahrstrecke» und «Empfangene Daten». Ereignis-Ticker und Speaker-Notiz rechts neben LAUFEND und ZIEL. Passt die Zeit im Feld ZIEL nicht, fällt die Kategorie weg (steht in der Zeile darunter)
+- «Auf Fahrstrecke»: eine Zeile pro Boot, nur Nr und Name, mindestens 3 Boote ohne Scrollen
+- Abfrage der Sperren und des Laufs alle 5 s und Nachfragen `#RT` nur noch im Diagnose-Log
+- CP-Suche: findet sie nichts, kommt ein Hinweis mit Adressbereich und Menüweg (F › Einstellungen › Ethernet › Std Connexion, Adresse unter «User Connexion»). Bei schon richtiger Adresse der Netzwerkkarte nur noch eine Suche
+- Programmfehler beim Aufklappen einer Auswahlliste im Menü oben behoben (KeyError 'popdown')
+- Uhrwarnung: beim TM550 1.18 (falsches Tagesfeld der Firmware) zählt wieder nur die Uhrzeit, ab 1.4 auch das Datum
+
 ## v1.21.0 (26.11.2026)
 Nach den Gerätetests P und Q vom 25.11.2026 (Eingänge sperren) und den Fotos der Gerätemenüs:
 - Start und Ziel sperren sperrt jetzt auch den Eingang am Gerät: CP 545 mit `#WP 006 0k 0` (schwarzer Balken), TM550 mit `#WP 006 0k 2` (rotes Kästchen). Freigeben öffnet ihn wieder. Die App liest den Zustand zurück und warnt, wenn er nicht stimmt. Gilt für Haupt- und Reserve-Gerät

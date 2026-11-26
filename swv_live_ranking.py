@@ -74,7 +74,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.21.0"
+APP_VERSION = "1.22.0"
 ORANGE = "#D9730D"   # Update geladen, wartet auf Installation
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
@@ -611,6 +611,8 @@ class RoundedPanel(tk.Canvas):
             self.inner.bind("<Configure>", self._fit)
 
     def _fit(self, _e=None):
+        if not self.fit:
+            return
         h = self.inner.winfo_reqheight() + 2 * self.pad
         if int(self.cget("height")) != h:
             self.configure(height=h)
@@ -2870,6 +2872,9 @@ class SimCP:
         # Eingaenge (Gruppe P/Q, 25.11.2026). CP 545 Parameter 006: 1 offen, 0 gesperrt; in NET TIME E2/E3 0.
         # TM550 006/023: 0 offen (gruen, Pfeil nach oben), 1 senden (rot, Pfeil nach unten), 2 gesperrt (rot).
         self.inputs = {1: 0, 2: 2, 3: 2, 4: 0} if device == "tm550" else {1: 1, 2: 0, 3: 0, 4: 1}
+        # Sperrzeit 004 wie im Gerätetest P: CP 1/100 s (E1 1.00, sonst 0.10), TM550 1/1000 s (0.100)
+        self.block = {k: 100 for k in range(1, 5)} if device == "tm550" else {1: 100, 2: 10, 3: 10, 4: 10}
+        self.cmds = []  # empfangene Befehle (Tests)
         self.manual = None        # Impuls von der Taste am Geraet (M1..M4) statt von der Buchse
         self.err_msgs = True      # CP: Einstellungen › Error Messages EIN druckt Socket-Fehler
         self.gps_sync = False     # TM550: WAIT GPS bis zur Synchronisation
@@ -2967,6 +2972,16 @@ class SimCP:
     def _cmd(self, t, c):
         p = t.split()
         if not p:
+            return
+        self.cmds = (self.cmds + [t])[-400:]
+        if p[:2] in (["#RP", "004"], ["#WP", "004"]) and len(p) >= 3:
+            k = int(p[2])
+            if p[0] == "#WP" and len(p) >= 4:
+                self.block[k] = max(0, min(9999, int(p[3])))
+                self.send("AK C", c)
+            else:
+                self.send(f"&P 004 {k:02d} {self.block.get(k, 0):04d}", c)
+                self.send("AK C", c)
             return
         if self.device == "tm550":
             return self._cmd_tm550(t, p, c)
@@ -4925,6 +4940,8 @@ class LiveRankingApp:
         font = font or self._label_font(label)
         if width is None:
             width = label.winfo_width() - 6
+        if isinstance(text, (list, tuple)):  # Varianten, laengste zuerst: die erste, die ganz passt
+            text = next((t for t in text if fit_text(font, t, width) == t), text[-1])
         self._set(label, text=fit_text(font, text, width), **kw)
 
     def _label_font(self, label):
@@ -4982,7 +4999,10 @@ class LiveRankingApp:
         canvas.bind("<Configure>", lambda e: (canvas.itemconfigure(win, width=e.width), update_scroll()))
 
         def on_wheel(event):
-            w = self.root.winfo_containing(event.x_root, event.y_root)
+            try:
+                w = self.root.winfo_containing(event.x_root, event.y_root)
+            except KeyError:  # ueber einer offenen Combobox-Liste
+                return
             if w is None:
                 return
             if event.num == 4:
@@ -5008,17 +5028,22 @@ class LiveRankingApp:
         # Hauptbereich
         main = tk.Frame(self.root, bg=BG)
         main.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(0, 10), pady=10)
-        main.columnconfigure(0, weight=1)
+        main.columnconfigure(1, weight=1)
         main.rowconfigure(2, weight=1)
         self.main = main
         # Menueleiste oben (Layout «top»): je Abschnitt der Seitenleiste ein Knopf mit Ausklappfeld
         self.topbar = tk.Frame(main, bg=BG)
-        self.topbar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self.topbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
 
         status = tk.Frame(main, bg=BG)
-        status.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        status.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
         status.columnconfigure(0, weight=1, uniform="status")
         status.columnconfigure(1, weight=1, uniform="status")
+        self.status_row = status
+        # Spalte links (Menue oben, Fehlerbericht 26.11.2026): Ticker und Notiz rechts neben LAUFEND/ZIEL,
+        # so hoch wie die beiden Felder
+        self.top_side = tk.Frame(status, bg=BG, width=400, height=1)
+        self.top_side.pack_propagate(False)
         self.banner_locks = {}
         self.live_labels = self._status_box(status, 0, BLUE, "LAUFEND: -", lock=("lock_start", "Start sperren"))
         self.ziel_labels = self._status_box(status, 1, GREEN, "ZIEL: -", lock=("lock_finish", "Ziel sperren"))
@@ -5026,7 +5051,7 @@ class LiveRankingApp:
         self.lbl_ziel = self.ziel_labels[0]
 
         content = tk.Frame(main, bg=BG)
-        content.grid(row=2, column=0, sticky="nsew")
+        content.grid(row=2, column=0, columnspan=2, sticky="nsew")
         content.columnconfigure(0, weight=1)
         content.rowconfigure(0, weight=1)
         self.content = content
@@ -5039,7 +5064,9 @@ class LiveRankingApp:
         self.cards_win = self.cards_canvas.create_window(0, 0, window=self.cards_area, anchor="nw")
         self.cards_canvas.bind("<Configure>", lambda e: self.schedule_font_scale())
 
-        self.right_panel = tk.Frame(content, bg=BG, width=400, height=240)
+        # Eltern main: die Spalte steht im Menue oben neben LAUFEND/ZIEL und Karten (ab der Menueleiste),
+        # sonst im Kartenbereich (in_=content)
+        self.right_panel = tk.Frame(main, bg=BG, width=400, height=240)
         self.right_panel.grid_propagate(False)
         self.right_panel.pack_propagate(False)
         self.panel_next, self.txt_next = self._panel(self.right_panel, "Als nächstes am Start", NEXT_COUNT * 2 + 3,
@@ -5066,15 +5093,15 @@ class LiveRankingApp:
         self.txt_course.tag_configure("drop", background=mix(PANEL, BLUE, 0.45))
         self.txt_course.tag_configure("dragged", foreground=MUTED)
         self._crs_drag = None
-        self.txt_course.tag_configure("next", foreground=GREEN_TEXT, font=self.f_panel_bold)
+        self.txt_course.tag_configure("next", foreground=GREEN_TEXT, font=self.f_panel_bold, spacing1=6)
         self.txt_course.tag_configure("warn", foreground=ORANGE)
-        self.panel_note, self.txt_note = self._panel(self.right_panel, "Notiz", 3)
+        self.panel_note, self.txt_note = self._panel(main, "Notiz", 3)
         self.panel_note.set_outline(GOLD, 2)
         self.txt_note.configure(font=self.f_ticker, fg=TEXT)
         self.txt_note.tag_configure("nr", font=self.f_ticker_bold, foreground=GOLD, spacing1=0)
         self.txt_note.tag_configure("sub", font=self.f_ticker_time, foreground=MUTED)
         self._note_visible = False
-        self.panel_ticker, self.txt_ticker = self._panel(self.right_panel, "Ereignis-Ticker", 6, fit=False)
+        self.panel_ticker, self.txt_ticker = self._panel(main, "Ereignis-Ticker", 6, fit=False)
         self.panel_stats, self.txt_stats = self._panel(self.right_panel, "Statistik", 9)
         # Ticker: groessere, kontrastreichere Schrift (Punkt 9)
         self.txt_ticker.configure(font=self.f_ticker, fg=TEXT, spacing1=0, spacing3=0)
@@ -5249,7 +5276,9 @@ class LiveRankingApp:
             self.log_box.pack_configure(fill="both", expand=True, padx=0, pady=(6, 0))
             lf.configure(height=int(170 * self.ui_scale))
             lf.pack_propagate(False)
-            lf.pack(in_=self.right_panel, side="bottom", fill="x")
+            first = [w for w in self.right_panel.pack_slaves() if w is not lf]
+            # ganz unten: als erstes gepackt (side bottom stapelt in Packreihenfolge von unten nach oben)
+            lf.pack(in_=self.right_panel, side="bottom", fill="x", **({"before": first[0]} if first else {}))
             lf.lift()
             self.log_box._redraw()
         if hasattr(self, "cards_area"):
@@ -5331,8 +5360,11 @@ class LiveRankingApp:
                 so = self.side_outer
                 x0, y0 = so.winfo_rootx(), so.winfo_rooty()
                 inside = x0 - 40 <= px <= x0 + so.winfo_width() + 40 and y0 - 60 <= py <= y0 + so.winfo_height()
-                w = self.root.winfo_containing(px, py)
-                foreign = w is not None and w.winfo_toplevel() is not self.root
+                try:
+                    w = self.root.winfo_containing(px, py)
+                    foreign = w is not None and w.winfo_toplevel() is not self.root
+                except KeyError:  # offene Auswahlliste einer Combobox (Tk-intern .popdown): haelt das Feld offen
+                    foreign = True
                 if not inside and not foreign and self.root.grab_current() is None:
                     self.close_dropdown()
         except tk.TclError:
@@ -5376,8 +5408,11 @@ class LiveRankingApp:
                 if inside_root and 0 <= x <= int(14 * self.ui_scale):
                     self.side_show()
             else:
-                w = self.root.winfo_containing(px, py)
-                foreign = w is not None and w.winfo_toplevel() is not self.root
+                try:
+                    w = self.root.winfo_containing(px, py)
+                    foreign = w is not None and w.winfo_toplevel() is not self.root
+                except KeyError:  # offene Combobox-Liste
+                    foreign = True
                 busy = self.root.grab_current() is not None or foreign
                 if not busy and (x > self.side_w + int(24 * self.ui_scale) or not inside_root or x < -40):
                     self.side_hide()
@@ -5540,7 +5575,7 @@ class LiveRankingApp:
             row=3, column=1, sticky="e", padx=(6, 0), pady=(2, 6))
         self.lbl_eth_hint = self._label(eth, f"PC erhält {PC_IP}, der CP hat ab {CP_NET}{CP_FIRST}. "
                                              "Ethernet am CP nach jedem Einschalten wieder einschalten "
-                                             "(F › Einstellungen › Ethernet). "
+                                             "(F › Einstellungen › Ethernet › Std Connexion). "
                                              "Ohne Adminrechte im Betrieb: in Windows bei der Netzwerkkarte "
                                              f"unter IPv4 › Alternative Konfiguration {PC_IP} / {PC_MASK} "
                                              "eintragen. TM550 (ITS/Vola): am Gerät IP 192.168.1.51 einstellen, "
@@ -5903,8 +5938,70 @@ class LiveRankingApp:
             if val != ts[key]:
                 ts[key] = val
                 self.log(f"Zeitmessung: {key.replace('_', ' ')} = {val:g}", tag="ok")
+                if key.startswith("prell_"):
+                    self.device_blocking_write()
         apply_channels(ts)
         self.save_settings()
+
+    @staticmethod
+    def blocking_value(device, ms):
+        """Sperrzeit des Eingangs (Parameter 004): CP 545 in 1/100 s, TM550 in 1/1000 s (Gruppe P, 25.11.2026)."""
+        return max(0, min(9999, int(ms) // 10 if device == "cp545" else int(ms)))
+
+    def _blocking_when_idle(self):
+        self.device_blocking_write(("A",))
+
+    def cp_when_idle(self, fn, tries=0):
+        """fn ausfuehren, wenn das Hauptgeraet nichts zu tun hat und gerade kein Impuls kam (Befehle mit tiefer
+        Prioritaet: das Vorladen der naechsten Startnummer geht vor)."""
+        if not self.main_connected():
+            return
+        busy = self.cp_inflight is not None or self.cp_cmds or time.time() - getattr(self, "cp_last_imp", 0) < 3
+        if busy and tries < 120:
+            self.root.after(500, lambda: self.cp_when_idle(fn, tries + 1))
+            return
+        fn()
+
+    def device_blocking_write(self, devs=("A", "B")):
+        """Prellzeit Start/Ziel der App als Sperrzeit der Eingaenge an die Geraete (Fehlerbericht 26.11.2026:
+        Bananenstecker an E4 prellt 0,1 s, der CP ordnete den Zweitimpuls dem naechsten Boot zu)."""
+        ts = self.tset()
+        for ch, key in ((CH_START, "prell_start_ms"), (CH_FINISH, "prell_finish_ms")):
+            ms = ts.get(key, 300)
+            if "A" in devs and self.main_connected() and self.cp_device in ("cp545", "tm550"):
+                dev, name, val = self.cp_device, self.dev_name(), self.blocking_value(self.cp_device, ms)
+
+                def check(info, ch=ch, val=val, name=name):
+                    try:
+                        got = int(info["values"][1])
+                    except (IndexError, ValueError):
+                        return
+                    if got == val:
+                        sec = got / (100.0 if dev == "cp545" else 1000.0)
+                        DIAG.info(f"{name}: Sperrzeit Eingang E{ch} {sec:g} s gesetzt")
+                    else:
+                        self.log(f"{name}: Sperrzeit Eingang E{ch} meldet {got} statt {val}. Am Gerät unter "
+                                 + ("Einstellungen › Sperre" if dev == "cp545" else "Input blocking time")
+                                 + " prüfen.", tag="warn")
+
+                def failed(r, ch=ch, name=name):
+                    if getattr(self, "_block_fail_told", None) != name:  # einmal pro Geraet
+                        self._block_fail_told = name
+                        self.log(f"{name}: Sperrzeit Eingang E{ch} nicht gesetzt ({r}). Prellzeit wirkt nur in "
+                                 "der App.", tag="warn")
+
+                def read(ch=ch, check=check):
+                    self.cp_query(f"#RP 004 {ch:02d}", ("param", "004", ch), on_ok=check)
+
+                def write(ch=ch, val=val, read=read, failed=failed):
+                    self.cp_query(f"#WP 004 {ch:02d} {val:04d}", "ack",
+                                  on_ok=lambda _i: self.cp_when_idle(read), on_fail=failed)
+
+                self.cp_when_idle(write)
+            if "B" in devs and self.backup_connected() and self.cp_b_device in ("cp545", "tm550"):
+                val = self.blocking_value(self.cp_b_device, ms)
+                DIAG.debug(f"CP B> #WP 004 {ch:02d} {val:04d}")
+                self.cp_b.send(f"#WP 004 {ch:02d} {val:04d}")
 
     def set_prec_digits(self):
         """Nachkommastellen der Resultate. Es wird abgeschnitten wie am Geraet, nicht gerundet."""
@@ -5922,6 +6019,8 @@ class LiveRankingApp:
                  "Rohzeiten neu berechnen».", tag="ok")
         self._rank_cache = None
         self.on_data_changed(save=False)
+        if self.cp is not None and self.cp.connected:  # verbundenes Geraet sofort mitstellen
+            self.cp_write_precision(auto=True)
 
     def prec_write_value(self, digits, device=None):
         """Wert fuer #WP 001 und erwarteter Rueckgabewert. CP 545 (VB08/VB16, Test 24.11.2026): geschrieben n
@@ -5987,8 +6086,8 @@ class LiveRankingApp:
         ts[key] = bool(on)
         self.save_settings()
         self.cp_lock_preload(key, ts[key])
-        if not from_device:
-            self.device_lock_write(key, ts[key])
+        # am Hauptgeraet gesperrt: Reserve nachfuehren; in der App gesperrt: beide Geraete
+        self.device_lock_write(key, ts[key], devs=("B",) if from_device else ("A", "B"))
         for sw in (self.timing_switches.get(key), (getattr(self, "banner_locks", {}).get(key) or (None, None))[1]):
             if sw is not None:
                 sw.set(ts[key])
@@ -6012,10 +6111,11 @@ class LiveRankingApp:
     def value_locked(device, value):
         return value != 0 if device == "tm550" else value == 0
 
-    def device_lock_write(self, key, on):
+    def device_lock_write(self, key, on, devs=("A", "B")):
         ch = CH_START if key == "lock_start" else CH_FINISH
         exp = self.__dict__.setdefault("_dev_lock_expect", {})
-        if self.eth_mode() and self.cp is not None and self.cp.connected and self.cp_device in ("cp545", "tm550"):
+        if ("A" in devs and self.eth_mode() and self.cp is not None and self.cp.connected
+                and self.cp_device in ("cp545", "tm550")):
             dev, name = self.cp_device, self.dev_name()
             exp[("A", ch)] = bool(on)
 
@@ -6034,17 +6134,19 @@ class LiveRankingApp:
                           on_ok=lambda _i: self.cp_query(f"#RP 006 {ch:02d}", ("param", "006", ch), on_ok=check),
                           on_fail=lambda r: self.log(f"{name}: Eingang E{ch} am Gerät nicht "
                                                      f"{'gesperrt' if on else 'geöffnet'} ({r})", tag="warn"))
-        if self.backup_connected() and self.cp_b_device in ("cp545", "tm550"):
+        if "B" in devs and self.backup_connected() and self.cp_b_device in ("cp545", "tm550"):
             exp[("B", ch)] = bool(on)
             self.cp_b.send(f"#WP 006 {ch:02d} {self.lock_value(self.cp_b_device, on)}")
             self.root.after(800, lambda: self.cp_b.send(f"#RP 006 {ch:02d}") if self.backup_connected() else None)
 
-    def device_lock_read(self, dev="A"):
+    def device_lock_read(self, dev="A", silent=False):
         """Zustand von Start- und Zieleingang lesen (CP 545 meldet Aenderungen nicht von selbst)."""
         for ch in (CH_START, CH_FINISH):
             if dev == "A":
-                self.cp_query(f"#RP 006 {ch:02d}", ("param", "006", ch))
+                self.cp_query(f"#RP 006 {ch:02d}", ("param", "006", ch), silent=silent)
             elif self.backup_connected():
+                if silent:
+                    self._rx_silent_b = time.time() + 1.5
                 self.cp_b.send(f"#RP 006 {ch:02d}")
 
     def device_param_event(self, info, dev):
@@ -6079,9 +6181,16 @@ class LiveRankingApp:
                                                                                        "Gerät"))
         app_on = bool(self.tset().get(key))
         if prev is None:
-            if locked != app_on:  # erster Wert nach dem Verbinden: nur melden (CP lieferte anfangs teils 0)
-                self.log(f"{name}: Eingang E{ch} ({what}) ist am Gerät {'gesperrt' if locked else 'offen'}, "
-                         f"in der App {'gesperrt' if app_on else 'offen'}.", tag="warn")
+            # erster Wert nach dem Verbinden (Fehlerbericht 26.11.2026): ist in der App gesperrt, schreibt die App
+            # die Sperre ans Geraet (siehe on_cp_connected). Sonst gilt der Zustand des Hauptgeraets, die Reserve
+            # bekommt den Zustand der App.
+            if locked != app_on:
+                if dev == "A" and locked:
+                    self.set_lock(key, True, from_device=f"{name} beim Verbinden")
+                else:
+                    self.log(f"{name}: Eingang E{ch} ({what}) ist am Gerät {'gesperrt' if locked else 'offen'}, "
+                             f"in der App {'gesperrt' if app_on else 'offen'}: Gerät wird angepasst.", tag="warn")
+                    self.device_lock_write(key, app_on, devs=(dev,))
             return
         if prev == locked:
             return
@@ -6122,6 +6231,8 @@ class LiveRankingApp:
         nr = self.lock_number()
         if on:
             if self.cp_caps.get("preload") and (ch == CH_START or self.cp_device != "tm550"):
+                if ch == CH_FINISH:
+                    self._cp_finish_dirty = True  # nach dem Freigeben echte Zielnummer neu schreiben
                 self.cp_write_param("026", ch, nr, "Sperrnummer")
             if self.backup_preload_ok() and (ch == CH_START or self.cp_b_device != "tm550"):
                 self.cp_b.send(f"#WP 026 {ch:02d} {nr:04d}")
@@ -6135,7 +6246,8 @@ class LiveRankingApp:
         else:
             self.cp_finish_want = None
             self._cp_finish_pending = None
-            self.cp_sync_finish()
+            # am CP steht noch die Sperrnummer als naechstes Ziel: echte Nummer in jedem Fall neu schreiben
+            self.cp_sync_finish(force=True)
 
     def ask_recompute(self):
         if not any(k[2] == CH_FINISH for k in self.cp_recs):
@@ -6326,10 +6438,28 @@ class LiveRankingApp:
                 opts = {"side": "top", "fill": "x", "pady": (0, 6)}
             else:
                 opts = {"side": "left", "fill": "both", "expand": True, "padx": (0, 6)}
+            if self.left_column():
+                opts["pady"] = (0, 4)
             if ticker_packed:
                 opts["before"] = self.panel_ticker
+            else:
+                opts["in_"] = self.top_side if self.left_column() else self.right_panel
             self.panel_note.pack(**opts)
+            self.panel_note.tk.call("raise", self.panel_note._w)
         self.place_right_panel()
+        self.root.after_idle(self.fit_top_side)
+
+    def fit_top_side(self):
+        """Ticker/Notiz neben LAUFEND/ZIEL: mit Notiz so hoch, dass darunter noch zwei Ticker-Eintraege Platz
+        haben (die Reihe mit LAUFEND/ZIEL waechst dann mit)."""
+        try:
+            h = 1
+            if self.left_column() and self._note_visible:
+                h = self.panel_note.inner.winfo_reqheight() + 2 * self.panel_note.pad + int(96 * self.ui_scale)
+            if int(self.top_side.cget("height")) != h:
+                self.top_side.configure(height=h)
+        except (AttributeError, tk.TclError):
+            pass
 
     def apply_show_settings(self):
         show = self.settings["show"]
@@ -6341,7 +6471,14 @@ class LiveRankingApp:
         # Ereignis-Ticker ueber «Empfangene Daten» Platz fuer etwa 6 Eintraege hat
         left = self.left_column()
         self.txt_next.configure(height=4 if left else NEXT_COUNT * 2 + 3)
-        self.txt_course.configure(height=3 if left else 8)
+        # Spalte links: «Als naechstes» fuellt die freie Hoehe
+        self.panel_next.fit = not left
+        if left:
+            self.panel_next.configure(height=1)
+        else:
+            self.panel_next._fit()
+        self.panel_next._redraw()
+        self.txt_course.configure(height=4 if left else 8)
         for box in (self.panel_next, self.panel_course):  # Bedienhinweise in der schmalen Spalte weglassen
             lh = getattr(box, "hint_label", None)
             if lh is not None:
@@ -6351,18 +6488,33 @@ class LiveRankingApp:
                     lh.pack(fill="x", padx=12, before=box.holder)
         vis = dict(show)
         vis["course"] = self.eth_mode()
-        if self.panel_orient == "right":
+        rp = self.right_panel
+        if left:
+            # Spalte links ab der Menueleiste: Als naechstes (fuellt), Auf Fahrstrecke, Statistik; Ticker oben
+            # rechts neben LAUFEND/ZIEL
+            layout = ((self.panel_course, "course", "bottom", False, rp), (self.panel_stats, "statistik", "bottom",
+                                                                          False, rp),
+                      (self.panel_next, "naechste", "top", True, rp), (self.panel_ticker, "ticker", "top", True,
+                                                                        self.top_side))
+            for frame, key, side, expand, host in layout:
+                if vis.get(key):
+                    frame.pack(in_=host, side=side, fill="both" if expand else "x", expand=expand,
+                               pady=(6, 0) if side == "bottom" else (0, 0 if host is self.top_side else 6))
+                    frame.tk.call("raise", frame._w)
+        elif self.panel_orient == "right":
             layout = ((self.panel_next, "naechste", "top", False), (self.panel_course, "course", "top", False),
                       (self.panel_stats, "statistik", "bottom", False), (self.panel_ticker, "ticker", "top", True))
             for frame, key, side, expand in layout:
                 if vis.get(key):
-                    frame.pack(side=side, fill="both" if expand else "x", expand=expand,
+                    frame.pack(in_=rp, side=side, fill="both" if expand else "x", expand=expand,
                                pady=(6, 0) if side == "bottom" else (0, 6))
+                    frame.tk.call("raise", frame._w)
         else:
             for frame, key in ((self.panel_next, "naechste"), (self.panel_course, "course"),
                                (self.panel_ticker, "ticker"), (self.panel_stats, "statistik")):
                 if vis.get(key):
-                    frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
+                    frame.pack(in_=rp, side="left", fill="both", expand=True, padx=(0, 6))
+                    frame.tk.call("raise", frame._w)
         self.place_right_panel()
         for card in self.cards:
             for row in card["rows"]:
@@ -6383,19 +6535,33 @@ class LiveRankingApp:
     def place_right_panel(self):
         left = self.left_column()
         self.cards_canvas.grid_configure(column=1 if left else 0)
-        self.content.columnconfigure(0, weight=0 if left else 1)
         self.content.columnconfigure(1, weight=1 if left else 0)
+        self.content.columnconfigure(0, weight=0 if left else 1)
         if self.cards_sb.winfo_manager():
             self.cards_sb.grid_configure(column=2 if left else 1)
+        # Menue oben: Spalte links ab der Menueleiste, LAUFEND/ZIEL/Ticker und Karten rechts daneben
+        self.status_row.grid_configure(column=1 if left else 0, columnspan=1 if left else 2)
+        self.content.grid_configure(column=1 if left else 0, columnspan=1 if left else 2)
+        if left:
+            self.top_side.configure(width=int(self.right_panel.cget("width")))
+            self.top_side.grid(row=0, column=2, sticky="nsew", padx=(3, 6))
+        else:
+            self.top_side.grid_remove()
         if not self.any_panel() and not left:
             self.right_panel.grid_remove()
             return
         if left:
-            self.right_panel.grid(row=0, column=0, rowspan=1, columnspan=1, sticky="ns", padx=(0, 6), pady=6)
+            self.right_panel.grid(in_=self.main, row=1, column=0, rowspan=2, columnspan=1, sticky="ns",
+                                  padx=(0, 6), pady=(0, 6))
         elif self.panel_orient == "right":
-            self.right_panel.grid(row=0, column=2, rowspan=1, columnspan=1, sticky="ns", padx=(6, 6), pady=6)
+            self.right_panel.grid(in_=self.content, row=0, column=2, rowspan=1, columnspan=1, sticky="ns",
+                                  padx=(6, 6), pady=6)
         else:
-            self.right_panel.grid(row=1, column=0, rowspan=1, columnspan=3, sticky="ew", padx=6, pady=(6, 6))
+            self.right_panel.grid(in_=self.content, row=1, column=0, rowspan=1, columnspan=3, sticky="ew",
+                                  padx=6, pady=(6, 6))
+        self.right_panel.lift()
+        for pnl in (self.panel_ticker, self.panel_note):  # Kinder von main: ueber der Spalte halten
+            pnl.tk.call("raise", pnl._w)
 
     # ================================================================== #
     # Kategorie-Karten (Punkte 7 und 14)
@@ -6470,7 +6636,7 @@ class LiveRankingApp:
             self.cards_area.columnconfigure(c, weight=1 if c < nc else 0, uniform="col" if c < nc else "")
         if off:
             self.log_frame.grid(in_=self.cards_area, row=0, column=0, sticky="nsew", padx=0, pady=0)
-            self.log_frame.lift()
+            self.log_frame.tk.call("raise", frame._w)
         for i, card in enumerate(self.cards):
             j = i + off
             card["box"].grid(row=j // nc, column=j % nc, sticky="nsew", padx=6, pady=6)
@@ -6503,7 +6669,10 @@ class LiveRankingApp:
     def drag_motion(self, event):
         if not self._drag:
             return
-        target = self.card_from_widget(self.root.winfo_containing(event.x_root, event.y_root))
+        try:
+            target = self.card_from_widget(self.root.winfo_containing(event.x_root, event.y_root))
+        except KeyError:
+            target = None
         if target is self._drag["card"]:
             target = None
         if target is not self._drag["target"]:
@@ -6628,7 +6797,8 @@ class LiveRankingApp:
         s = self.ui_scale
 
         # Status-Balken und Seitenpanels
-        sp = max(int(14 * s), min(int(52 * s), int(min(mw / 48, mh / 22))))
+        boxw = (mw - (2 * int(self.right_panel.cget("width")) if self.left_column() else 0)) / 2
+        sp = max(int(14 * s), min(int(52 * s), int(min(boxw / 23, mh / 22))))
         self.f_status.configure(size=-sp)
         self.f_status_name.configure(size=-max(int(12 * s), int(sp * 0.62)))
         self.f_status_sub.configure(size=-max(int(11 * s), int(sp * 0.55)))
@@ -6652,6 +6822,8 @@ class LiveRankingApp:
         if orient == "right":
             if int(self.right_panel.cget("width")) != panel_w:
                 self.right_panel.configure(width=panel_w)
+            if int(self.top_side.cget("width")) != panel_w:
+                self.top_side.configure(width=panel_w)
         else:
             panel_h = int(max(200 * s, min(320 * s, mh * 0.3)))
             if int(self.right_panel.cget("height")) != panel_h:
@@ -7069,7 +7241,9 @@ class LiveRankingApp:
         cat_name = cat["name"] if cat else "ohne Kategorie"
         pen = self.penalty(nr)
         pen_txt = f"  (+{pen} = {fmt_secs(self.total_secs(nr))}s)" if pen else ""
-        self._set_fit(big, f"ZIEL: Nr {nr} ({cat_name}) ➔ {res['str']}s{pen_txt}")
+        # schmales Feld: Kategorie weglassen (steht in der Zeile darunter), damit die Zeit sichtbar bleibt
+        self._set_fit(big, (f"ZIEL: Nr {nr} ({cat_name}) ➔ {res['str']}s{pen_txt}",
+                            f"ZIEL: Nr {nr} ➔ {res['str']}s{pen_txt}"))
         self._set_fit(sub1, self.participant_line(nr))
         info = []
         if self.settings["show"].get("einordnung") and cat:
@@ -7340,27 +7514,22 @@ class LiveRankingApp:
         elif not self.course:
             seg.append(("Kein Boot auf der Strecke\n", "sub"))
         n = len(self.course)
+        # eine Zeile pro Boot, nur Nr und Name (Fehlerbericht 26.11.2026: mindestens 3 Boote ohne Scrollen)
         for i, (tod, nr, _key) in reversed(list(enumerate(self.course))):
             p = self.participants.get(nr, {})
-            cat = self.category_of(nr)
             tag = f"crs{nr}"
-            seg.append((f"Nr {nr}   {self.running_text(tod)}   {display_name(p, mode) or '-'}\n", ("nr", tag)))
+            nxt = i == 0 and n > 1
+            moved = nxt and (self.finish_override == nr or "order" in self.cp_recs[_key])
+            seg.append((f"{'▸ ' if nxt else ''}Nr {nr}   {display_name(p, mode) or '-'}"
+                        f"{'  (überholt)' if moved else ''}\n", ("next" if nxt else "nr", tag)))
             if self.status.get(nr) == "DSQ":
                 seg.append(("DSQ, fährt noch ins Ziel (nicht klassiert)\n", ("warn", tag)))
             crec = self.cp_recs.get(_key)
             if crec and crec.get("cp_nr") and crec["cp_nr"] != nr and self.eth_mode():
                 seg.append((f"CP führt noch Nr {crec['cp_nr']}: am CP {crec['cp_nr']} R E1 {nr} Enter\n",
                             ("warn", tag)))
-            info = [x for x in (p.get("verein", ""), cat["name"] if cat else ("Test" if self.is_test(nr) else ""))
-                    if x]
-            seg.append(("  ·  ".join(info) + "\n", ("sub", tag)))
-            if i == 0 and n > 1:
-                moved = self.finish_override == nr or "order" in self.cp_recs[_key]
-                seg.append(("▸ als nächstes im Ziel" + ("  (überholt)" if moved else "") + "\n",
-                            ("next", tag)))
         rec = self.cp_recs.get(self.last_finish_key) if self.last_finish_key else None
         if rec and rec["status"] == "ok" and rec["nr"] in self.results:
-            seg.append(("\n", "sub"))
             seg.append((f"Zuletzt im Ziel: Nr {rec['nr']}  {self.results[rec['nr']]['str']}s\n", ("time", "lastfin")))
         pend = self.pending_impulses()
         self._pending_keys = pend
@@ -7373,6 +7542,11 @@ class LiveRankingApp:
                 where = "Start" if k[2] == CH_START else "Ziel"
                 seg.append((f"{where} {fmt_tod(r['abs'] % 86400)}  ({why.get(r['status'], r['status'])})\n",
                             ("warn", f"imp{j}")))
+        if self.left_column():
+            lines = sum(t.count("\n") for t, _tag in seg)
+            h = max(4, min(9, lines + 1))  # +1: Zeilenabstand (spacing1) der Bootzeilen
+            if int(self.txt_course.cget("height")) != h:
+                self.txt_course.configure(height=h)
         shape = (tuple(c[1] for c in self.course), self.last_finish_key, tuple(pend))
         at_bottom = self.txt_course.yview()[1] >= 0.98
         top = self.txt_course.yview()[0]
@@ -8201,15 +8375,17 @@ class LiveRankingApp:
         if not found and IS_WINDOWS and adapter and info is not None and not info.get("up", True):
             put("eth_fail", f"Netzwerkkarte «{adapter}» hat keine Verbindung (Windows: kein Kabel). Prüfen: "
                             "Kabel an PC und CP eingesteckt (Lämpchen an der Buchse?), CP eingeschaltet, Ethernet "
-                            "am CP eingeschaltet (F › Einstellungen › Ethernet), richtige Netzwerkkarte gewählt. "
+                            "am CP eingeschaltet (F › Einstellungen › Ethernet › Std Connexion), richtige Netzwerkkarte gewählt. "
                             "Danach ⟳ und nochmals versuchen.")
             return
         if not found and IS_WINDOWS and adapter and not os.environ.get("SWV_CP_HOSTS"):
             fresh = next((a for a in list_adapters() if a["name"] == adapter), None)
             ips = (fresh or info or {}).get("ips", [])
+            changed = False
             if any(ip.startswith(CP_NET) for ip in ips):
                 put("eth_log", (f"Netzwerkkarte «{adapter}» hat bereits {', '.join(ips)}", "ok"))
             else:
+                changed = True
                 put("eth_status", (f"Netzwerkkarte «{adapter}» auf {PC_IP} stellen, Windows fragt nach "
                                    "Berechtigung ...", "gold"))
                 put("net_pending", adapter)
@@ -8222,20 +8398,24 @@ class LiveRankingApp:
                     put("eth_fail", f"{PC_IP} ist nach 12 s noch nicht aktiv. Kabel zum CP prüfen.")
                     return
                 put("eth_log", (f"Netzwerkkarte «{adapter}» hat {PC_IP} / {PC_MASK}", "ok"))
-            put("eth_status", (f"CP suchen ({hosts[0]} bis {hosts[-1]}) ..." if len(hosts) > 1 else "CP suchen ...",
-                               "gold"))
-            found = scan_cps(hosts)
-            if not found:
-                # zweiter Versuch: Windows braucht nach der Umstellung manchmal einige Sekunden
-                time.sleep(2)
+            if changed:  # nur nach dem Umstellen nochmals suchen (sonst war die erste Suche schon gueltig)
+                put("eth_status", (f"CP suchen ({hosts[0]} bis {hosts[-1]}) ..." if len(hosts) > 1
+                                   else "CP suchen ...", "gold"))
                 found = scan_cps(hosts)
+                if not found:
+                    # zweiter Versuch: Windows braucht nach der Umstellung manchmal einige Sekunden
+                    time.sleep(2)
+                    found = scan_cps(hosts)
         put("eth_found", found)
+        hint = (f"Kein Gerät gefunden ({hosts[0]} bis {hosts[-1]}). CP 545: Ethernet nach jedem Einschalten "
+                "wieder einschalten (F › Einstellungen › Ethernet › Std Connexion), Adresse unter «User "
+                "Connexion» prüfen. Kabel eingesteckt? TM550: IP und Port unter Communication › Ethernet prüfen.")
         if not connect:
+            if not found:
+                put("eth_log", (hint, "warn"))
             return
         if not found:
-            put("eth_fail", "Kein Gerät gefunden. Am CP 545 muss Ethernet nach jedem Einschalten wieder "
-                            "eingeschaltet werden (F › Einstellungen › Ethernet). Kabel eingesteckt? "
-                            "TM550: IP und Port 7000 unter Communication › Ethernet prüfen.")
+            put("eth_fail", hint)
             return
         others = [f[0] for f in found if f[0] != avoid] or [found[0][0]]
         ip = want if want != avoid and any(f[0] == want for f in found) else others[0]
@@ -8338,7 +8518,7 @@ class LiveRankingApp:
             if self.cp.link != "usb" and not getattr(self, "_eth_on_told", False):
                 self._eth_on_told = True
                 self.log("Wurde der CP aus- und eingeschaltet? Dann Ethernet am CP wieder einschalten "
-                         "(F › Einstellungen › Ethernet).", tag="warn")
+                         "(F › Einstellungen › Ethernet › Std Connexion).", tag="warn")
             self.set_conn_status(f"CP {self.cp.host} nicht erreichbar, neuer Versuch ...", RED)
         elif kind == "eth_retry":
             self.set_conn_status(f"CP {self.cp.host} getrennt, verbinde neu ...", RED)
@@ -8356,7 +8536,7 @@ class LiveRankingApp:
                 self.log(f"Verbindung zum {self.dev_name()} {self.cp.host} unterbrochen: {payload}", tag="error")
             if self.cp.link != "usb":
                 self.log("Kommt die Verbindung nicht zurück: CP neu gestartet? Ethernet am CP wieder einschalten "
-                         "(F › Einstellungen › Ethernet).", tag="warn")
+                         "(F › Einstellungen › Ethernet › Std Connexion).", tag="warn")
             self.add_ticker("Verbindung zum CP 545 unterbrochen, verbinde neu", "warn")
             self.set_conn_status(f"CP {self.cp.host} getrennt, verbinde neu ...", RED)
         elif kind == "eth_disconnected":
@@ -8497,6 +8677,7 @@ class LiveRankingApp:
     # ---------------- Reserve: Uhrabgleich und Uebernahme ---------------- #
     def backup_reset_extra(self):
         self.b_rx_offsets, self.b_seq_base, self.b_seq_last, self._b_asked = [], 0, {}, set()
+        self.a_hist, self.b_hist = [], []  # letzte Impulse je Geraet (Eingang, Zeit): Doppelkontakte erkennen
 
     def backup_reset(self):
         self.b_pend = []            # Reserve-Impulse ohne Gegenstueck: [rx, info]
@@ -8574,12 +8755,13 @@ class LiveRankingApp:
             self.on_cp_time(self.backup_corrected(info), "B")
             return
         # Gegenstueck beim Hauptgeraet? Gleicher Eingang; bei bekanntem Uhrversatz nach Geraetezeit, sonst
-        # nach Eingang am PC (2.5 s)
-        for i, (rx, a) in enumerate(self.a_pend):
-            if a["ch"] == info["ch"] and self.backup_match(a, info, now - rx):
-                self.a_pend.pop(i)
-                self.backup_pair(a, info)
-                return
+        # nach Eingang am PC (2.5 s). Bei mehreren (Doppelkontakt) das naechstgelegene.
+        self.b_hist = [h for h in getattr(self, "b_hist", []) if now - h[2] < 30] + [(info["ch"], info["abs"], now)]
+        i = self.backup_best(self.a_pend, info, now, main_side=False)
+        if i is not None:
+            a = self.a_pend.pop(i)[1]
+            self.backup_pair(a, info)
+            return
         self.b_pend.append([now, info])
 
     def backup_ask(self, key):
@@ -8680,8 +8862,43 @@ class LiveRankingApp:
 
     def backup_match(self, a, b, rx_gap):
         if self.b_offset is not None:
-            return abs(b["abs"] - self.b_offset - a["abs"]) <= 0.05
+            return abs(b["abs"] - self.b_offset - a["abs"]) <= self.backup_tol()
         return abs(rx_gap) <= 2.5
+
+    @staticmethod
+    def line_res(device, digits):
+        """Aufloesung der Zeitzeilen: CP 545 eine Stelle mehr als das Resultat, TM550 wie eingestellt."""
+        return 10 ** -(digits + 1 if device == "cp545" else digits)
+
+    def backup_tol(self):
+        """Toleranz Haupt/Reserve (Fehlerbericht 26.11.2026): 0,05 s plus die Aufloesung des groeberen Geraets
+        (TM550 auf 1/10 schneidet Zehntel ab, der Versatz kann bei 1/100 bestimmt sein)."""
+        d = self.settings["timing"].get("prec_digits", 1)
+        res = max(self.line_res(self.cp_device or "cp545", d), self.line_res(self.cp_b_device or "cp545", d))
+        return 0.05 + min(res, 0.1)
+
+    def backup_best(self, pend, info, now, main_side):
+        """Index des passenden Impulses in pend (gleicher Eingang, kleinste Zeitdifferenz) oder None."""
+        best, best_d = None, None
+        for i, (rx, other) in enumerate(pend):
+            if other["ch"] != info["ch"]:
+                continue
+            a, b = (info, other) if main_side else (other, info)
+            if not self.backup_match(a, b, now - rx):
+                continue
+            d = abs(b["abs"] - (self.b_offset or 0.0) - a["abs"]) if self.b_offset is not None else abs(now - rx)
+            if best_d is None or d < best_d:
+                best, best_d = i, d
+        return best
+
+    def backup_prell_twin(self, ch, abs_main, hist_a, hist_b):
+        """Zweitimpuls eines Doppelkontakts? Innerhalb der Prellzeit nach einem Impuls am selben Eingang (an
+        einem der beiden Geraete, Zeiten auf die Uhr des Hauptgeraets umgerechnet)."""
+        ms = self.tset()["prell_start_ms" if ch == CH_START else "prell_finish_ms"]
+        win = ms / 1000.0 + self.backup_tol()
+        off = self.b_offset or 0.0
+        times = [t for c, t, _rx in hist_a if c == ch] + [t - off for c, t, _rx in hist_b if c == ch]
+        return any(0.001 < abs_main - t <= win for t in times)
 
     def save_backup_wait(self):
         try:
@@ -8709,11 +8926,12 @@ class LiveRankingApp:
         if not self.backup_connected() or info["type"] not in ("TN", "T+", "T="):
             return
         now = time.time()
-        for i, (rx, b) in enumerate(self.b_pend):
-            if b["ch"] == info["ch"] and self.backup_match(info, b, now - rx):
-                self.b_pend.pop(i)
-                self.backup_pair(info, b)
-                return
+        self.a_hist = [h for h in getattr(self, "a_hist", []) if now - h[2] < 30] + [(info["ch"], info["abs"], now)]
+        i = self.backup_best(self.b_pend, info, now, main_side=True)
+        if i is not None:
+            b = self.b_pend.pop(i)[1]
+            self.backup_pair(info, b)
+            return
         rec = self.cp_recs.get(("A", self.cp_run, info["ch"], info["seq"]))
         if rec is not None and rec.get("status") == "dup" and str(rec.get("twin", ("",))[0]) == "B":
             # Zeile des Hauptgeraets kam erst nach Ablauf der Wartezeit: Reserve-Zeit gilt schon, keine Warnung
@@ -8748,6 +8966,12 @@ class LiveRankingApp:
         for rx, b in [x for x in self.b_pend if now - x[0] > wait]:
             self.b_pend.remove([rx, b])
             key = ("B", self.cp_run, b["ch"], b["seq"])
+            if self.main_connected() and self.backup_prell_twin(
+                    b["ch"], self.backup_corrected(b)["abs"], getattr(self, "a_hist", []),
+                    [h for h in getattr(self, "b_hist", []) if abs(h[1] - b["abs"]) > 0.001]):
+                DIAG.info(f"Reserve: Impuls {fmt_tod(self.backup_corrected(b)['abs'] % 86400)} Eingang {b['ch']} "
+                          "innerhalb der Prellzeit (Doppelkontakt), verworfen")
+                continue
             if self.main_connected():
                 tod = fmt_tod(self.backup_corrected(b)["abs"] % 86400)
                 rule = getattr(self, "_b_rule", None)
@@ -8771,6 +8995,14 @@ class LiveRankingApp:
             self.on_cp_time(self.backup_corrected(b), "B")
         for rx, a in [x for x in self.a_pend if now - x[0] > wait]:
             self.a_pend.remove([rx, a])
+            if a.get("manual"):  # Handtaste am Hauptgeraet: die Reserve kann den Impuls nicht haben
+                DIAG.info(f"Hauptgerät: Handimpuls {fmt_tod(a['abs'] % 86400)} Eingang {a['ch']} ohne Reserve")
+                continue
+            if self.backup_prell_twin(a["ch"], a["abs"], [h for h in getattr(self, "a_hist", [])
+                                                         if abs(h[1] - a["abs"]) > 0.001], getattr(self, "b_hist", [])):
+                DIAG.info(f"Hauptgerät: Impuls {fmt_tod(a['abs'] % 86400)} Eingang {a['ch']} innerhalb der "
+                          "Prellzeit, ohne Gegenstück bei der Reserve: in Ordnung")
+                continue
             if self.backup_connected() and now - self._b_warn_t > 60:
                 self._b_warn_t = now
                 self.log(f"Reserve-Gerät hat den Impuls {fmt_tod(a['abs'] % 86400)} auf Eingang {a['ch']} nicht "
@@ -8877,6 +9109,7 @@ class LiveRankingApp:
         self.cp_last_rx = self.cp_last_hb = time.time()
         self.cp_rx_lines = 0  # Zeilen seit dem Verbinden: fuer den Hinweis bei stummer USB-Verbindung
         self._usb_silent_told = False
+        self._cp_finish_dirty = True  # naechste Zielnummer am Geraet unbekannt: beim ersten Abgleich schreiben
         self.set_connected(True, f"CP {ip} verbunden")
         self.refresh_conn_head()
         if again:
@@ -8914,6 +9147,7 @@ class LiveRankingApp:
                 self.root.after(4000, lambda k=k: (self.cp_lock_preload(k, True), self.device_lock_write(k, True)))
         self.root.after(4500, lambda: self.device_lock_read("A") if self.main_connected() else None)
         self.root.after(3000, lambda: self.cp_write_precision(auto=True))  # eingestellte Praezision ans Geraet
+        self.root.after(5500, self._blocking_when_idle)
         if not self.cp_recs and self.last_start_nr is None:  # noch kein Start: Ueberschrift fuer den ersten Verein
             self.root.after(2500, lambda: self.print_next_club(None, event="connect"))
         self.start_eth_tick()
@@ -9030,14 +9264,15 @@ class LiveRankingApp:
         self.cp_sync_next("Verbindung")
 
     # ---------------- Befehle mit Bestaetigung ---------------- #
-    def cp_query(self, text, expect="ack", on_ok=None, on_fail=None, label=None, tries=1):
-        """Befehl einreihen. expect: 'ack' | 'serial' | 'sync' | ('param', id[, eingang])."""
+    def cp_query(self, text, expect="ack", on_ok=None, on_fail=None, label=None, tries=1, silent=False):
+        """Befehl einreihen. expect: 'ack' | 'serial' | 'sync' | ('param', id[, eingang]).
+        silent: Abfrage im Takt (Sperren, Lauf): Befehl und Antwort nur ins Diagnose-Log."""
         if self.cp is None or self.cp_device == "gprs":
             if on_fail:
                 on_fail("keine Verbindung" if self.cp is None else "nicht unterstützt")
             return
         self.cp_cmds.append({"text": text, "expect": expect, "on_ok": on_ok, "on_fail": on_fail,
-                             "label": label or text, "tries": tries})
+                             "label": label or text, "tries": tries, "silent": silent})
         self.cp_pump()
 
     def cp_pump(self):
@@ -9055,7 +9290,9 @@ class LiveRankingApp:
         DIAG.debug(f"CP A> {cmd['text']}")
         self._diag_tx = (time.strftime("%H:%M:%S"), cmd["text"])
         self.cp.send(cmd["text"])
-        self.log(f"→ CP {cmd['text']}", focus=False, tag="ok")
+        self._rx_silent = bool(cmd.get("silent"))
+        if not self._rx_silent:
+            self.log(f"→ CP {cmd['text']}", focus=False, tag="ok")
 
     def cp_resolve(self, ok, info=None, reason=""):
         cmd, self.cp_inflight = self.cp_inflight, None
@@ -9242,12 +9479,14 @@ class LiveRankingApp:
                 and r["cp_nr"] > 0 and not r.get("cp_done")]
         return sorted(keys, key=lambda k: self.cp_recs[k]["abs"])
 
-    def cp_sync_finish(self):
+    def cp_sync_finish(self, force=False):
         """Den CP auf dasselbe naechste Boot einstellen wie die App (#WP 026 04), damit sein
-        Papierstreifen und seine Rangliste stimmen. Die Zuordnung in der App haengt nicht davon ab."""
+        Papierstreifen und seine Rangliste stimmen. Die Zuordnung in der App haengt nicht davon ab.
+        force: auch schreiben, wenn der CP nach der eigenen Folge schon richtig laege (nach Ziel freigeben)."""
+        force = force or getattr(self, "_cp_finish_dirty", False)
         if (not self.eth_mode() or self.cp is None or not self.cp.connected or not self.course
-                or not self.cp_caps["preload"] or self.tset().get("lock_finish")):
-            return
+                or not self.cp_caps["preload"] or self.tset().get("lock_finish") or self.cp_device == "tm550"):
+            return  # TM550: keine vorgeladene Zielnummer (nur Start in TIMING)
         want = self.cp_recs[self.course[0][2]]
         if want.get("cp_done") or want["cp_nr"] <= 0:
             return
@@ -9256,7 +9495,9 @@ class LiveRankingApp:
             return
         cp_next = next((k for k in alive if self.cp_recs[k]["cp_nr"] == self.cp_finish_want), alive[0])
         target = want["cp_nr"]
-        if self.cp_recs[cp_next]["cp_nr"] == target or getattr(self, "_cp_finish_pending", None) == target:
+        if getattr(self, "_cp_finish_pending", None) == target:
+            return
+        if self.cp_recs[cp_next]["cp_nr"] == target and not force:
             return
         self._cp_finish_pending = target
 
@@ -9264,6 +9505,7 @@ class LiveRankingApp:
             self._cp_finish_pending = None
             if ok:
                 self.cp_finish_want = target
+                self._cp_finish_dirty = False
                 self.root.after(50, self.cp_sync_finish)
             elif why in ("vom CP abgelehnt", "CP meldet 0") and target not in getattr(self, "_restore_told", set()):
                 self._restore_told = getattr(self, "_restore_told", set()) | {target}
@@ -9421,6 +9663,7 @@ class LiveRankingApp:
             self.__dict__.setdefault("_dev_lock", {}).pop(("B", CH_START), None)
             self.__dict__["_dev_lock"].pop(("B", CH_FINISH), None)
             self.root.after(1200, lambda: self.device_lock_read("B"))
+            self.root.after(2000, lambda: self.device_blocking_write(("B",)))
             self.log(f"Reserve-Gerät: {info['type']} Nr {info['serial']} {info['version']}".strip(), tag="ok")
             return
         if dev == "A" and self.cp_backlog is not None:
@@ -9435,10 +9678,17 @@ class LiveRankingApp:
                 return
         if info["kind"] == "time" and not info.get("answer") and info["type"] in ("TN", "T+", "T="):
             self.check_device_clock(info, dev)
+            if dev == "A":
+                self.cp_last_imp = time.time()
         quiet = info["kind"] in ("ack", "param", "serial", "sync")
         if info["kind"] == "note":
             text = f"{text}  ({info['label']}, wird nicht ausgewertet)"
-        self.log(("CP " if dev == "A" else "CP Reserve ") + text, focus=False, tag=None if not quiet else "test")
+        if quiet and dev == "A" and getattr(self, "_rx_silent", False):
+            DIAG.debug(f"CP A< {text}")
+        elif quiet and dev == "B" and getattr(self, "_rx_silent_b", 0) > time.time():
+            DIAG.debug(f"CP B< {text}")
+        else:
+            self.log(("CP " if dev == "A" else "CP Reserve ") + text, focus=False, tag=None if not quiet else "test")
         if info["kind"] == "param" and info.get("id") in ("002", "006", "023"):
             self.device_param_event(info, dev)
         if quiet:
@@ -9627,7 +9877,7 @@ class LiveRankingApp:
                     continue  # dreimal AK F: keine solche Zeit, erst nach dem naechsten Impuls wieder fragen
                 if cnt[k] == 3:
                     DIAG.info(f"Nachfrage Seq {last + 1} Eingang {ch}: keine weitere Zeit, Nachfragen pausiert")
-                self.cp_query(f"#RT {last + 1:04d} {ch:02d}", "ack")
+                self.cp_query(f"#RT {last + 1:04d} {ch:02d}", "ack", silent=True)
 
     def cp_download_run(self):
         if self.cp is None or not self.cp.connected:
@@ -9651,8 +9901,12 @@ class LiveRankingApp:
 
     def check_device_clock(self, info, dev):
         """Uhr des Geraets gegen den PC: zwei Zeilen hintereinander mit gleicher Abweichung ueber 60 s -> Warnung,
-        einmal pro Verbindung. Gepufferte Zeilen beim Verbinden laufen nicht hierher."""
-        diff = info.get("day_raw", info["day"]) * 86400 + info["tod"] - local_abs()
+        einmal pro Verbindung. Gepufferte Zeilen beim Verbinden laufen nicht hierher.
+        TM550 1.18 hat ein falsches Tagesfeld (Firmware): dort zaehlt nur die Uhrzeit, ab 1.4 auch das Datum."""
+        tm = (self.cp_device if dev == "A" else self.cp_b_device) == "tm550"
+        fw = ((getattr(self, "cp_info", "") or "").split() or [""])[-1] if dev == "A" else (self.cp_b_fw or "")
+        day = info["day"] if tm and fw and fw < "1.4" else info.get("day_raw", info["day"])
+        diff = day * 86400 + info["tod"] - local_abs()
         if not hasattr(self, "_clock_prev"):
             self._clock_prev, self._clock_told = {}, {}
         prev = self._clock_prev.get(dev)
@@ -9670,11 +9924,10 @@ class LiveRankingApp:
         else:
             amount = f"{int(a // 60)} min {int(a % 60)} s"
         try:
-            date = (EPOCH_2000 + datetime.timedelta(days=int(info.get("day_raw", info["day"])))).strftime("%d.%m.%Y")
+            date = (EPOCH_2000 + datetime.timedelta(days=int(day))).strftime("%d.%m.%Y")
         except (OverflowError, ValueError, KeyError):
             date = "?"
         tod = int(info["tod"])
-        tm = (self.cp_device if dev == "A" else self.cp_b_device) == "tm550"
         where = "Synchronisation › Manual oder GPS" if tm else "F › Synchronisation"
         msg = (f"Uhr {name} geht {amount} {'vor' if diff > 0 else 'nach'} (Gerät {date} {tod // 3600:02d}:"
                f"{tod // 60 % 60:02d}, PC {time.strftime('%d.%m.%Y %H:%M')}). Laufzeiten stimmen, Startzeiten und "
@@ -10074,10 +10327,11 @@ class LiveRankingApp:
         rr_dec = max(0, self.cp_prec - 1) if self.cp_device == "cp545" else self.cp_prec
         res = self.results.get(rec["nr"])
         if res and res.get("cp") == list(key):
-            app_t = trunc_secs(res["secs"], rr_dec)
-            if abs(app_t - info["secs"]) > 0.6 * 10 ** -rr_dec:
-                secs = trunc_secs(info["secs"], min(rr_dec, RESULT_DEC))
-                self.log(f"CP meldet für Nr {rec['nr']} {fmt_secs(secs, min(rr_dec, RESULT_DEC))}s, App rechnete "
+            dec = min(rr_dec, RESULT_DEC)  # verglichen wird auf der groeberen der beiden Praezisionen
+            app_t = trunc_secs(res["secs"], dec)
+            if abs(app_t - trunc_secs(info["secs"], dec)) > 0.6 * 10 ** -dec:
+                secs = trunc_secs(info["secs"], dec)
+                self.log(f"CP meldet für Nr {rec['nr']} {fmt_secs(secs)}s, App rechnete "
                          f"{res['str']}s: Wert des CP übernommen", tag="warn")
                 res["secs"], res["str"] = secs, fmt_secs(secs)
                 self.on_data_changed()
@@ -10086,7 +10340,7 @@ class LiveRankingApp:
         res = self.results.get(nr)
         if res and key is not None and res.get("cp") == list(key):
             return  # schon erfasst
-        self.register_final(nr, secs, fmt_secs(secs, 2), source="CP 545 LAN")
+        self.register_final(nr, secs, fmt_secs(secs), source="CP 545 LAN")  # Stellen nach Praezision der App
         if nr in self.results:
             self.results[nr]["cp"] = list(key) if key else None
             self.save_autosave()
@@ -10149,12 +10403,12 @@ class LiveRankingApp:
             if item is None or item[0] != nr:
                 del self.results[nr]
                 removed += 1
-            elif abs(item[1] - res["secs"]) > 0.001:
-                res["secs"], res["str"] = item[1], fmt_secs(item[1], 2)
+            elif abs(item[1] - res["secs"]) > 0.001 or res["str"] != fmt_secs(item[1]):
+                res["secs"], res["str"] = item[1], fmt_secs(item[1])
                 changed += 1
         for nr, secs, k in linked.values():
             if nr not in self.results and self.status.get(nr) not in ("DNF",):
-                self.results[nr] = {"secs": secs, "str": fmt_secs(secs, 2), "ts": time.time(),
+                self.results[nr] = {"secs": secs, "str": fmt_secs(secs), "ts": time.time(),
                                     "source": "CP 545 LAN", "run": 1, "prev": None, "status": ST_OPEN,
                                     "cp": list(k)}
                 changed += 1
@@ -10239,12 +10493,12 @@ class LiveRankingApp:
         if self.cp.connected:
             if now - self.cp_last_hb > HEARTBEAT_S and self.cp_inflight is None and not self.cp_cmds:
                 self.cp_last_hb = now
-                self.cp_query("#RP 003", ("param", "003"), on_ok=self._on_run)
+                self.cp_query("#RP 003", ("param", "003"), on_ok=self._on_run, silent=True)
                 self.cp_probe()
             elif (self.cp_device == "cp545" and now - getattr(self, "_lock_poll_t", 0) > LOCK_POLL_S
                   and self.cp_inflight is None and not self.cp_cmds and self.cp_backlog is None):
                 self._lock_poll_t = now  # CP 545 meldet die rote Sperrtaste nicht von selbst
-                self.device_lock_read("A")
+                self.device_lock_read("A", silent=True)
             if now - self.cp_last_rx > HEARTBEAT_LOST_S:
                 self.cp_last_rx = now
                 self.log("CP antwortet nicht mehr, Verbindung wird neu aufgebaut", tag="warn")
@@ -12402,6 +12656,10 @@ class LiveRankingApp:
             if settings["timing"].get("lock_nr") == 999:
                 settings["timing"]["lock_nr"] = 9999
             settings["_mig_lock9999"] = True
+        # v1.22: Praezision einmal auf 1/10 (Fehlerbericht 26.11.2026: aus alten Versionen stand noch 1/100)
+        if not settings.get("_mig_prec10"):
+            settings["timing"]["prec_digits"] = 1
+            settings["_mig_prec10"] = True
         if settings["wettkampf"] not in ("einzel", "paar"):
             settings["wettkampf"] = "einzel"
         if not re.fullmatch(r"[A-Za-z0-9_\-]{16,}", settings["web"]["key"]):

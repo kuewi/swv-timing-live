@@ -1,6 +1,6 @@
 # Training SWV Live-Ranking
 
-Stand: App v1.21.0. Alle Übungen laufen ohne echtes Gerät mit dem eingebauten Simulator. Die App ist mit dem
+Stand: App v1.22.0. Alle Übungen laufen ohne echtes Gerät mit dem eingebauten Simulator. Die App ist mit dem
 Simulator verbunden wie mit einem echten CP 545 oder TM550. Nachschlagen im [Benutzerhandbuch](benutzerhandbuch.md).
 
 | Stufe | Ziel | Dauer |
@@ -187,7 +187,8 @@ Kontrolle: die Zielzeit während des Unterbruchs ist in der Rangliste. Falls nic
 1. Boot starten, «Ziel sperren» im grünen Feld einschalten. Bei Booten auf der Strecke fragt die App nach.
 2. Zielimpuls auslösen: er erscheint unter «Auf Fahrstrecke» als gesperrt.
 3. Klick auf die Zeile › «Nr … zuordnen» oder «Ungültig lassen (ausblenden)».
-4. Ziel freigeben.
+4. Ziel freigeben. Am Simulator CP steht rechts in der zweiten Zeile wieder die Nummer des Boots auf der Strecke
+   («▷ 1»), nicht 9999.
 
 ![Ziel gesperrt](bilder/12_ziel_gesperrt.png)
 
@@ -203,12 +204,15 @@ das Boot läuft als 9999, keine echte Nummer wird verbraucht.
 2. Rote Taste nochmals: die App gibt das Ziel frei.
 3. Simulator TM550: SHIFT, dann E4. Die App sperrt das Ziel sofort. SHIFT, E4 noch zweimal: wieder offen.
 4. Rückseite: Klick auf die Buchse bei gesperrtem Eingang löst nichts aus.
+5. Mit echtem Gerät: E1 und E4 am Gerät sperren, dann in der App verbinden. Die App schaltet «Start sperren» und
+   «Ziel sperren» ein, der Ticker meldet «beim Verbinden».
 
 Kontrolle: Schalter in der App und Anzeige am Gerät stimmen immer überein.
 
 ### Übung 3.6 Präzision
 
-1. «Zeitmessung ▾ › Präzision (abschneiden)» auf 1/100 stellen (Standard ist 1/10), «Präzision am Gerät einstellen».
+1. «Zeitmessung ▾ › Präzision (abschneiden)» auf 1/100 stellen (Standard ist 1/10). Bei verbundenem Gerät
+   stellt die App die Präzision dort sofort mit; «Präzision am Gerät einstellen» macht es von Hand.
 2. Boot starten und ins Ziel bringen.
 
 Kontrolle: Papier, Display und App zeigen zwei Stellen nach dem Komma. Zeiten werden abgeschnitten, nicht gerundet.
@@ -221,6 +225,11 @@ Nur mit zwei Geräten an denselben Impulsen, z.B. CP 545 über USB und TM550 üb
 2. Impuls nur am Reserve-Gerät auslösen (Handtaste). Die App fragt: «Reserve übernehmen» oder
    «Hauptgerät gilt (Impuls verwerfen)», optional «Für diese Sitzung immer so».
 3. Hauptgerät trennen: die Reserve liefert alle Zeiten, «Verbindung» wird orange.
+4. Grüne Taste 4 nur am Hauptgerät (Boot am CP von Hand beenden): keine Warnung zur Reserve.
+5. Doppelkontakt am Ziel (Bananenstecker kurz wackeln): beide Geräte bekommen zwei Impulse innerhalb der
+   Prellzeit. Die App nimmt den ersten, ohne Rückfrage «Abweichung».
+
+Kontrolle: im Log stehen keine Meldungen «nur beim Reserve-Gerät», solange beide Geräte jeden Impuls bekommen.
 
 ### Übung 3.8 Fehlerbericht
 
