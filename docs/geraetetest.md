@@ -333,7 +333,13 @@ funktioniert, die App kann ihn nutzen.
 - Die Zeile `!T HH:MM:SS DD/MM/YY` des PC zu jeder vollen Sekunde (mit Prüfsumme) nimmt er nicht an.
 - `#SN` antwortet über RS232 nur mit Prüfsumme.
 
-Nächster Versuch Gruppe Z: auf jede Anfrage sofort antworten (abwechselnd mit und ohne Prüfsumme) und zur vollen
+Ergebnis Gruppe Z (27.11.2026, 9600 Baud): Antwort `!T <nächste Sekunde> 27/11/26` sofort auf jede Anfrage, abwechselnd
+mit und ohne Prüfsumme, dazu zur vollen Sekunde ein Puls auf DTR/RTS: der CP synchronisiert nicht und fragt weiter.
+Die Uhr lief danach rund 79 s hinter der PC-Uhr. Der PC kann den CP 545 über RS232 nicht als Master stellen
+(vermutlich braucht der CP ein TAG-Heuer-Gerät als Master oder einen Sekunden-Top auf einer Leitung, die der
+Adapter nicht bedient). Die CP-Uhr bleibt von Hand zu stellen.
+
+Versuch Gruppe Z: auf jede Anfrage sofort antworten (abwechselnd mit und ohne Prüfsumme) und zur vollen
 Sekunde ein Puls auf DTR/RTS des Adapters, falls der CP den Sekunden-Top über eine Leitung erwartet.
 
 ```powershell

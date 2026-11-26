@@ -679,8 +679,9 @@ function Watch-Offset([string]$label, [int]$Sec) {
                 $line = $Matches[1].TrimEnd("`r"); $buf = $buf.Substring($Matches[0].Length)
                 if (-not $line.Trim()) { continue }
                 Log ("   <- " + (Visible $line))
-                if ($line -match "^T[N+=]\s.*?\s((\d{1,2}):(\d{2}):(\d{2}\.\d+))\s") {
-                    $dev = [double]$Matches[2] * 3600 + [double]$Matches[3] * 60 + [double]::Parse($Matches[4], [Globalization.CultureInfo]::InvariantCulture)
+                if ($line -match "^T[N+=]\s.*?\s(((\d{1,2}):)?(\d{1,2}):(\d{2}\.\d+))\s") {
+                    $h = $(if ($Matches[3]) { [double]$Matches[3] } else { 0 })   # nach Sync ohne Stunden (M:SS)
+                    $dev = $h * 3600 + [double]$Matches[4] * 60 + [double]::Parse($Matches[5], [Globalization.CultureInfo]::InvariantCulture)
                     $pc = $rx.TimeOfDay.TotalSeconds
                     $off = $dev - $pc
                     Log ("   Versatz Geraet - PC: {0:0.000} s" -f $off)
