@@ -274,6 +274,32 @@ grüne Taste am CP auch bei gesperrtem Eingang auslöst.
 
 Gruppe Q (`-Nur Q`) schreibt `#WP 023` und `#WP 006` auf Eingang 1 und 4 und prüft je mit Buchse und Taste.
 
+## Test Gruppen R, S, T (offen seit v1.22.0)
+
+Skript neu holen (Schritt 1). Gerät mit offenem Lauf, Start E1, Ziel E4, alle Eingänge offen. Die App ist
+geschlossen (Schritt 2). Über Ethernet oder USB:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Ip 192.168.1.50 -Nur R,S,T
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51 -Nur R,S
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5 -Nur R,S,T
+```
+
+| Schritt | Was das Skript macht | Was du tust |
+| --- | --- | --- |
+| R1 | liest `#RP 004 04`, schreibt 0,5 s (`#WP 004 04 0050` CP, `0500` TM550), liest zurück | im Gerätemenü (CP: F › Einstellungen › Sperre, TM550: Input blocking time) Wert von E4 ablesen und eintippen |
+| R2 | 20 s zuhören | Buchse 4 zweimal schnell (unter 0,5 s), nach 2 s nochmals einmal; Anzahl Zielzeiten auf Papier/Display eintippen |
+| R2 Ende | schreibt den alten Wert zurück | nichts |
+| R3 CP 545 | liest 006 vor und nach | rote Sperrtaste 1 bis zum Balken, Impuls nur über Buchse 1, eintippen ob eine Zeit kam, wieder öffnen |
+| R3 TM550 | `#WP 006 04 2`, lesen, danach `#WP 006 04 0` | Display bei E4 eintippen, Impuls über Buchse 4 und Taste E4 |
+| S1 | `#EE 1`, `#RP 003`, 120 s zuhören | CP: Lauf schliessen, F › Synchronisation › Manuell, Datum heute, 00:00:00, E1 offen, Impuls Buchse 1. TM550: Synchronisation › Manual, gleich |
+| S2 (CP) | 60 s zuhören | neuen Lauf öffnen, NET TIME |
+| S3 | 30 s zuhören | Start E1, Ziel E4 |
+| S Ende | `#EE 0` | Uhr wieder richtig stellen |
+| T (CP) | nur Fragen | Adresse, Maske, Port unter Std Connexion und User Connexion abschreiben; verbindet es nach Std Connexion? |
+
+Logdatei zurückgeben wie in Schritt 10.
+
 ## Ergebnisse 23.11.2026 (CP 545 VB16, TM550 1.48)
 
 | Befehl | CP 545 (VB16) | TM550 (1.48) |

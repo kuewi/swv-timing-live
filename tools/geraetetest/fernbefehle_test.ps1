@@ -10,12 +10,15 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
-#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P Q)
+#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P Q R S T)
 #   M: Zeitmessarten nacheinander (TM550: BASIC, TIMING, SPEED, LAP; CP: z.B. NET TIME, PTB SEQ)
 #   N: Nummern zuordnen (TM550-Smartphone-App, Identifikation AT START / MANUAL / AUTOMATIC, CP-Tastatur)
 #   P: Eingaenge gesperrt/offen: #RP 006 und 023, Sperren an der Tastatur (CP rote Tasten, TM550 SHIFT+Ex),
 #      Ereignismeldungen #EE 1, Sperren per #WP 006. Am Ende werden die Eingaenge wieder geoeffnet.
 #   Q: Sperren ueber die Verbindung mit #WP 023 (Status Eingaenge) und #WP 006, Sperrtaste bis zum Balken.
+#   R: Sperrzeit #WP 004 (Doppelkontakt), CP: rote Sperrtaste gegen Buchse, TM550: #WP 006 04 2.
+#   S: Uhr synchronisieren am Geraet (00:00 und Impuls): welche Zeilen kommen, Uhr danach.
+#   T: Ethernet-Menue CP 545 (Std/User Connexion): nur Fragen.
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
     [string]$Ip = "",
@@ -451,6 +454,74 @@ if (Ask "Q  Sperren ueber die Verbindung: #WP 023 auf Eingang 1, #WP 006 auf Ein
     if ($q0[0] -match "^\d$") { [void](Send-Cmd ("#WP 006 01 " + $q0[0])) }
     [void](Read-Inputs "Q Ende")
     Note "Q Ende" "Ist E1 am Display wieder offen (j/n)? Sonst von Hand oeffnen."
+}
+
+# R: Sperrzeit (004) schreiben, Doppelkontakt, Sperrtaste gegen Buchse, TM550 Zustand 2 per #WP 006
+function Read-004([int]$k) {
+    $v = ""
+    foreach ($l in (Send-Cmd ("#RP 004 0" + $k))) { if ($l -match "^&P\s*004\s+0*$k\s+(\d+)") { $v = $Matches[1] } }
+    return $v
+}
+if (Ask "R  Sperrzeit #WP 004 auf E4 (0,5 s), Doppelkontakt, CP Sperrtaste gegen Buchse, TM550 #WP 006 04 2") {
+    $unit = $(if ($Device -eq "tm550") { 1000 } else { 100 })
+    $menu = $(if ($Device -eq "tm550") { "Menue Input blocking time" } else { "F > Einstellungen > Sperre" })
+    $o4 = Read-004 4
+    $script:summary += ("{0,-22} {1}" -f "R1 004 E4 vorher", $o4)
+    $new = $(if ($Device -eq "tm550") { "0500" } else { "0050" })
+    Log "--- R1 #WP 004 04 $new (0,5 s) ---"
+    [void](Send-Cmd "#WP 004 04 $new")
+    $r = Read-004 4
+    $script:summary += ("{0,-22} {1}" -f "R1 004 E4 nachher", $r)
+    Note "R1 Menue" "Am Geraet $menu oeffnen: zeigt E4 jetzt 0,5 s (Wert notieren), dann zurueck zur Laufanzeige"
+    [void](Observe "R2 Doppelkontakt" "Buchse 4 zweimal schnell hintereinander ausloesen (unter 0,5 s, z.B. Stecker kurz wackeln), dann nach 2 s nochmals einmal" 20)
+    Note "R2 Papier/Display" "Wie viele Zielzeiten zeigen Papier bzw. Display fuer diese drei Impulse?"
+    if ($o4 -match "^\d+$") { [void](Send-Cmd ("#WP 004 04 " + $o4.PadLeft(4, "0"))); [void](Read-004 4) }
+    if ($Device -eq "cp545") {
+        Log "--- R3 rote Sperrtaste gegen Buchse ---"
+        [void](Observe "R3 sperren" "rote Sperrtaste 1 druecken, bis bei E1 ein schwarzer Balken steht" 20)
+        [void](Read-Inputs "R3 nach Sperrtaste")
+        [void](Observe "R3 Buchse" "Impuls NUR ueber Buchse 1 ausloesen (nicht die gruene Taste)" 20)
+        Note "R3 Papier" "Hat der CP fuer diesen Buchsen-Impuls eine Zeit gedruckt bzw. angezeigt (j/n)?"
+        [void](Observe "R3 oeffnen" "rote Sperrtaste 1 wieder druecken, bis E1 wieder offen ist" 20)
+        [void](Read-Inputs "R3 wieder offen")
+    } else {
+        Log "--- R3 #WP 006 04 2 (gesperrt) ---"
+        [void](Send-Cmd "#WP 006 04 2")
+        [void](Read-Inputs "R3 nach 006 04 2")
+        Note "R3 Display" "Was zeigt das Kaestchen ueber E4 (Farbe, Pfeil)?"
+        [void](Observe "R3 Buchse" "Impuls ueber Buchse 4 ausloesen" 20)
+        [void](Observe "R3 Taste" "Taste E4 am Geraet druecken" 20)
+        [void](Send-Cmd "#WP 006 04 0")
+        [void](Read-Inputs "R3 zurueck")
+        Note "R3 offen" "Ist E4 wieder offen (gruen, Pfeil nach oben) (j/n)?"
+    }
+}
+
+# S: Uhr am Geraet auf 00:00 stellen und mit einem Impuls synchronisieren. Welche Zeile kommt?
+if (Ask "S  Uhr synchronisieren: am Geraet 00:00 einstellen, mit Impuls auf E1 ausloesen, Zeilen beobachten") {
+    [void](Send-Cmd "#EE 1")
+    [void](Send-Cmd "#RP 003")
+    if ($Device -eq "tm550") {
+        $how = "Menue (Pfeil links bis Hauptmenue) > Synchronisation > Manual: Datum heute, Zeit 00:00:00 einstellen und bestaetigen. Eingang E1 muss offen sein (gruen). Dann Impuls auf Buchse 1"
+    } else {
+        $how = "Lauf schliessen (F > Lauf schliessen > *), dann F > Synchronisation > Manuell: Datum heute, Zeit 00:00:00, bestaetigen. E1 muss offen sein (kein Balken). Dann Impuls auf Buchse 1"
+    }
+    [void](Observe "S1 Sync" $how 120)
+    Note "S1 Display" "Was zeigt das Display jetzt (Uhrzeit, Hinweis wie SYNC)? Lief die Uhr ab dem Impuls von 00:00 los?"
+    [void](Send-Cmd "#RP 003")
+    if ($Device -eq "cp545") {
+        [void](Observe "S2 Lauf" "Neuen Lauf oeffnen (F > Neuen Lauf oeffnen > *), Zeitmessart NET TIME" 60)
+    }
+    [void](Observe "S3 Impulse" "Start auf E1 und Ziel auf E4 ausloesen (Zeitformat nach dem Sync)" 30)
+    [void](Send-Cmd "#EE 0")
+    Note "S Ende" "Uhr nachher wieder auf die richtige Zeit gestellt (j/n)? Sonst vor dem naechsten Einsatz stellen."
+}
+
+# T: Ethernet-Menue CP 545 (nur Fragen, kein Befehl)
+if ($Device -eq "cp545" -and (Ask "T  Ethernet-Menue CP 545: Std Connexion und User Connexion (nur Fragen)")) {
+    Note "T1 Std" "F > Einstellungen > Ethernet > Std Connexion: welche Adresse, Maske, Port zeigt der CP (abschreiben)?"
+    Note "T2 Std an" "Ist Ethernet nach Std Connexion eingeschaltet (verbindet die App bzw. dieses Skript per IP) (j/n)?"
+    Note "T3 User" "F > Einstellungen > Ethernet > User Connexion: welche Adresse, Maske, Port?"
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen
