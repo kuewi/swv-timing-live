@@ -320,6 +320,17 @@ powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -I
 
 Die Zusammenfassung zählt pro Fenster die Zeitzeilen («Buchse: 0 Zeit(en), Taste: 1 Zeit(en)»).
 
+### Ergebnis Gruppen U, V, 26.11.2026 (TM550 1.48 Ethernet; CP 545 nicht erreichbar)
+
+| Zustand E4 | Display | Buchse (einmal) | Taste E4 (einmal) |
+| --- | --- | --- | --- |
+| 0 (per `#WP 006`) | grün, Pfeil nach oben | 2 Zeiten im Abstand 0,1 s (Kontakt prellt, Sperrzeit 0,1 s) | 1 Zeit (`M4`) |
+| 1 (per `#WP 006` oder SHIFT) | rot, Pfeil nach unten | keine Zeit | 1 Zeit (`M4`) |
+| 2 (per `#WP 006` oder SHIFT) | rot, ohne Pfeil | keine Zeit | 1 Zeit (`M4`) |
+
+Sperrzeit 2,000 s (`#WP 004 04 2000`): Buchse zweimal innerhalb 1 s, dann nach 5 s einmal: 2 Zeiten. Taste
+gleich: 2 Zeiten. Die Sperrzeit wirkt also auf Buchse und Taste. Zustand 1 und 2 sperren nur die Buchse.
+
 ### Ergebnis Gruppen R, S, T, 26.11.2026 (CP 545 VB16 Ethernet, TM550 1.48 Ethernet)
 
 | Punkt | CP 545 | TM550 |
