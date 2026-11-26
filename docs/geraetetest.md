@@ -331,6 +331,16 @@ Die Zusammenfassung zählt pro Fenster die Zeitzeilen («Buchse: 0 Zeit(en), Tas
 Sperrzeit 2,000 s (`#WP 004 04 2000`): Buchse zweimal innerhalb 1 s, dann nach 5 s einmal: 2 Zeiten. Taste
 gleich: 2 Zeiten. Die Sperrzeit wirkt also auf Buchse und Taste. Zustand 1 und 2 sperren nur die Buchse.
 
+### Ergebnis Gruppe V CP 545, 26.11.2026 (VB16 Ethernet)
+
+Sperrzeit 2,00 s (`#WP 004 04 0200`, zurückgelesen 0200). Im Fenster: Buchse zweimal innerhalb 1 s, dann nach
+6 s einmal: 2 Zeiten (Papier 2). Grüne Taste 4 zweimal 0,2 s auseinander, dann einmal: 3 Zeiten (Papier 3).
+Vor dem Fenster kamen schon 3 Zeilen (Buchse, zweimal grüne Taste 0,21 s auseinander), sie sind im Zähler der
+Zusammenfassung enthalten (5 statt 2); das Skript zählt Zeilen von vorher seither nicht mehr mit.
+
+Ergebnis: Beim CP 545 wirkt die Sperrzeit nur auf die Buchse, die grüne Taste löst immer aus. Beim TM550 wirkt sie
+auf Buchse und Taste.
+
 ### Ergebnis Gruppen R, S, T, 26.11.2026 (CP 545 VB16 Ethernet, TM550 1.48 Ethernet)
 
 | Punkt | CP 545 | TM550 |

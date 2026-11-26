@@ -138,6 +138,8 @@ function Observe([string]$label, [string]$todo, [int]$Sec = 30) {
     Write-Host ""
     Write-Host ("$label`: $todo") -ForegroundColor Yellow
     [void](Read-Host "Enter druecken, dann hat man $Sec s Zeit")
+    $pre = Collect 300 1000   # Zeilen von vorher (waehrend der Rueckfrage) nicht mitzaehlen
+    if ($pre.Count) { Log ("   (" + $pre.Count + " Zeile(n) vor dem Fenster, nicht gezaehlt)") }
     Log "Beobachte $Sec s: $label ($todo)"
     $got = Collect ($Sec * 1000) ($Sec * 1000)
     $script:summary += ("{0,-22} {1}" -f $label, (Describe $got))
