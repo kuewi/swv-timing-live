@@ -300,6 +300,18 @@ powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -C
 
 Logdatei zurückgeben wie in Schritt 10.
 
+### Ergebnis Gruppen R, S, T, 26.11.2026 (CP 545 VB16 Ethernet, TM550 1.48 Ethernet)
+
+| Punkt | CP 545 | TM550 |
+| --- | --- | --- |
+| `#WP 004 04` (Sperrzeit) | `AK C`, zurückgelesen 0050 (0,5 s), Menü zeigt den Wert | `AK C`, zurückgelesen 0500 (0,5 s), Menü zeigt den Wert |
+| Doppelkontakt unter 0,5 s | nicht erreicht (Abstand 0,5 bis 4 s), 6 Impulse = 6 Zeiten | nicht erreicht; vor dem Test kamen 23 Zielimpulse im Abstand 0,1 bis 0,2 s (Stecker flattert, Sperrzeit damals 0,1 s) |
+| Eingang gesperrt, Impuls über Buchse | rote Sperrtaste: `006 01 = 0`, laut Stefan kein Druck, solange gesperrt | `#WP 006 04 2`: rotes Kästchen, Buchse 4 ohne Zeile |
+| Eingang gesperrt, Taste am Gerät | (grüne Taste löst aus, Gruppe Q) | Taste E4 löst aus (`TN … M4`) |
+| `#EE 1` | `CL 02`, kein AK | `AK F` |
+| Synchronisieren (00:00, Impuls E1) | keine Zeile; Uhr läuft ab dem Impuls von 0:00; Zeilen danach ohne Stunden (`6:13.17000`) | Zeile `TN    0    0 01 00:00:00.00000  9826` bei jedem Sync-Impuls; Uhr ab 00:00; Tagesfeld danach richtig (9826 = 26.11.2026, vorher 26001) |
+| Std Connexion | 192.168.1.50, Ethernet danach eingeschaltet | |
+
 ## Ergebnisse 23.11.2026 (CP 545 VB16, TM550 1.48)
 
 | Befehl | CP 545 (VB16) | TM550 (1.48) |
