@@ -10,7 +10,7 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
-#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P Q R S T U V W X)
+#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P Q R S T U V W X Y)
 #   M: Zeitmessarten nacheinander (TM550: BASIC, TIMING, SPEED, LAP; CP: z.B. NET TIME, PTB SEQ)
 #   N: Nummern zuordnen (TM550-Smartphone-App, Identifikation AT START / MANUAL / AUTOMATIC, CP-Tastatur)
 #   P: Eingaenge gesperrt/offen: #RP 006 und 023, Sperren an der Tastatur (CP rote Tasten, TM550 SHIFT+Ex),
@@ -24,6 +24,8 @@
 #   W: Zeit von aussen eintragen (THCOM08 9.1): #WC 014 Zeit einfuegen, #WC 008 Handimpuls ausloesen,
 #      #!T Uhr abfragen, #WC 011 Ethernet einschalten (nur ueber USB sinnvoll).
 #   X: Uhr per Befehl synchronisieren (#WC 007). Verstellt die Uhr des Geraets.
+#   Y: CP 545 ueber RS232 (USB-RS232-Adapter): PC als Master fuer die Synchronisation (!T jede volle Sekunde),
+#      danach Versatz CP-Uhr zu PC-Uhr aus einem Impuls; CP als Master: sendet er !T?  Nur mit -Com.
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
     [string]$Ip = "",
@@ -660,6 +662,65 @@ if (Ask "X  Uhr per Befehl: #WC 007 02 (manuell, naechste Minute) und #WC 007 03
     Note "X2 Display" "Was hat das Geraet gezeigt, und welche Uhrzeit zeigt es jetzt?"
     [void](Observe "X3 Impulse" "Start auf E1 und Ziel auf E4 ausloesen (Zeitformat)" 30)
     Note "X Ende" "Uhr am Geraet danach wieder auf die richtige Zeit stellen (Synchronisation). Erledigt (j/n)?"
+}
+
+# Y: Synchronisation Master/Slave RS232. Der PC spielt den Master: THCOM08 «!T HH:MM:SS DD/XX/YY» (Zeit + 1 s).
+function Watch-Offset([string]$label, [int]$Sec) {
+    # Zeitzeilen mit Empfangszeit am PC: Versatz Geraeteuhr minus PC-Uhr in Sekunden
+    $end = (Get-Date).AddSeconds($Sec); $buf = ""
+    while ((Get-Date) -lt $end) {
+        $chunk = Read-Raw
+        if ($chunk) {
+            $rx = Get-Date
+            $buf += $chunk
+            while ($buf -match "^(.*?)\n") {
+                $line = $Matches[1].TrimEnd("`r"); $buf = $buf.Substring($Matches[0].Length)
+                if (-not $line.Trim()) { continue }
+                Log ("   <- " + (Visible $line))
+                if ($line -match "^T[N+=]\s.*?\s((\d{1,2}):(\d{2}):(\d{2}\.\d+))\s") {
+                    $dev = [double]$Matches[2] * 3600 + [double]$Matches[3] * 60 + [double]::Parse($Matches[4], [Globalization.CultureInfo]::InvariantCulture)
+                    $pc = $rx.TimeOfDay.TotalSeconds
+                    $off = $dev - $pc
+                    Log ("   Versatz Geraet - PC: {0:0.000} s" -f $off)
+                    $script:summary += ("{0,-22} {1}" -f $label, ("Versatz Geraet - PC {0:0.000} s" -f $off))
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 5
+    }
+}
+if ($Device -eq "cp545" -and $Com -and (Ask "Y  RS232 Master/Slave: PC sendet !T jede Sekunde, Versatz messen; CP als Master beobachten")) {
+    Log "--- Y0 Versatz vorher ---"
+    Write-Host "Y0: EINEN Impuls ueber Buchse 1 ausloesen (misst den Versatz vor dem Sync)" -ForegroundColor Yellow
+    [void](Read-Host "Enter, dann 20 s Zeit")
+    Watch-Offset "Y0 vorher" 20
+    Note "Y1 Menue" "Am CP F > Synchronisation > Master/Slave RS232 oeffnen: welche Auswahl gibt es (Master, Slave, Baudrate)? Slave waehlen und bestaetigen. Was zeigt der CP?"
+    Log "--- Y1 PC als Master: 30 s lang zu jeder vollen Sekunde !T <Sekunde+1> ---"
+    Write-Host "Y1: 30 s lang sendet der PC die Uhrzeit. Am CP beobachten (Meldung, Uhr)." -ForegroundColor Yellow
+    [void](Read-Host "Enter druecken zum Start")
+    $end = (Get-Date).AddSeconds(30); $buf = ""
+    while ((Get-Date) -lt $end) {
+        $now = Get-Date
+        $next = $now.Date.AddSeconds([Math]::Floor($now.TimeOfDay.TotalSeconds) + 1)
+        $ms = ($next - (Get-Date)).TotalMilliseconds
+        if ($ms -gt 0) { Start-Sleep -Milliseconds ([int]$ms) }
+        $t = $next.AddSeconds(1)
+        $msg = "!T " + $t.ToString("HH:mm:ss", [Globalization.CultureInfo]::InvariantCulture) + " " + $t.ToString("dd'/'MM'/'yy", [Globalization.CultureInfo]::InvariantCulture)
+        $frame = $(if ($UseCs) { $msg + "`t" + (Cs16 $msg) + "`r`n" } else { $msg + "`r`n" })
+        Write-Raw $frame
+        Log ("-> " + (Visible $frame.TrimEnd()))
+        $chunk = Read-Raw
+        if ($chunk) { foreach ($l in ($chunk -split "`n")) { if ($l.Trim()) { Log ("   <- " + (Visible $l.TrimEnd("`r"))) } } }
+    }
+    Note "Y1 Display" "Hat der CP synchronisiert (Meldung, Uhr springt auf PC-Zeit)? Was zeigt er jetzt?"
+    Write-Host "Y2: Lauf oeffnen falls noetig, dann EINEN Impuls ueber Buchse 1 (misst den Versatz nach dem Sync)" -ForegroundColor Yellow
+    [void](Read-Host "Enter, dann 60 s Zeit")
+    Watch-Offset "Y2 nachher" 60
+    Note "Y3 Master" "Am CP F > Synchronisation > Master/Slave RS232 als MASTER waehlen (falls es geht), j wenn gewaehlt"
+    [void](Send-Cmd "#!T")
+    Write-Host "Y3: 30 s zuhoeren, ob der CP als Master !T-Zeilen schickt" -ForegroundColor Yellow
+    Watch-Offset "Y3 Master" 30
+    Note "Y Ende" "Uhr am CP wieder richtig (sonst F > Synchronisation von Hand) (j/n)?"
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen

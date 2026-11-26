@@ -300,6 +300,31 @@ powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -C
 
 Logdatei zurückgeben wie in Schritt 10.
 
+## Test Gruppe Y (CP 545 über RS232: PC als Master für die Synchronisation)
+
+Frage: Lässt sich die Uhr des CP 545 über «Synchronisation › Master/Slave RS232» vom PC aus stellen? THCOM08 nennt
+dafür die Zeile `!T HH:MM:SS DD/MM/YY` (Synchro-Zeit, aktuelle Zeit + 1 s) und die Anfrage `#!T`.
+
+Nötig: USB-RS232-Adapter und das RS232-Kabel des CP 545 (Buchse RS232 am CP). Im Geräte-Manager den COM-Port des
+Adapters ablesen. Am CP Einstellungen › RS232 › «Zum PC» wählen. Die Baudrate des CP ist nicht bekannt: zuerst
+9600, sonst mit `-Baud 19200` bzw. `-Baud 38400` wiederholen.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM7 -Nur Y
+```
+
+| Schritt | Was das Skript macht | Was du tust |
+| --- | --- | --- |
+| Start | `#SN` ohne und mit Prüfsumme | nichts; antwortet nichts, andere Baudrate versuchen |
+| Y0 | misst den Versatz CP minus PC aus einer Zeitzeile | einmal Buchse 1 |
+| Y1 | 30 s lang zu jeder vollen Sekunde `!T <Sekunde + 1>` | vorher F › Synchronisation › Master/Slave RS232, Slave wählen; Auswahl und Display eintippen |
+| Y2 | misst den Versatz erneut | falls nötig Lauf öffnen, einmal Buchse 1 |
+| Y3 | `#!T`, 30 s zuhören | wenn möglich am CP Master wählen |
+| Ende | | Uhr am CP wieder richtig stellen |
+
+Die Zusammenfassung zeigt «Versatz Gerät - PC» vorher und nachher. Nahe 0 oder genau 1 s heisst: der Sync über RS232
+funktioniert, die App kann ihn nutzen.
+
 ## Test Gruppen W, X (Zeit von aussen, Uhr per Befehl)
 
 Frage: Kann die App eine Zeit ins Reserve-Gerät eintragen, wenn am Hauptgerät von Hand gestoppt wird? Kann sie die
