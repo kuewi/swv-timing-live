@@ -300,6 +300,34 @@ powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -C
 
 Logdatei zurückgeben wie in Schritt 10.
 
+## Test Gruppen W, X (Zeit von aussen, Uhr per Befehl)
+
+Frage: Kann die App eine Zeit ins Reserve-Gerät eintragen, wenn am Hauptgerät von Hand gestoppt wird? Kann sie die
+Uhr stellen? THCOM08 Kapitel 9.1 nennt dafür `#WC 014` (Zeit einfügen), `#WC 008` (Handimpuls auslösen),
+`#WC 007` (Synchronisation starten) und `#WC 011` (Ethernet ein/aus).
+
+Lauf offen (CP: NET TIME), Start E1, Ziel E4, Eingänge offen, App geschlossen. CP 545 vorher Ethernet über
+F › Einstellungen › Ethernet › Std Connexion einschalten.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Ip 192.168.1.50 -Nur W,X
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51 -Nur W,X
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5 -Nur W
+```
+
+Über USB (`-Com`) prüft W zusätzlich `#WC 011 1`: dafür Ethernet am CP vorher NICHT einschalten.
+
+| Schritt | Was das Skript macht | Was du tust |
+| --- | --- | --- |
+| W1 | wartet auf einen Start, schickt `#WC 014 04 0000 <Start + 5 s> <Tag>`, dann mit Nr 1 und + 6 s | einmal Buchse 1; eintippen, ob das Boot im Ziel steht und was Display/Papier zeigen |
+| W2 | wartet auf einen Start, schickt `#WC 008 04` und `#WC 008 4` | einmal Buchse 1; eintippen, ob ein Zielimpuls ankam |
+| W3 | `#!T` (Uhr abfragen) | nichts |
+| W4 (USB) | `#WC 011 1` | vorher/nachher eintippen, ob Ethernet an ist |
+| X1 | `#WC 007 02 <in 2 min> <Datum>` | Display beobachten; falls es auf einen Impuls wartet, zur angezeigten Minute Buchse 1 |
+| X2 | `#WC 007 03` (auf Null) | Display beobachten, falls nötig Impuls Buchse 1 |
+| X3 | 30 s zuhören | Start E1, Ziel E4 |
+| X Ende | | Uhr am Gerät wieder richtig stellen |
+
 ## Test Gruppen U, V (Wiederholung #126, #127)
 
 Skript neu holen (Schritt 1). Lauf offen, Start E1, Ziel E4, E4 offen, App geschlossen. Jeder Schritt hat ein

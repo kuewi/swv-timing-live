@@ -10,7 +10,7 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
-#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P Q R S T U V)
+#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P Q R S T U V W X)
 #   M: Zeitmessarten nacheinander (TM550: BASIC, TIMING, SPEED, LAP; CP: z.B. NET TIME, PTB SEQ)
 #   N: Nummern zuordnen (TM550-Smartphone-App, Identifikation AT START / MANUAL / AUTOMATIC, CP-Tastatur)
 #   P: Eingaenge gesperrt/offen: #RP 006 und 023, Sperren an der Tastatur (CP rote Tasten, TM550 SHIFT+Ex),
@@ -21,6 +21,9 @@
 #   T: Ethernet-Menue CP 545 (Std/User Connexion): nur Fragen.
 #   U: Sperrzustaende einzeln: je Zustand (per Befehl und per Taste) zuerst NUR Buchse, dann NUR Taste.
 #   V: Sperrzeit 004 auf 2 s: zwei Impulse innerhalb 2 s, kommt nur einer? Je Buchse und Taste.
+#   W: Zeit von aussen eintragen (THCOM08 9.1): #WC 014 Zeit einfuegen, #WC 008 Handimpuls ausloesen,
+#      #!T Uhr abfragen, #WC 011 Ethernet einschalten (nur ueber USB sinnvoll).
+#   X: Uhr per Befehl synchronisieren (#WC 007). Verstellt die Uhr des Geraets.
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
     [string]$Ip = "",
@@ -585,6 +588,63 @@ if (Ask "V  Sperrzeit E4 auf 2 s: zwei Impulse innerhalb 2 s (Buchse, dann Taste
     $script:summary += ("{0,-22} {1}" -f "V Ergebnis", ("Buchse: " + (Count-T $b) + " Zeit(en) fuer 3, Taste: " + (Count-T $t) + " Zeit(en) fuer 3"))
     if ($o4 -match "^\d+$") { [void](Send-Cmd ("#WP 004 04 " + $o4.PadLeft(4, "0"))) }
     $script:summary += ("{0,-22} {1}" -f "V 004 E4 zurueck", (Read-004 4))
+}
+
+# W: Zeit von aussen eintragen. Fall: am Hauptgeraet wird von Hand gestoppt, die Reserve soll die Zeit auch haben.
+function Last-Time($lines, [string]$ch) {
+    # letzte Zeitzeile auf Eingang $ch: Uhrzeit (mit oder ohne Stunden) und Tagesfeld
+    $hit = $null
+    foreach ($l in $lines) {
+        if ($l -match "^T[N+=]\s.*?\s+M?0?$ch\s+((\d{1,2}:)?\d{1,2}:\d{2}\.\d+)\s+(\d+)") { $hit = @($Matches[1], $Matches[3]) }
+    }
+    return $hit
+}
+function Plus-Seconds([string]$t, [double]$sec) {
+    $p = $t.Split(":")
+    if ($p.Count -eq 2) { $p = @("0") + $p }
+    $ts = [TimeSpan]::FromHours([double]$p[0]) + [TimeSpan]::FromMinutes([double]$p[1]) + [TimeSpan]::FromSeconds([double]::Parse($p[2], [Globalization.CultureInfo]::InvariantCulture) + $sec)
+    return ("{0:00}:{1:00}:{2:00}.{3:00000}" -f [int][Math]::Floor($ts.TotalHours), $ts.Minutes, $ts.Seconds, [int](($ts.TotalSeconds - [Math]::Floor($ts.TotalSeconds)) * 100000))
+}
+if (Ask "W  Zeit von aussen: #WC 014 Zielzeit einfuegen, #WC 008 Handimpuls Ziel, #!T Uhr, #WC 011 Ethernet (USB)") {
+    Log "--- W1 #WC 014: Zielzeit 5 s nach einem Start einfuegen ---"
+    $st = Observe "W1 Start" "EINEN Start ueber Buchse 1 ausloesen (Boot auf der Strecke), dann nichts mehr" 15
+    $t = Last-Time $st "1"
+    if ($t) {
+        $fin = Plus-Seconds $t[0] 5
+        [void](Send-Cmd ("#WC 014 04 0000 " + $fin + " " + $t[1]))
+        [void](Collect 3000 5000)
+        Note "W1 Display" "Steht das Boot jetzt im Ziel mit Laufzeit 5 s (Display/Papier)? Was genau steht da?"
+        [void](Send-Cmd ("#WC 014 04 0001 " + (Plus-Seconds $t[0] 6) + " " + $t[1]))
+        Note "W1 mit Nr" "Zweite eingefuegte Zeit (mit Nr 1, Laufzeit 6 s): was zeigt das Geraet?"
+    } else { Log "W1: keine Startzeile erkannt, #WC 014 uebersprungen" }
+    Log "--- W2 #WC 008 04: Handimpuls auf Eingang 4 ausloesen ---"
+    [void](Observe "W2 Start" "EINEN Start ueber Buchse 1 ausloesen, dann nichts mehr" 15)
+    [void](Send-Cmd "#WC 008 04")
+    [void](Collect 3000 5000)
+    [void](Send-Cmd "#WC 008 4")
+    Note "W2 Display" "Kam am Geraet ein Zielimpuls an (Boot im Ziel, Papier)? Nach welchem der zwei Befehle?"
+    Log "--- W3 #!T Uhr abfragen ---"
+    [void](Send-Cmd "#!T")
+    if ($Com) {
+        Log "--- W4 #WC 011 1 (Ethernet mit Standard-IP einschalten) ---"
+        Note "W4 vorher" "Ethernet am Geraet vorher AUS (z.B. nach dem Einschalten nicht eingeschaltet) (j/n)?"
+        [void](Send-Cmd "#WC 011 1")
+        Note "W4 nachher" "Ist Ethernet jetzt an (Symbol, ping 192.168.1.50 in einem zweiten Fenster) (j/n)?"
+    }
+}
+
+# X: Uhr per Befehl stellen (THCOM08 #WC 007). Typ 02 manuell mit Uhrzeit, Typ 03 Synchro auf Null.
+if (Ask "X  Uhr per Befehl: #WC 007 02 (manuell, naechste Minute) und #WC 007 03 (auf Null). Verstellt die Uhr!") {
+    $n = (Get-Date).AddMinutes(2)
+    $cmd = "#WC 007 02 " + $n.ToString("HH:mm") + " " + $n.ToString("dd/MM/yy")
+    [void](Send-Cmd $cmd)
+    [void](Observe "X1 manuell" ("Display beobachten bis " + $n.ToString("HH:mm") + " Uhr (Aufforderung? Wartet es auf einen Impuls? Dann Impuls auf Buchse 1 genau um " + $n.ToString("HH:mm:00") + ")") 150)
+    Note "X1 Display" "Was hat das Geraet gezeigt, und welche Uhrzeit zeigt es jetzt?"
+    [void](Send-Cmd "#WC 007 03")
+    [void](Observe "X2 Null" "Display beobachten; falls es auf einen Impuls wartet: Impuls auf Buchse 1" 60)
+    Note "X2 Display" "Was hat das Geraet gezeigt, und welche Uhrzeit zeigt es jetzt?"
+    [void](Observe "X3 Impulse" "Start auf E1 und Ziel auf E4 ausloesen (Zeitformat)" 30)
+    Note "X Ende" "Uhr am Geraet danach wieder auf die richtige Zeit stellen (Synchronisation). Erledigt (j/n)?"
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen
