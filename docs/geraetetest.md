@@ -328,6 +328,22 @@ powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -C
 | X3 | 30 s zuhören | Start E1, Ziel E4 |
 | X Ende | | Uhr am Gerät wieder richtig stellen |
 
+### Ergebnis Gruppen W, X, 26.11.2026 (CP 545 VB16 Ethernet, TM550 1.48 Ethernet)
+
+| Befehl | CP 545 | TM550 |
+| --- | --- | --- |
+| `#WC 014 04 0000 <Zeit> 9826` (Zeit einfügen, Tag 4-stellig) | `AK R`, nichts eingefügt | `AK C`, Zeile `T+    3   24 04 …` und `IR`: Zielzeit für das älteste Boot auf der Strecke (Nr 3), nicht für das zuletzt gestartete |
+| `#WC 014 04 0001 …` | `AK R` | `AK C`, `T+ 0001 …` für Nr 1 |
+| `#WC 008 04` (Handimpuls) | `AK C`, `TN … M4`, Boot im Ziel, Papier 12.2 | `AK C`, `TN … M4`, Boot im Ziel (12.5) |
+| `#WC 008 4` | `AK F` | `AK C`, löst aber einen **Start** aus (`M1`) |
+| `#!T` | `AK C`, keine Zeile | `AK R` |
+| `#WC 007 02 HH:MM DD.MM.YY` | `AK F` (Skript schickte Punkte statt `/`) | `AK C`, Uhr sofort auf HH:MM:00 gestellt (kein Impuls nötig) |
+| `#WC 007 03` | `AK F` | `AK F` |
+| Sync von Hand am CP | `&P 010 02 10 22:41 26/11/26 00` kommt von selbst (Ereignismeldung) | |
+
+Danach antwortete der CP 545 weder über Ethernet (Papier «TCP Schliessen socket 0») noch über USB auf Befehle,
+schickte über USB aber noch gepufferte Zeilen. Die Läufe ab 22:58 sind deshalb nicht auswertbar.
+
 ## Test Gruppen U, V (Wiederholung #126, #127)
 
 Skript neu holen (Schritt 1). Lauf offen, Start E1, Ziel E4, E4 offen, App geschlossen. Jeder Schritt hat ein

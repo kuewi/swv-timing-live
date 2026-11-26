@@ -611,18 +611,22 @@ if (Ask "W  Zeit von aussen: #WC 014 Zielzeit einfuegen, #WC 008 Handimpuls Ziel
     $t = Last-Time $st "1"
     if ($t) {
         $fin = Plus-Seconds $t[0] 5
-        [void](Send-Cmd ("#WC 014 04 0000 " + $fin + " " + $t[1]))
+        $day = $t[1].PadLeft(5, "0")   # THCOM08: DDDDD (5 Stellen); CP 545 lehnte 4 Stellen mit AK R ab
+        [void](Send-Cmd ("#WC 014 04 0000 " + $fin + " " + $day))
         [void](Collect 3000 5000)
         Note "W1 Display" "Steht das Boot jetzt im Ziel mit Laufzeit 5 s (Display/Papier)? Was genau steht da?"
-        [void](Send-Cmd ("#WC 014 04 0001 " + (Plus-Seconds $t[0] 6) + " " + $t[1]))
-        Note "W1 mit Nr" "Zweite eingefuegte Zeit (mit Nr 1, Laufzeit 6 s): was zeigt das Geraet?"
+        Note "W1 Nr" "Welche Startnummer hat das Boot auf der Strecke (Display)? Nur die Zahl"
+        $bn = (Read-Host "Nochmals die Startnummer (fuer den zweiten Versuch)").Trim()
+        if ($bn -match "^\d+$") {
+            [void](Send-Cmd ("#WC 014 04 " + $bn.PadLeft(4, "0") + " " + (Plus-Seconds $t[0] 6) + " " + $day))
+            Note "W1 mit Nr" "Zweite eingefuegte Zeit (mit dieser Nr, Laufzeit 6 s): Boot jetzt im Ziel? Was zeigt das Geraet?"
+        }
     } else { Log "W1: keine Startzeile erkannt, #WC 014 uebersprungen" }
     Log "--- W2 #WC 008 04: Handimpuls auf Eingang 4 ausloesen ---"
     [void](Observe "W2 Start" "EINEN Start ueber Buchse 1 ausloesen, dann nichts mehr" 15)
     [void](Send-Cmd "#WC 008 04")
     [void](Collect 3000 5000)
-    [void](Send-Cmd "#WC 008 4")
-    Note "W2 Display" "Kam am Geraet ein Zielimpuls an (Boot im Ziel, Papier)? Nach welchem der zwei Befehle?"
+    Note "W2 Display" "Kam am Geraet ein Zielimpuls an (Boot im Ziel, Papier, Laufzeit)?"
     Log "--- W3 #!T Uhr abfragen ---"
     [void](Send-Cmd "#!T")
     if ($Com) {
@@ -636,7 +640,8 @@ if (Ask "W  Zeit von aussen: #WC 014 Zielzeit einfuegen, #WC 008 Handimpuls Ziel
 # X: Uhr per Befehl stellen (THCOM08 #WC 007). Typ 02 manuell mit Uhrzeit, Typ 03 Synchro auf Null.
 if (Ask "X  Uhr per Befehl: #WC 007 02 (manuell, naechste Minute) und #WC 007 03 (auf Null). Verstellt die Uhr!") {
     $n = (Get-Date).AddMinutes(2)
-    $cmd = "#WC 007 02 " + $n.ToString("HH:mm") + " " + $n.ToString("dd/MM/yy")
+    # Schraegstriche fest (die deutsche Einstellung machte aus / sonst Punkte, CP: AK F)
+    $cmd = "#WC 007 02 " + $n.ToString("HH:mm", [Globalization.CultureInfo]::InvariantCulture) + " " + $n.ToString("dd'/'MM'/'yy", [Globalization.CultureInfo]::InvariantCulture)
     [void](Send-Cmd $cmd)
     [void](Observe "X1 manuell" ("Display beobachten bis " + $n.ToString("HH:mm") + " Uhr (Aufforderung? Wartet es auf einen Impuls? Dann Impuls auf Buchse 1 genau um " + $n.ToString("HH:mm:00") + ")") 150)
     Note "X1 Display" "Was hat das Geraet gezeigt, und welche Uhrzeit zeigt es jetzt?"
