@@ -347,6 +347,10 @@ Ergebnis: Der CP 545 VB16 kann über die Verbindung keine Zeit einfügen und kei
 auslösen. Über USB (23:40) antwortete er wieder auf nichts, schickte aber Zeilen mit Prüfsumme: das Skript fragt
 seither ohne Antwort mit Prüfsumme nach (wie die App).
 
+USB (23:50, mit Prüfsumme nach der Rückfrage): `#SN` ohne Prüfsumme keine Antwort, mit Prüfsumme `AK C`.
+`#WC 014`: `AK R`. `#WC 008 04`: `AK C`, `TN … M4` (auch ohne offenen Lauf). `#!T`: `AK C` ohne Zeile.
+`#WC 011 1`: `AK R`, Ethernet bleibt aus. Ethernet am CP lässt sich also nur am Gerät einschalten.
+
 Danach antwortete der CP 545 weder über Ethernet (Papier «TCP Schliessen socket 0») noch über USB auf Befehle,
 schickte über USB aber noch gepufferte Zeilen. Die Läufe ab 22:58 sind deshalb nicht auswertbar.
 
