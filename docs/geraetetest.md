@@ -325,6 +325,21 @@ powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -C
 Die Zusammenfassung zeigt «Versatz Gerät - PC» vorher und nachher. Nahe 0 oder genau 1 s heisst: der Sync über RS232
 funktioniert, die App kann ihn nutzen.
 
+### Ergebnis Gruppe Y, 27.11.2026 (CP 545 VB16, RS232 38400 und 9600 Baud)
+
+- Menü «Master/Slave RS232» hat keine Auswahl; der CP ist danach Slave und zeigt «warten auf Synchro».
+- Als Slave schickt der CP jede Sekunde `#!T<TAB>0075` (Anfrage nach der Zeit, mit Prüfsumme), auf RS232 bei 38400
+  und bei 9600 Baud.
+- Die Zeile `!T HH:MM:SS DD/MM/YY` des PC zu jeder vollen Sekunde (mit Prüfsumme) nimmt er nicht an.
+- `#SN` antwortet über RS232 nur mit Prüfsumme.
+
+Nächster Versuch Gruppe Z: auf jede Anfrage sofort antworten (abwechselnd mit und ohne Prüfsumme) und zur vollen
+Sekunde ein Puls auf DTR/RTS des Adapters, falls der CP den Sekunden-Top über eine Leitung erwartet.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM4 -Baud 38400 -Nur Z
+```
+
 ## Test Gruppen W, X (Zeit von aussen, Uhr per Befehl)
 
 Frage: Kann die App eine Zeit ins Reserve-Gerät eintragen, wenn am Hauptgerät von Hand gestoppt wird? Kann sie die

@@ -10,7 +10,7 @@
 #   CP 545 USB:       powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device cp545 -Com COM5
 #   TM550 Ethernet:   powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Ip 192.168.1.51
 #   TM550 USB:        powershell -ExecutionPolicy Bypass -File .\fernbefehle_test.ps1 -Device tm550 -Com COM14
-#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P Q R S T U V W X Y)
+#   Nur einzelne Gruppen: ... -Nur A,G     (Gruppen A B C D E G H I F M N O P Q R S T U V W X Y Z)
 #   M: Zeitmessarten nacheinander (TM550: BASIC, TIMING, SPEED, LAP; CP: z.B. NET TIME, PTB SEQ)
 #   N: Nummern zuordnen (TM550-Smartphone-App, Identifikation AT START / MANUAL / AUTOMATIC, CP-Tastatur)
 #   P: Eingaenge gesperrt/offen: #RP 006 und 023, Sperren an der Tastatur (CP rote Tasten, TM550 SHIFT+Ex),
@@ -26,6 +26,8 @@
 #   X: Uhr per Befehl synchronisieren (#WC 007). Verstellt die Uhr des Geraets.
 #   Y: CP 545 ueber RS232 (USB-RS232-Adapter): PC als Master fuer die Synchronisation (!T jede volle Sekunde),
 #      danach Versatz CP-Uhr zu PC-Uhr aus einem Impuls; CP als Master: sendet er !T?  Nur mit -Com.
+#   Z: wie Y, aber Antwort auf jede Anfrage #!T des CP (abwechselnd mit/ohne Pruefsumme) und zur vollen Sekunde
+#      ein Puls auf DTR und RTS des Adapters (falls der CP einen Sekunden-Top ueber eine Leitung erwartet).
 param(
     [ValidateSet("cp545", "tm550")][string]$Device = "cp545",
     [string]$Ip = "",
@@ -721,6 +723,48 @@ if ($Device -eq "cp545" -and $Com -and (Ask "Y  RS232 Master/Slave: PC sendet !T
     Write-Host "Y3: 30 s zuhoeren, ob der CP als Master !T-Zeilen schickt" -ForegroundColor Yellow
     Watch-Offset "Y3 Master" 30
     Note "Y Ende" "Uhr am CP wieder richtig (sonst F > Synchronisation von Hand) (j/n)?"
+}
+
+# Z: CP 545 als Slave fragt jede Sekunde «#!T». Antwort sofort, Sekunden-Top als Puls auf DTR/RTS.
+if ($Device -eq "cp545" -and $Com -and (Ask "Z  RS232 Slave: auf #!T antworten (mit/ohne Pruefsumme), Puls auf DTR/RTS zur vollen Sekunde")) {
+    Note "Z0 Menue" "Am CP F > Synchronisation > Master/Slave RS232 waehlen, bis er 'warten auf Synchro' zeigt (j)"
+    Write-Host "Z1: 40 s lang beantwortet der PC jede Anfrage. Display beobachten." -ForegroundColor Yellow
+    [void](Read-Host "Enter druecken zum Start")
+    $end = (Get-Date).AddSeconds(40); $buf = ""; $n = 0
+    while ((Get-Date) -lt $end) {
+        $chunk = Read-Raw
+        if ($chunk) { $buf += $chunk }
+        while ($buf -match "^(.*?)\n") {
+            $line = $Matches[1].TrimEnd("`r"); $buf = $buf.Substring($Matches[0].Length)
+            if (-not $line.Trim()) { continue }
+            Log ("   <- " + (Visible $line))
+            if ($line -match "^#!T") {
+                $now = Get-Date
+                $top = $now.Date.AddSeconds([Math]::Floor($now.TimeOfDay.TotalSeconds) + 1)
+                $msg = "!T " + $top.ToString("HH:mm:ss", [Globalization.CultureInfo]::InvariantCulture) + " " + $top.ToString("dd'/'MM'/'yy", [Globalization.CultureInfo]::InvariantCulture)
+                $cs = ($n % 2 -eq 0); $n++
+                $frame = $(if ($cs) { $msg + "`t" + (Cs16 $msg) + "`r`n" } else { $msg + "`r`n" })
+                Write-Raw $frame
+                Log ("-> " + (Visible $frame.TrimEnd()) + $(if ($cs) { "  (mit Pruefsumme)" } else { "  (ohne)" }))
+                $ms = ($top - (Get-Date)).TotalMilliseconds
+                if ($ms -gt 0) { Start-Sleep -Milliseconds ([int]$ms) }
+                if ($script:sp) {
+                    $script:sp.DtrEnable = $false; $script:sp.RtsEnable = $false
+                    Start-Sleep -Milliseconds 20
+                    $script:sp.DtrEnable = $true; $script:sp.RtsEnable = $true
+                    Log "   Puls DTR/RTS zur Sekunde $($top.ToString('HH:mm:ss'))"
+                }
+            } elseif ($line -match "^T[N+=]\s") {
+                Log "   (Zeitzeile)"
+            }
+        }
+        Start-Sleep -Milliseconds 5
+    }
+    Note "Z1 Display" "Hat der CP synchronisiert? Was zeigt er (Uhrzeit)?"
+    Write-Host "Z2: Lauf oeffnen falls noetig, dann EINEN Impuls ueber Buchse 1 (misst den Versatz)" -ForegroundColor Yellow
+    [void](Read-Host "Enter, dann 60 s Zeit")
+    Watch-Offset "Z2 nachher" 60
+    Note "Z Ende" "Falls der CP noch auf Synchro wartet: abbrechen und Uhr von Hand stellen. Erledigt (j/n)?"
 }
 
 # F: Zeilen ohne Stunden (nur Info): letzte Impulse mit #RT anfordern, Format pruefen
