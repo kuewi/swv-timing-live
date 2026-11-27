@@ -1,13 +1,13 @@
 # SWV Timing Live (SWV Live-Ranking)
 
-![Oberfläche v1.22.0](docs/screenshots/ui_v1.22.0.png)
+![Oberfläche v1.23.0](docs/screenshots/ui_v1.23.0.png)
 
 
 Speakerbildschirm für den Schweizer Wasserfahrverband (SWV). Die App liest die Zeiten des
 TAG Heuer Chronoprinter CP 545 oder des ITS/Vola TM550 und zeigt Live-Zeit, Zieleinlauf, Ranglisten pro Kategorie,
 nächste Starter, Ereignis-Ticker und Statistik.
 
-**Dokumentation (PDF):** [Benutzerhandbuch](https://github.com/kuewi/swv-timing-live/raw/main/docs/handbuch/SWV_Live-Ranking_Benutzerhandbuch_v1.22.0.pdf) · [Training](https://github.com/kuewi/swv-timing-live/raw/main/docs/handbuch/SWV_Live-Ranking_Training_v1.22.0.pdf) · [Übersicht](docs/handbuch/README.md)
+**Dokumentation (PDF):** [Benutzerhandbuch](https://github.com/kuewi/swv-timing-live/raw/main/docs/handbuch/SWV_Live-Ranking_Benutzerhandbuch_v1.23.0.pdf) · [Training](https://github.com/kuewi/swv-timing-live/raw/main/docs/handbuch/SWV_Live-Ranking_Training_v1.23.0.pdf) · [Übersicht](docs/handbuch/README.md)
 
 ## Verbindung zum Zeitmessgerät
 
@@ -51,8 +51,8 @@ brauchen dieselben Start- und Zielimpulse (Verteilung elektrisch mit ITS/TAG Heu
 
 ### Üben
 
-![Simulator CP 545 v1.22.0](docs/screenshots/sim_cp545_v1.22.0.png)
-![Simulator TM550 v1.22.0](docs/screenshots/sim_tm550_v1.22.0.png)
+![Simulator CP 545 v1.23.0](docs/screenshots/sim_cp545_v1.23.0.png)
+![Simulator TM550 v1.23.0](docs/screenshots/sim_tm550_v1.23.0.png)
 
 Unter Simulator: «Üben: CP 545 mit Tastatur» bzw. «Üben: TM550» öffnet ein nachgebautes Gerät
 (Vorderseite mit Display und Tastenfeld nach Foto, Rückseite mit Bananenbuchsen und Anschlüssen) und

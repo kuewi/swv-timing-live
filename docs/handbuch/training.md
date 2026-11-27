@@ -1,6 +1,6 @@
 # Training SWV Live-Ranking
 
-Stand: App v1.22.0. Alle Übungen laufen ohne echtes Gerät mit dem eingebauten Simulator. Die App ist mit dem
+Stand: App v1.23.0. Alle Übungen laufen ohne echtes Gerät mit dem eingebauten Simulator. Die App ist mit dem
 Simulator verbunden wie mit einem echten CP 545 oder TM550. Nachschlagen im [Benutzerhandbuch](benutzerhandbuch.md).
 
 | Stufe | Ziel | Dauer |
@@ -118,7 +118,8 @@ Kontrolle: unter «Auf Fahrstrecke» steht die richtige Nummer mit der ursprüng
 
 1. Ein Boot starten, auf der Rückseite mit Rechtsklick auf die Zielbuchse einen Doppelkontakt auslösen
    (oder Übungsfall «Doppelkontakt Ziel»).
-2. Die Prellzeit Ziel fängt den zweiten Impuls ab. Im Log steht der ignorierte Impuls.
+2. Die Prellzeit Ziel fängt den zweiten Impuls ab. Im Log steht der ignorierte Impuls. Die Prellzeit steht unter
+   «Zeitmessung» in Sekunden (0,3 oder 0.3).
 3. Einen zweiten Zielimpuls ohne Boot im Ziel auslösen. Klick auf die Zeile letzter Zieleinlauf unter
    «Auf Fahrstrecke» › «Zielzeit ungültig (Fehlimpuls), Boot wieder auf die Strecke».
 
@@ -225,11 +226,23 @@ Nur mit zwei Geräten an denselben Impulsen, z.B. CP 545 über USB und TM550 üb
 2. Impuls nur am Reserve-Gerät auslösen (Handtaste). Die App fragt: «Reserve übernehmen» oder
    «Hauptgerät gilt (Impuls verwerfen)», optional «Für diese Sitzung immer so».
 3. Hauptgerät trennen: die Reserve liefert alle Zeiten, «Verbindung» wird orange.
-4. Grüne Taste 4 nur am Hauptgerät (Boot am CP von Hand beenden): keine Warnung zur Reserve.
+4. Grüne Taste 4 nur am Hauptgerät (Boot am CP von Hand beenden): keine Warnung zur Reserve. Die App überträgt
+   den Handimpuls an die Reserve; dort ist das Boot danach auch im Ziel.
 5. Doppelkontakt am Ziel (Bananenstecker kurz wackeln): beide Geräte bekommen zwei Impulse innerhalb der
    Prellzeit. Die App nimmt den ersten, ohne Rückfrage «Abweichung».
 
 Kontrolle: im Log stehen keine Meldungen «nur beim Reserve-Gerät», solange beide Geräte jeden Impuls bekommen.
+
+### Übung 3.7a Uhren prüfen (mit echter Hardware)
+
+1. CP 545 als Hauptgerät, TM550 als Reserve verbinden. Im Log steht «Uhren prüfen: … einen Zielimpuls (E4)
+   auslösen».
+2. Ohne Boot auf der Strecke einen Zielimpuls an der gemeinsamen Buchse auslösen.
+3. Weicht der TM550 ab, fragt die App «TM550 … stellen?». Ja: zum nächsten Minutenwechsel springt die Uhr am
+   TM550. Danach nochmals einen Zielimpuls.
+4. Ein Boot starten: der Knopf «Uhren prüfen» unter «Verbindung» ist jetzt gesperrt.
+
+Kontrolle: im Log «Haupt- und Reserve-Gerät stimmen überein».
 
 ### Übung 3.8 Fehlerbericht
 

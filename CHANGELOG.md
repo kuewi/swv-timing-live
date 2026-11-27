@@ -1,5 +1,14 @@
 # Änderungen
 
+## v1.23.0 (27.11.2026)
+Aus den Gerätetests vom 26. und 27.11.2026:
+- Uhren prüfen: beim ersten Verbinden von Haupt- und Reserve-Gerät fordert die App einen Testimpuls am Ziel (E4) an und vergleicht die Uhren (Gerät gegen PC-Uhr, Reserve gegen Hauptgerät). Weicht ein TM550 ab, stellt die App ihn nach Rückfrage mit `#WC 007 02` genau zum Minutenwechsel nach der Uhr des CP 545 bzw. der PC-Uhr und prüft danach nochmals. Der CP 545 lässt sich nicht fernstellen (auch nicht über RS232 Master/Slave): die App zeigt die Anleitung für F › Synchronisation. Knopf «Uhren prüfen» unter Verbindung, während des Wettkampfs gesperrt
+- Handimpuls am Hauptgerät (grüne Taste bzw. Taste E1/E4) geht an die Reserve: TM550 bekommt die Zeit mit `#WC 014` (auf seine Uhr umgerechnet), CP 545 einen Handimpuls `#WC 008` (Zeit = Empfang). Das Boot läuft an der Reserve nicht mehr weiter
+- Synchronisieren am TM550 meldet das Gerät mit `TN 0 0 01 …`: die App erfasst das nicht mehr als Start, legt die bisherigen Zeiten des Laufs ab (die Zählung beginnt neu) und bestimmt den Versatz zur Reserve neu
+- Prellzeit Start und Ziel in Sekunden statt Millisekunden; Komma und Punkt gelten («0,2», «0.2 s» = 200 ms)
+- Hinweis bei Zeitmessung: Sperren schaltet am Gerät die Buchse aus, die Handtaste löst trotzdem aus (Gerätetest U), die App ignoriert solche Impulse
+- Simulator: `#WC 007 02`, `#WC 008`, `#WC 014` wie die Geräte (TM550 nimmt alle an, CP 545 nur `#WC 008`)
+
 ## v1.22.0 (26.11.2026)
 Aus den Fehlerberichten vom 26.11.2026 (CP 545 über USB als Hauptgerät, TM550 über USB als Reserve):
 - Ziel freigeben schreibt die echte Zielnummer wieder an den CP. Vorher blieb dort die Sperrnummer 9999: der Zielimpuls von Nr 1 ging am CP an 9999, Nr 1 lief am CP weiter (überholen von 202 schien dann schiefzugehen)

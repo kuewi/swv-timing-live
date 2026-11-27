@@ -1,6 +1,6 @@
 # Benutzerhandbuch SWV Live-Ranking
 
-Stand: App v1.22.0, CP 545 Firmware VB16, TM550 Firmware 1.48. Alle Namen in den Bildern sind erfunden.
+Stand: App v1.23.0, CP 545 Firmware VB16, TM550 Firmware 1.48. Alle Namen in den Bildern sind erfunden.
 
 ## Inhalt
 
@@ -176,13 +176,31 @@ Weitere Knöpfe:
 Unter «Reserve-Gerät» Keines, Ethernet oder USB wählen und «Reserve verbinden». Details in
 [Abschnitt 10](#10-hauptgerät-und-reserve-gerät).
 
+### 5.3 Uhren prüfen und stellen
+
+Beim ersten Verbinden von Haupt- und Reserve-Gerät prüft die App die Uhren. Im Log steht «Uhren prüfen: … einen
+Zielimpuls (E4) auslösen». Ohne Boot auf der Strecke einen Impuls am Ziel auslösen, bei zwei Geräten an der
+gemeinsamen Buchse. Der Impuls wird nicht gewertet.
+
+| Ergebnis | Was die App tut |
+| --- | --- |
+| Gerät höchstens 1 s neben der PC-Uhr, Reserve höchstens 0,2 s neben dem Hauptgerät | Meldung «stimmen überein» |
+| TM550 weicht ab | fragt «TM550 … stellen?» und stellt ihn genau zum nächsten Minutenwechsel nach der Uhr des CP 545 (bei zwei Geräten) bzw. nach der PC-Uhr. Danach nochmals einen Zielimpuls zur Kontrolle |
+| CP 545 weicht ab | Anleitung: F › Synchronisation › Manuell (kein Lauf offen), Uhrzeit eingeben, Impuls auf E1. Den CP 545 kann die App nicht stellen, auch nicht über RS232 |
+| zwei CP 545 weichen ab | Anleitung: an beiden dieselbe Uhrzeit eingeben und mit einem gemeinsamen Impuls auf E1 synchronisieren |
+
+Der Knopf «Uhren prüfen» unter «Verbindung» startet die Prüfung später erneut. Sobald ein Boot auf der Strecke
+ist oder Resultate da sind, ist er gesperrt: während des Wettkampfs wird keine Uhr verstellt.
+
+Synchronisiert man am TM550 von Hand, meldet er das; die App wertet diese Zeile nicht als Start.
+
 ## 6. Zeitmessung einstellen
 
 ![Zeitmessung](bilder/04_zeitmessung.png)
 
 | Einstellung | Bedeutung |
 | --- | --- |
-| Prellzeit Start / Ziel (ms) | weitere Impulse am selben Eingang innerhalb dieser Zeit werden ignoriert (Doppelkontakt). Die App schreibt den Wert beim Verbinden und bei jeder Änderung als Sperrzeit des Eingangs ans Gerät (CP 545: Einstellungen › Sperre, TM550: Input blocking time), damit auch das Gerät den Zweitimpuls nicht dem nächsten Boot gibt |
+| Prellzeit Start / Ziel (s) | in Sekunden, Komma oder Punkt (0,3 oder 0.3). Weitere Impulse am selben Eingang innerhalb dieser Zeit werden ignoriert (Doppelkontakt). Die App schreibt den Wert beim Verbinden und bei jeder Änderung als Sperrzeit des Eingangs ans Gerät (CP 545: Einstellungen › Sperre, TM550: Input blocking time), damit auch das Gerät den Zweitimpuls nicht dem nächsten Boot gibt |
 | Mindestfahrzeit (s) | Zielimpulse vor dieser Fahrzeit gelten als Fehlimpuls, 0 = aus |
 | Eingang Start / Ziel (1 bis 4) | Eingang am Gerät für Start und Ziel, Standard Start 1, Ziel 4 |
 | Sperrnummer am Gerät | Nummer, die bei gesperrtem Start am Gerät vorgeladen wird, Standard 9999 |
@@ -208,7 +226,9 @@ Sperren am Gerät und in der App hängen zusammen:
 | SHIFT + E1 bis E4 am TM550 | die App stellt den Schalter sofort um |
 | beim Verbinden am Hauptgerät gesperrt | die App schaltet «Start sperren» bzw. «Ziel sperren» ein (Eintrag «beim Verbinden»). Ist in der App gesperrt, sperrt die App am Gerät. Die Reserve bekommt den Zustand der App |
 
-Die grüne Handtaste am CP 545 löst auch bei gesperrtem Eingang aus. Deshalb lädt die App bei gesperrtem Start
+Sperren schaltet am Gerät nur die Buchse aus. Die Handtaste löst auch bei gesperrtem Eingang aus: am CP 545 die
+grüne Taste, am TM550 die Taste E1 bis E4 (Zustand «senden» und «gesperrt», Gerätetest 26.11.2026). Die App
+ignoriert solche Impulse bei «Start sperren» bzw. «Ziel sperren». Deshalb lädt die App bei gesperrtem Start
 zusätzlich die Sperrnummer 9999 vor: ein solcher Start verbraucht keine echte Startnummer. Beim Ziel gilt das
 gleiche; nach «Ziel freigeben» schreibt die App die Nummer des nächsten Boots wieder an den CP.
 
@@ -343,7 +363,9 @@ einem Unterbruch nicht: fehlende Zeilen holt die App per Download des offenen La
 Smartphone-App (Printer BLE), nicht über die App am PC.
 
 Hinweis: Bananenstecker an E4 können prellen (Doppelkontakt, im Test 0,1 s). Die Prellzeit Ziel fängt das ab;
-die App schreibt sie auch als Sperrzeit ans Gerät.
+die App schreibt sie auch als Sperrzeit ans Gerät. Ab Werk steht der TM550 auf 0,1 s, das ist zu kurz. Am TM550
+wirkt die Sperrzeit auf Buchse und Taste, am CP 545 nur auf die Buchse: eine doppelt gedrückte grüne Taste fängt
+nur die Prellzeit der App ab.
 
 ## 10. Hauptgerät und Reserve-Gerät
 
@@ -360,7 +382,10 @@ Beide Geräte hängen an denselben Start- und Zielimpulsen. Mögliche Kombinatio
   gröberen Geräts auseinanderliegen (CP 545 bei 1/10: Zeitzeilen 1/100; TM550 bei 1/10: Zeitzeilen 1/10, also
   0,15 s). Bei mehreren passt der nächstgelegene.
 - Ein Zweitimpuls innerhalb der Prellzeit, der nur an einem Gerät ankommt (Doppelkontakt), wird ohne Rückfrage
-  verworfen. Ein Handimpuls am Hauptgerät (grüne Taste) erwartet keinen Impuls der Reserve.
+  verworfen.
+- Handimpuls am Hauptgerät (grüne Taste am CP, Taste am TM550): die Reserve hat ihn nicht. Die App überträgt ihn:
+  an einen TM550 als Zeit (`#WC 014`, auf seine Uhr umgerechnet), an einen CP 545 als Handimpuls (`#WC 008`,
+  Zeit = Empfang, etwas später). So läuft das Boot an der Reserve nicht weiter.
 
 Hat nur die Reserve einen Impuls, fragt die App:
 
@@ -426,7 +451,7 @@ fehlende Zeiten holt «Lauf vom CP laden».
 | «Verbindung» rot, CP nicht gefunden | Ethernet am CP aus oder andere Adresse | F › Einstellungen › Ethernet › Std Connexion, Adresse unter «User Connexion» mit dem Suchbereich in der Meldung vergleichen |
 | Meldung «nur beim Reserve-Gerät» bei jedem Impuls | Uhr der Reserve springt oder Präzision verschieden | Präzision am Gerät einstellen, Uhr der Reserve stellen |
 | USB am TM550 stumm | Baudrate oder Flow control | Communication › USB › 9600 Bds |
-| Meldung «Uhr … geht … vor/nach» | Uhr am Gerät falsch | TM550: Synchronisation; CP 545: F › Synchronisation |
+| Meldung «Uhr … geht … vor/nach» | Uhr am Gerät falsch | «Uhren prüfen» (TM550 stellt die App), CP 545: F › Synchronisation |
 | Verbindung da, aber keine Startnummern im CP | keine NET TIME oder kein Lauf offen | NET TIME wählen, Lauf öffnen |
 | Ziel doppelt | Doppelkontakt, Bananenstecker | Prellzeit Ziel erhöhen, Zeitzeile unter «Auf Fahrstrecke» ungültig lassen |
 | Zielzeit beim falschen Boot | Überholen | Boot ziehen oder «Kommt als nächstes ins Ziel (überholt)», bei schon vergebener Zeit «Letzte Zielzeit gehört Nr …» |
@@ -447,7 +472,8 @@ beschreiben, was passiert ist und was erwartet war, «Bericht speichern». Die Z
 | --- | --- |
 | Vortag | Startliste laden, Kategorien prüfen, Wettkampf eintragen, Update installieren |
 | Aufbau | Lichtschranken an Eingang 1 (Start) und 4 (Ziel), Kabel zum PC, Reserve-Gerät parallel |
-| Gerät | ON, Ethernet einschalten, Uhr prüfen, NET TIME (CP) bzw. TIMING (TM550), Lauf öffnen, alle Eingänge offen |
+| Gerät | ON, Ethernet einschalten, NET TIME (CP) bzw. TIMING (TM550), Lauf öffnen, alle Eingänge offen |
+| Uhren | nach dem Verbinden Testimpuls am Ziel, Meldung «stimmen überein» abwarten |
 | App | verbinden, «Verbindung» grün, Präzision am Gerät einstellen, Testimpuls mit Testnummer 951 bis 999 |
 | Rennen | Startnummern im Blick («im CP»), Boote am Start bestätigen, Korrekturen sofort |
 | Ende | PDF Rangliste, Export pro Verein, Daten sichern, dann trennen |

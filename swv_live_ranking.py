@@ -74,7 +74,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.22.0"
+APP_VERSION = "1.23.0"
 ORANGE = "#D9730D"   # Update geladen, wartet auf Installation
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
@@ -869,6 +869,26 @@ def format_manual_time(minutes, seconds, tenths):
 
 RESULT_DEC = 2   # Nachkommastellen der Resultate (Einstellung Praezision, 0-3)
 PREC_LABEL = {0: "1 s", 1: "1/10 s", 2: "1/100 s", 3: "1/1000 s", 4: "1/10000 s", 5: "1/100000 s"}
+
+
+def parse_seconds_input(text):
+    """Sekunden aus einer Eingabe: Komma oder Punkt als Dezimaltrenner, «s» erlaubt («0,2 s», «0.2s», «.3»)."""
+    t = str(text).strip().lower().replace(" ", "").replace(",", ".")
+    if t.endswith("sek"):
+        t = t[:-3]
+    elif t.endswith("s"):
+        t = t[:-1]
+    if not t or t.count(".") > 1:
+        raise ValueError(text)
+    v = float(t)
+    if v < 0 or v != v:
+        raise ValueError(text)
+    return v
+
+
+def fmt_seconds_input(sec):
+    """Sekunden fuers Eingabefeld: hoechstens 3 Stellen, ohne Nullen am Ende (0.3, 0.25, 1)."""
+    return f"{sec:.3f}".rstrip("0").rstrip(".") or "0"
 
 
 def fmt_secs(secs, decimals=None):
@@ -2982,6 +3002,35 @@ class SimCP:
             else:
                 self.send(f"&P 004 {k:02d} {self.block.get(k, 0):04d}", c)
                 self.send("AK C", c)
+            return
+        if p[:2] == ["#WC", "008"] and len(p) >= 3:  # Handimpuls ausloesen (Gerätetest W, 26.11.2026)
+            ch = int(p[2])
+            self.send("AK C", c)
+            threading.Timer(0.02, lambda: self.impulse(ch, manual=True)).start()
+            return
+        if p[:2] == ["#WC", "014"] and len(p) >= 6:  # Zeit einfuegen: TM550 ja (T+), CP 545 AK R
+            if self.device != "tm550":
+                self.send("AK R", c)
+                return
+            ch, nr = int(p[2]), int(p[3])
+            hh, mm, ss = p[4].split(":")
+            abs_t = (int(p[5]) - self.day_shift) * 86400 + int(hh) * 3600 + int(mm) * 60 + float(ss)
+            self.send("AK C", c)
+            with self.lock:
+                self.seq[ch] = self.seq.get(ch, 0) + 1
+                self.recs[(ch, self.seq[ch])] = ["T+", nr, abs_t]
+                self.send(self.fmt("T+", nr, self.seq[ch], ch, abs_t))
+            return
+        if p[:3] == ["#WC", "007", "02"] and len(p) >= 5:  # Uhr stellen: TM550 sofort auf HH:MM:00, CP AK F
+            if self.device != "tm550":
+                self.send("AK F", c)
+                return
+            hh, mm = p[3].split(":")
+            dd, mo, yy = p[4].split("/")
+            day = (datetime.date(2000 + int(yy), int(mo), int(dd)) - EPOCH_2000).days
+            self.clock_offset = day * 86400 + int(hh) * 3600 + int(mm) * 60 - local_abs()
+            self.send("AK C", c)
+            self.note(f"Uhr gestellt auf {hh}:{mm}:00")
             return
         if self.device == "tm550":
             return self._cmd_tm550(t, p, c)
@@ -5643,6 +5692,11 @@ class LiveRankingApp:
         self.e_bk_wait.bind("<Return>", lambda e: self.save_backup_wait())
         self.btn_connect = self._button(b, "Verbinden", self.toggle_connection, GREEN)
         self.btn_connect.grid(row=4, column=0, sticky="ew", pady=(0, 10))
+        self.btn_clock = self._button(b, "Uhren prüfen", self.clock_check_start)
+        self.btn_clock.grid(row=6, column=0, sticky="ew", pady=(0, 2))
+        self.lbl_clock_hint = self._label(b, "", fg=MUTED, wraplength=wrap, justify="left")
+        self.lbl_clock_hint.grid(row=7, column=0, sticky="w", pady=(0, 10))
+        self.update_clock_button()
         self.show_conn_frames()
         self.fill_eth_combos()
         self.set_conn_status("nicht verbunden", MUTED)
@@ -5652,13 +5706,13 @@ class LiveRankingApp:
         b.columnconfigure(0, weight=1)
         ts = self.settings["timing"]
         self.timing_entries = {}
-        rows = (("prell_start_ms", "Prellzeit Start (ms)"), ("prell_finish_ms", "Prellzeit Ziel (ms)"),
+        rows = (("prell_start_ms", "Prellzeit Start (s)"), ("prell_finish_ms", "Prellzeit Ziel (s)"),
                 ("min_run_s", "Mindestfahrzeit (s), 0 = aus"), ("ch_start", "Eingang Start (1-4)"),
                 ("ch_finish", "Eingang Ziel (1-4)"), ("lock_nr", "Sperrnummer am Gerät"))
         for i, (key, label) in enumerate(rows):
             self._label(b, label).grid(row=i, column=0, sticky="w", pady=2)
             e = self._entry(b, width=7)
-            e.insert(0, f"{ts[key]:g}")
+            e.insert(0, self.timing_text(key, ts[key]))
             e.grid(row=i, column=1, sticky="e", pady=2)
             e.bind("<FocusOut>", lambda ev: self.save_timing())
             e.bind("<Return>", lambda ev: self.save_timing())
@@ -5676,9 +5730,12 @@ class LiveRankingApp:
         self.sw_print_club = Switch(b, command=self.toggle_print_club, scale=self.ui_scale,
                                     on=ts.get("print_club", True))
         self.sw_print_club.grid(row=r, column=1, sticky="e", pady=(int(5 * self.ui_scale), 0))
-        self._label(b, "Gilt bei Ethernet und USB. Gesperrte und ungültige Impulse erscheinen unter «Auf "
-                       "Fahrstrecke» und lassen sich dort zuordnen. Vereinswechsel: der CP 545 druckt vor dem "
-                       "ersten Boot eines neuen Vereins eine Zeile (TM550 hat keinen Drucker).", fg=MUTED,
+        self._label(b, "Gilt bei Ethernet und USB. Prellzeit in Sekunden (0,3 oder 0.3), sie geht auch als "
+                       "Sperrzeit ans Gerät. Sperren schaltet am Gerät die Buchse aus; die Handtaste (CP grün, "
+                       "TM550 E1 bis E4) löst trotzdem aus, die App ignoriert solche Impulse. Gesperrte und "
+                       "ungültige Impulse erscheinen unter «Auf Fahrstrecke» und lassen sich dort zuordnen. "
+                       "Vereinswechsel: der CP 545 druckt vor dem ersten Boot eines neuen Vereins eine Zeile "
+                       "(TM550 hat keinen Drucker).", fg=MUTED,
                     wraplength=wrap, justify="left").grid(row=r + 1, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self._button(b, "Resultate aus Rohzeiten neu berechnen", self.ask_recompute).grid(
             row=r + 2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
@@ -5910,11 +5967,20 @@ class LiveRankingApp:
         self.save_settings()
         self.log("Vereinswechsel auf CP drucken: " + ("ein" if ts["print_club"] else "aus"), tag="ok")
 
+    @staticmethod
+    def timing_text(key, val):
+        """Anzeige im Feld: Prellzeiten in Sekunden (gespeichert in ms), sonst wie gespeichert."""
+        return fmt_seconds_input(val / 1000.0) if key.endswith("_ms") else f"{val:g}"
+
     def save_timing(self):
         ts = self.settings["timing"]
         for key, e in self.timing_entries.items():
             try:
-                val = float(e.get().replace(",", "."))
+                if key.endswith("_ms"):
+                    val = parse_seconds_input(e.get()) * 1000.0  # Eingabe in Sekunden, gespeichert in ms
+                    val = round(val)
+                else:
+                    val = float(e.get().replace(",", "."))
                 if key.startswith("ch_"):
                     other = ts["ch_finish" if key == "ch_start" else "ch_start"]
                     if val not in (1, 2, 3, 4) or val == other:
@@ -5932,12 +5998,16 @@ class LiveRankingApp:
                     raise ValueError
             except ValueError:
                 e.delete(0, "end")
-                e.insert(0, f"{ts[key]:g}")
+                e.insert(0, self.timing_text(key, ts[key]))
                 continue
             val = int(val) if key.endswith("ms") else val
+            if key.endswith("_ms"):  # einheitlich anzeigen (0,2 s -> 0.2)
+                e.delete(0, "end")
+                e.insert(0, self.timing_text(key, val))
             if val != ts[key]:
                 ts[key] = val
-                self.log(f"Zeitmessung: {key.replace('_', ' ')} = {val:g}", tag="ok")
+                shown = f"{self.timing_text(key, val)} s" if key.endswith("_ms") else f"{val:g}"
+                self.log(f"Zeitmessung: {key.replace('_ms', '').replace('_', ' ')} = {shown}", tag="ok")
                 if key.startswith("prell_"):
                     self.device_blocking_write()
         apply_channels(ts)
@@ -8739,6 +8809,12 @@ class LiveRankingApp:
         """Zeile vom Reserve-Geraet."""
         if info["type"] == "TN" and not info.get("answer"):
             self.b_rx_offsets = (getattr(self, "b_rx_offsets", []) + [(time.time(), info["abs"] - local_abs())])[-30:]
+        inj = getattr(self, "_b_inject", None)
+        if (inj and info["kind"] == "time" and info["ch"] == inj[0] and time.time() - inj[1] < 5
+                and (info["type"] == "T+" or info.get("manual")) and not info.get("answer")):
+            self._b_inject = None  # Kopie des Handimpulses vom Hauptgeraet: dort schon verarbeitet
+            DIAG.info(f"Reserve: eingetragener Handimpuls Eingang {info['ch']} {fmt_tod(info['tod'])} übernommen")
+            return
         info = self.backup_renumber(info)
         if info["type"] not in ("TN", "T+", "T="):
             if not self.main_connected():
@@ -8927,6 +9003,10 @@ class LiveRankingApp:
             return
         now = time.time()
         self.a_hist = [h for h in getattr(self, "a_hist", []) if now - h[2] < 30] + [(info["ch"], info["abs"], now)]
+        if info.get("manual") and not info.get("answer"):
+            # Handtaste: nur wenn die Reserve den Impuls nach kurzer Zeit nicht selbst hat (sonst doppelt)
+            self.root.after(800, lambda: self.backup_inject(info)
+                            if any(x[1] is info for x in self.a_pend) else None)
         i = self.backup_best(self.b_pend, info, now, main_side=True)
         if i is not None:
             b = self.b_pend.pop(i)[1]
@@ -8939,6 +9019,184 @@ class LiveRankingApp:
                      "die Zeit der Reserve gilt bereits (kein Doppel)", tag="test")
             return
         self.a_pend.append([now, info])
+
+    def backup_inject(self, info):
+        """Handimpuls am Hauptgeraet (Taste): die Reserve hat ihn nicht, ihr Boot liefe weiter (Stefan 26.11.2026).
+        TM550: Zeit mit #WC 014 eintragen (auf die Uhr der Reserve umgerechnet). CP 545 kann das nicht (AK R):
+        Handimpuls mit #WC 008 ausloesen, Zeit = Empfang, nur fuer die Anzeige der Reserve."""
+        ch = info["ch"]
+        if ch not in (CH_START, CH_FINISH) or self.cp_b is None or not self.backup_connected():
+            return
+        if self.tset()["lock_start" if ch == CH_START else "lock_finish"]:
+            return
+        if self.cp_b_device == "tm550" and self.b_offset is not None:
+            t = info["abs"] + self.b_offset
+            day = (getattr(self, "dev_clock", {}).get("B") or {}).get("day") or int(t // 86400)
+            tod = t % 86400
+            h, rem = divmod(tod, 3600)
+            mi, sec = divmod(rem, 60)
+            cmd = f"#WC 014 {ch:02d} 0000 {int(h):02d}:{int(mi):02d}:{sec:08.5f} {int(day):05d}"
+        else:
+            cmd = f"#WC 008 {ch:02d}"
+        self._b_inject = (ch, time.time())
+        DIAG.info(f"CP B> {cmd} (Handimpuls Hauptgerät an Reserve)")
+        self.cp_b.send(cmd)
+        self.log(f"Handimpuls Eingang {ch} am Hauptgerät an die Reserve übertragen"
+                 + ("" if cmd.startswith("#WC 014") else " (Handimpuls, Zeit = Empfang)"), tag="ok")
+
+    # ---------------- Uhren pruefen und stellen ---------------- #
+    def race_active(self):
+        """Wettkampf laeuft: Boot auf der Strecke oder schon Resultate. Dann Uhren nicht mehr stellen."""
+        return bool(self.course) or bool(self.results)
+
+    def note_dev_clock(self, info, dev):
+        """Uhr des Geraets gegenueber der PC-Uhr (Geraetezeit minus Empfangszeit), aus jeder Live-Zeitzeile."""
+        off = (info["tod"] - local_abs() % 86400 + 43200) % 86400 - 43200
+        dc = self.__dict__.setdefault("dev_clock", {})
+        prev = dc.get(dev)
+        dc[dev] = {"off": off, "t": time.time(), "day": info.get("day_raw", info["day"])}
+        if prev and abs(prev["off"] - off) > 2 and dev == "B" and self.b_offset is not None:
+            self.b_offset, self.b_offsets = None, []  # Reserve-Uhr verstellt: Versatz neu bestimmen
+        if getattr(self, "_clock_check", False):
+            self.root.after(300, self.clock_evaluate)
+
+    def on_device_sync(self, dev, info):
+        """TM550 meldet das Synchronisieren mit «TN 0 0 01 hh:mm:ss» (Gerätetest S, 26.11.2026). Kein Impuls.
+        Danach zaehlt die Seq neu: Zeiten des Laufs ablegen, Versatz zur Reserve neu bestimmen."""
+        name = self.dev_name() if dev == "A" else "Reserve-Gerät"
+        self.log(f"{name}: Uhr synchronisiert (Gerät {fmt_tod(info['tod'])})", tag="ok")
+        self.add_ticker(f"{name}: Uhr synchronisiert", "ziel")
+        self.__dict__.setdefault("dev_clock", {})[dev] = {
+            "off": (info["tod"] - local_abs() % 86400 + 43200) % 86400 - 43200, "t": time.time(),
+            "day": info.get("day_raw", info["day"])}
+        self.b_offset, self.b_offsets = None, []
+        if dev == "A" and self.cp_run and any(k[0] == "A" and k[1] == self.cp_run for k in self.cp_recs):
+            self.archive_run(self.cp_run, "Uhr synchronisiert")
+        if dev == "B" and getattr(self, "b_seq_last", {}):
+            self.b_seq_base = getattr(self, "b_seq_base", 0) + 10000
+            self.b_seq_last = {}
+
+    def clock_check_start(self, auto=False):
+        """Uhren pruefen: wartet auf einen Testimpuls an jedem verbundenen Geraet."""
+        if self.race_active():
+            if not auto:
+                self.log("Uhren prüfen: während des Wettkampfs nicht möglich (Boot auf der Strecke oder "
+                         "Resultate vorhanden)", tag="warn")
+            return
+        devs = [d for d, ok in (("A", self.main_connected()), ("B", self.backup_connected())) if ok]
+        if not devs:
+            if not auto:
+                self.log("Uhren prüfen: kein Gerät verbunden", tag="warn")
+            return
+        self._clock_check, self._clock_check_t = True, time.time()
+        both = len(devs) == 2
+        self.log("Uhren prüfen: " + ("an Haupt- und Reserve-Gerät gemeinsam" if both else "am Gerät")
+                 + " einen Zielimpuls (E4) auslösen, kein Boot auf der Strecke. Der Impuls wird nicht gewertet.",
+                 tag="warn")
+        self.add_ticker("Uhren prüfen: Testimpuls am Ziel auslösen", "warn")
+        self.update_clock_button()
+
+    def clock_evaluate(self):
+        if not getattr(self, "_clock_check", False):
+            return
+        if self.race_active():  # erster Start statt Testimpuls: nicht mehr stellen
+            self._clock_check = False
+            self.update_clock_button()
+            DIAG.info("Uhren prüfen abgebrochen: Wettkampf läuft")
+            return
+        dc = getattr(self, "dev_clock", {})
+        devs = [d for d, ok in (("A", self.main_connected()), ("B", self.backup_connected())) if ok]
+        if not devs or any(d not in dc or dc[d]["t"] < self._clock_check_t for d in devs):
+            return
+        self._clock_check = False
+        self.update_clock_button()
+        typ = {"A": self.cp_device, "B": self.cp_b_device}
+        name = {"A": self.dev_name(), "B": "Reserve-Gerät"}
+        if len(devs) == 1:
+            d = devs[0]
+            off = dc[d]["off"]
+            if abs(off) <= 1.0:
+                self.log(f"Uhren prüfen: {name[d]} weicht {off:+.2f} s von der PC-Uhr ab, in Ordnung", tag="ok")
+            elif typ[d] == "tm550":
+                if self.message_dialog("ask", "Uhr stellen", f"Die Uhr des TM550 weicht {off:+.1f} s von der "
+                                       "PC-Uhr ab. TM550 nach der PC-Uhr stellen?"):
+                    self.tm_set_clock(d, 0.0, "PC-Uhr")
+            else:
+                self.log(f"Uhren prüfen: {name[d]} weicht {off:+.1f} s von der PC-Uhr ab. Am CP 545 stellen: "
+                         "F › Synchronisation › Manuell (kein Lauf offen), Uhrzeit eingeben, Impuls auf E1.",
+                         tag="warn")
+            return
+        diff = dc["B"]["off"] - dc["A"]["off"]
+        if abs(diff) <= 0.2:
+            self.log(f"Uhren prüfen: Haupt- und Reserve-Gerät stimmen überein ({diff:+.2f} s), Hauptgerät "
+                     f"{dc['A']['off']:+.1f} s zur PC-Uhr", tag="ok")
+            self.add_ticker("Uhren von Haupt- und Reserve-Gerät stimmen überein", "ziel")
+            return
+        # TM550 nach dem anderen Geraet stellen (die Uhr des CP 545 laesst sich nicht fernstellen)
+        if typ["B"] == "tm550":
+            target, ref = "B", "A"
+        elif typ["A"] == "tm550":
+            target, ref = "A", "B"
+        else:
+            self.log(f"Uhren prüfen: die Reserve weicht {diff:+.2f} s vom Hauptgerät ab. Beide CP 545 von Hand "
+                     "stellen: an beiden F › Synchronisation › Manuell, dieselbe Uhrzeit eingeben, dann ein "
+                     "gemeinsamer Impuls auf E1 (beide Geräte an derselben Buchse). Danach «Uhren prüfen».",
+                     tag="warn")
+            return
+        if self.message_dialog("ask", "Uhr stellen", f"Die Uhren weichen {diff:+.2f} s voneinander ab. "
+                               f"TM550 ({name[target]}) nach der Uhr von {name[ref]} stellen?"):
+            self.tm_set_clock(target, dc[ref]["off"], name[ref], day=dc[ref]["day"])
+
+    def tm_set_clock(self, dev, ref_off, ref_name, day=None):
+        """TM550 stellen: «#WC 007 02 HH:MM DD/MM/YY» setzt die Uhr beim Empfang auf HH:MM:00 (Gerätetest X,
+        26.11.2026). Gesendet genau zum Minutenwechsel der Referenzuhr (PC-Uhr + ref_off)."""
+        if self.race_active():
+            self.log("Uhr stellen: während des Wettkampfs nicht möglich", tag="warn")
+            return
+        ref_now = local_abs() + ref_off
+        m = (int(ref_now // 60) + 1) * 60
+        if m - ref_now < 3:
+            m += 60
+        latency = 0.03 if self.eth_mode() else 0.06
+        delay = m - ref_now - latency
+        tod = m % 86400
+        d = (EPOCH_2000 + datetime.timedelta(days=int(day if day else m // 86400)))
+        cmd = f"#WC 007 02 {tod // 3600:02d}:{tod % 3600 // 60:02d} {d.strftime('%d/%m/%y')}"
+        name = self.dev_name() if dev == "A" else "Reserve-Gerät"
+        self.log(f"{name}: Uhr wird in {delay:.0f} s auf {tod // 3600:02d}:{tod % 3600 // 60:02d}:00 "
+                 f"({ref_name}) gestellt", tag="ok")
+
+        def send():
+            if self.race_active():
+                self.log(f"{name}: Uhr nicht gestellt, inzwischen läuft der Wettkampf", tag="warn")
+                return
+            link = self.cp if dev == "A" else self.cp_b
+            if link is None or not link.connected:
+                self.log(f"{name}: Uhr nicht gestellt (Verbindung weg)", tag="warn")
+                return
+            DIAG.info(f"CP {dev}> {cmd}")
+            link.send(cmd)
+            self.dev_clock.pop(dev, None)
+            self.b_offset, self.b_offsets = None, []
+            self.log(f"{name}: Uhr gestellt ({cmd}). Zur Kontrolle nochmals einen Zielimpuls auslösen.", tag="ok")
+            self.root.after(1500, lambda: self.clock_check_start(auto=True))
+
+        self.root.after(max(0, int(delay * 1000)), send)
+
+    def update_clock_button(self):
+        btn = getattr(self, "btn_clock", None)
+        if btn is None:
+            return
+        try:
+            busy = self.race_active()
+            btn.configure(state="disabled" if busy else "normal")
+            self.lbl_clock_hint.configure(
+                text="Während des Wettkampfs gesperrt (Boot auf der Strecke oder Resultate vorhanden)." if busy
+                else ("Wartet auf einen Zielimpuls (E4) an allen verbundenen Geräten." if getattr(
+                    self, "_clock_check", False) else "Vergleicht die Uhren mit einem Testimpuls am Ziel, stellt "
+                                                      "einen TM550 nach dem CP 545 bzw. der PC-Uhr."))
+        except tk.TclError:
+            pass
 
     def backup_pair(self, a, b):
         if a.get("nr") and b.get("nr") and a["nr"] != b["nr"] and self.backup_preload_ok():
@@ -9110,6 +9368,9 @@ class LiveRankingApp:
         self.cp_rx_lines = 0  # Zeilen seit dem Verbinden: fuer den Hinweis bei stummer USB-Verbindung
         self._usb_silent_told = False
         self._cp_finish_dirty = True  # naechste Zielnummer am Geraet unbekannt: beim ersten Abgleich schreiben
+        if not again and not getattr(self, "_clock_auto_a", False):  # erstes Verbinden: Uhren pruefen
+            self._clock_auto_a = True
+            self.root.after(6500, lambda: self.clock_check_start(auto=True))
         self.set_connected(True, f"CP {ip} verbunden")
         self.refresh_conn_head()
         if again:
@@ -9642,6 +9903,10 @@ class LiveRankingApp:
                 info["day"] = pc_day
                 info["abs"] = info["day"] * 86400 + info["tod"]
         self.raw_log(dev, raw)
+        if (info["kind"] == "time" and info["type"] == "TN" and info["seq"] == 0 and info["nr"] == 0
+                and not info.get("answer")):
+            self.on_device_sync(dev, info)  # TM550: Zeile beim Synchronisieren (Seq 0), kein Impuls
+            return
         if dev == "B" and info["kind"] in ("open", "close"):
             self.cp_b_mode = info.get("mode", "") if info["kind"] == "open" else ""
             self.cp_b_open = info["kind"] == "open"
@@ -9665,6 +9930,9 @@ class LiveRankingApp:
             self.root.after(1200, lambda: self.device_lock_read("B"))
             self.root.after(2000, lambda: self.device_blocking_write(("B",)))
             self.log(f"Reserve-Gerät: {info['type']} Nr {info['serial']} {info['version']}".strip(), tag="ok")
+            if not getattr(self, "_clock_auto_b", False):  # erstes Verbinden der Reserve: Uhren pruefen
+                self._clock_auto_b = True
+                self.root.after(2500, lambda: self.clock_check_start(auto=True))
             return
         if dev == "A" and self.cp_backlog is not None:
             if info["kind"] == "serial":
@@ -9678,6 +9946,8 @@ class LiveRankingApp:
                 return
         if info["kind"] == "time" and not info.get("answer") and info["type"] in ("TN", "T+", "T="):
             self.check_device_clock(info, dev)
+            if info["type"] == "TN":
+                self.note_dev_clock(info, dev)
             if dev == "A":
                 self.cp_last_imp = time.time()
         quiet = info["kind"] in ("ack", "param", "serial", "sync")
@@ -10202,7 +10472,10 @@ class LiveRankingApp:
             self.log(f"Zielimpuls {tod} ungültig (Prellzeit, Doppelkontakt)", tag=self.bounce_tag(CH_FINISH, abs_t))
             return
         if not self.course:
-            self.log(f"Zielimpuls {tod}: kein Boot auf der Strecke", tag="warn")
+            if getattr(self, "_clock_check", False):
+                self.log(f"Zielimpuls {tod}: Testimpuls für den Uhrenvergleich", tag="ok")
+            else:
+                self.log(f"Zielimpuls {tod}: kein Boot auf der Strecke", tag="warn")
             return
         skey = self.course[0][2]
         st = self.cp_recs[skey]
@@ -10438,6 +10711,7 @@ class LiveRankingApp:
 
     def course_changed(self):
         self.course = self.compute_course()
+        self.update_clock_button()
         self.update_eth_live()
         self.update_panels()
         self.cp_sync_finish()
