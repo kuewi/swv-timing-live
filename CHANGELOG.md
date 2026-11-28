@@ -1,5 +1,11 @@
 # Änderungen
 
+## v1.23.1 (28.11.2026)
+Aus den Fehlerberichten vom 27.11.2026:
+- Seitenleiste anpinnen (vom Menü oben): das Fenster kippte dauernd zwischen zwei Breiten hin und her, alles zuckte. «Empfangene Daten» behielt die Breite aus der Spalte links; jetzt zurückgesetzt, die Felder werden beim Wechsel neu verteilt, der Scrollbalken der Ranglisten springt nicht mehr ein und aus
+- CP-Suche über Ethernet fragt auch Port 13500 (der CP 545 antwortete nur dort, obwohl er pingbar war). Der Hinweis «Kein Gerät gefunden» mit Menüweg erscheint jetzt wirklich
+- «Verbindung» wird mit zwei Geräten erst grün, wenn «Uhren prüfen» Übereinstimmung meldet; bis dahin orange mit «Uhren nicht abgeglichen». Ist das Ziel gesperrt, weist «Uhren prüfen» darauf hin (der Testimpuls kommt sonst nicht an)
+
 ## v1.23.0 (27.11.2026)
 Aus den Gerätetests vom 26. und 27.11.2026:
 - Uhren prüfen: beim ersten Verbinden von Haupt- und Reserve-Gerät fordert die App einen Testimpuls am Ziel (E4) an und vergleicht die Uhren (Gerät gegen PC-Uhr, Reserve gegen Hauptgerät). Weicht ein TM550 ab, stellt die App ihn nach Rückfrage mit `#WC 007 02` genau zum Minutenwechsel nach der Uhr des CP 545 bzw. der PC-Uhr und prüft danach nochmals. Der CP 545 lässt sich nicht fernstellen (auch nicht über RS232 Master/Slave): die App zeigt die Anleitung für F › Synchronisation. Knopf «Uhren prüfen» unter Verbindung, während des Wettkampfs gesperrt

@@ -74,7 +74,7 @@ except ImportError:
 # Konfiguration
 # --------------------------------------------------------------------------- #
 APP_TITLE = "SWV Live-Ranking  |  TAG Heuer CP 545"
-APP_VERSION = "1.23.0"
+APP_VERSION = "1.23.1"
 ORANGE = "#D9730D"   # Update geladen, wartet auf Installation
 APP_NAME = "SWV Live-Ranking"
 DEFAULT_BAUD = 9600
@@ -2638,6 +2638,11 @@ def scan_cps(hosts=None, port=None):
     def one(h):
         info = probe_cp(h, port)
         DIAG.debug(f"Suche {h}:{port}: {info or 'keine Antwort'}")
+        if not info and port != CP_DATA_PORT and not os.environ.get("SWV_CP_HOSTS"):
+            # CP 545 VB16 antwortet teils nur auf dem Datenport 13500 (Fehlerbericht 27.11.2026: pingbar,
+            # Gerätetest über 13500 in Ordnung, Suche über 7000 ohne Antwort). Verbunden wird ohnehin auf 13500.
+            info = probe_cp(h, CP_DATA_PORT)
+            DIAG.debug(f"Suche {h}:{CP_DATA_PORT}: {info or 'keine Antwort'}")
         if not info and port != TM_ALT_PORT and not os.environ.get("SWV_CP_HOSTS"):
             info = probe_cp(h, TM_ALT_PORT)   # TM550 mit Werkseinstellung Port 2101
             if info:
@@ -2649,8 +2654,9 @@ def scan_cps(hosts=None, port=None):
     threads = [threading.Thread(target=one, args=(h,), daemon=True) for h in hosts]
     for t in threads:
         t.start()
+    end = time.time() + 10  # je Adresse bis drei Ports (7000, 13500, 2101)
     for t in threads:
-        t.join(4)
+        t.join(max(0.1, end - time.time()))
     return sorted(found, key=lambda x: tuple(int(p) if p.isdigit() else 0
                                              for p in x[0].split(":")[0].split(".")))
 
@@ -5250,7 +5256,11 @@ class LiveRankingApp:
         """2 = Haupt- und Reserve-Geraet verbunden, 1 = eines, 0 = keines."""
         main = (self.cp is not None and self.cp.connected) or \
                (self.reader is not None and getattr(self, "rs_rx_seen", True))
-        return int(bool(main)) + int(bool(self.backup_connected()))
+        lvl = int(bool(main)) + int(bool(self.backup_connected()))
+        # grün erst, wenn die Uhren von Haupt- und Reserve-Gerät übereinstimmen (Fehlerbericht 27.11.2026)
+        if lvl == 2 and not getattr(self, "_clocks_ok", False):
+            lvl = 1
+        return lvl
 
     def refresh_conn_color(self):
         lvl = self.connection_level()
@@ -5312,6 +5322,9 @@ class LiveRankingApp:
         self.log_spacer.configure(width=self.side_w if in_side else 1)
         self.log_box.fit = in_side  # als Feld: Textbereich fuellt die Karte
         if in_side:
+            # Breite aus der Spalte links (Menue oben) nicht mitnehmen: sonst ist die Spalte unter der Seitenleiste
+            # breiter als die Leiste und das Fenster kippt hin und her (Fehlerbericht 27.11.2026)
+            self.log_box.configure(width=1)
             self.log_box.pack_configure(fill="x", expand=False, padx=10, pady=(6, 10))
         else:
             self.log_box.pack_configure(fill="both", expand=True, padx=6, pady=6)
@@ -5338,6 +5351,13 @@ class LiveRankingApp:
         return "Empfangene Daten"
 
     def apply_sidebar_mode(self):
+        self._apply_sidebar_mode()
+        # Spalte links (Menue oben) und Seitenleiste ordnen die Felder verschieden an: neu verteilen
+        # (Fehlerbericht 27.11.2026: nach dem Anpinnen blieb die Anordnung des Menues oben, alles zuckte)
+        if hasattr(self, "panel_next"):
+            self.apply_show_settings()
+
+    def _apply_sidebar_mode(self):
         if not self.settings["sidebar_pinned"]:  # frueher: versenkt am linken Rand -> jetzt Menue oben
             self.settings["sidebar_pinned"] = True
             self.settings["nav_layout"] = "top"
@@ -6908,6 +6928,11 @@ class LiveRankingApp:
         w, h = self.cards_canvas.winfo_width(), self.cards_canvas.winfo_height()
         if w < 50 or h < 50:
             return
+        # Entscheid ohne Scrollbalken rechnen: sonst kippt es hin und her (mit Balken schmaler -> kein Scrollen
+        # -> Balken weg -> breiter -> Scrollen ...; Fehlerbericht 27.11.2026 «alles zuckt»)
+        sbw = self.cards_sb.winfo_reqwidth()
+        if self.cards_sb.winfo_manager():
+            w += sbw
         n = max(1, len(self.cards))
         self._row_tpl = self.row_template()
         cols = [c for c in (3, 2, 1) if c <= n] or [1]
@@ -6933,6 +6958,8 @@ class LiveRankingApp:
             px = min(widths[nc], target)
             inner_h = max(h, int(rows * (self.card_height(px) + 12)))
         scrolling = inner_h > h + 1
+        if scrolling:
+            w -= sbw
         if nc != self.card_cols:
             self.card_cols = nc
             self.layout_cards()
@@ -8476,14 +8503,15 @@ class LiveRankingApp:
                     # zweiter Versuch: Windows braucht nach der Umstellung manchmal einige Sekunden
                     time.sleep(2)
                     found = scan_cps(hosts)
-        put("eth_found", found)
         hint = (f"Kein Gerät gefunden ({hosts[0]} bis {hosts[-1]}). CP 545: Ethernet nach jedem Einschalten "
                 "wieder einschalten (F › Einstellungen › Ethernet › Std Connexion), Adresse unter «User "
                 "Connexion» prüfen. Kabel eingesteckt? TM550: IP und Port unter Communication › Ethernet prüfen.")
         if not connect:
             if not found:
-                put("eth_log", (hint, "warn"))
+                put("eth_log", (hint, "warn"))  # vor eth_found: danach gilt der Suchauftrag als beendet
+            put("eth_found", found)
             return
+        put("eth_found", found)
         if not found:
             put("eth_fail", hint)
             return
@@ -8645,6 +8673,8 @@ class LiveRankingApp:
             off = getattr(self, "b_offset", None)
             extra = f"Reserve {getattr(self, 'backup_state', '')}" + (f", Versatz {off:+.2f} s"
                                                                        if off is not None else "")
+            if self.backup_connected() and not getattr(self, "_clocks_ok", False):
+                extra += ", Uhren nicht abgeglichen"
         if self.cp is not None and self.cp.connected:
             self.set_conn_status(f"{self.dev_name()} {self.cp.host} verbunden" + (f" · {extra}" if extra else ""),
                                  GREEN_TEXT)
@@ -9057,6 +9087,7 @@ class LiveRankingApp:
         dc[dev] = {"off": off, "t": time.time(), "day": info.get("day_raw", info["day"])}
         if prev and abs(prev["off"] - off) > 2 and dev == "B" and self.b_offset is not None:
             self.b_offset, self.b_offsets = None, []  # Reserve-Uhr verstellt: Versatz neu bestimmen
+            self.set_clocks_ok(False)
         if getattr(self, "_clock_check", False):
             self.root.after(300, self.clock_evaluate)
 
@@ -9070,6 +9101,7 @@ class LiveRankingApp:
             "off": (info["tod"] - local_abs() % 86400 + 43200) % 86400 - 43200, "t": time.time(),
             "day": info.get("day_raw", info["day"])}
         self.b_offset, self.b_offsets = None, []
+        self.set_clocks_ok(False)
         if dev == "A" and self.cp_run and any(k[0] == "A" and k[1] == self.cp_run for k in self.cp_recs):
             self.archive_run(self.cp_run, "Uhr synchronisiert")
         if dev == "B" and getattr(self, "b_seq_last", {}):
@@ -9090,6 +9122,9 @@ class LiveRankingApp:
             return
         self._clock_check, self._clock_check_t = True, time.time()
         both = len(devs) == 2
+        if self.tset().get("lock_finish"):
+            self.log("Uhren prüfen: das Ziel ist gesperrt, der Testimpuls kommt so nicht an. «Ziel sperren» "
+                     "für den Testimpuls ausschalten.", tag="warn")
         self.log("Uhren prüfen: " + ("an Haupt- und Reserve-Gerät gemeinsam" if both else "am Gerät")
                  + " einen Zielimpuls (E4) auslösen, kein Boot auf der Strecke. Der Impuls wird nicht gewertet.",
                  tag="warn")
@@ -9128,6 +9163,7 @@ class LiveRankingApp:
             return
         diff = dc["B"]["off"] - dc["A"]["off"]
         if abs(diff) <= 0.2:
+            self.set_clocks_ok(True)
             self.log(f"Uhren prüfen: Haupt- und Reserve-Gerät stimmen überein ({diff:+.2f} s), Hauptgerät "
                      f"{dc['A']['off']:+.1f} s zur PC-Uhr", tag="ok")
             self.add_ticker("Uhren von Haupt- und Reserve-Gerät stimmen überein", "ziel")
@@ -9178,10 +9214,17 @@ class LiveRankingApp:
             link.send(cmd)
             self.dev_clock.pop(dev, None)
             self.b_offset, self.b_offsets = None, []
+            self.set_clocks_ok(False)
             self.log(f"{name}: Uhr gestellt ({cmd}). Zur Kontrolle nochmals einen Zielimpuls auslösen.", tag="ok")
             self.root.after(1500, lambda: self.clock_check_start(auto=True))
 
         self.root.after(max(0, int(delay * 1000)), send)
+
+    def set_clocks_ok(self, ok):
+        if bool(ok) != getattr(self, "_clocks_ok", False):
+            self._clocks_ok = bool(ok)
+            self.refresh_conn_head()
+            self.refresh_conn_color()
 
     def update_clock_button(self):
         btn = getattr(self, "btn_clock", None)
@@ -9932,6 +9975,7 @@ class LiveRankingApp:
             self.log(f"Reserve-Gerät: {info['type']} Nr {info['serial']} {info['version']}".strip(), tag="ok")
             if not getattr(self, "_clock_auto_b", False):  # erstes Verbinden der Reserve: Uhren pruefen
                 self._clock_auto_b = True
+                self.set_clocks_ok(False)  # Uhren erst nach der Pruefung als abgeglichen (Wiederverbinden: bleibt)
                 self.root.after(2500, lambda: self.clock_check_start(auto=True))
             return
         if dev == "A" and self.cp_backlog is not None:

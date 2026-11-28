@@ -36,6 +36,8 @@ B = m.SimCP(device="tm550", fw="1.48", clock_offset=-15.7)
 app.var_conn.set("ethernet"); app.on_conn_mode_change(); pump(0.1)
 app.connect_cp("127.0.0.1", A.port); pump(3)
 app.start_backup(f"usb:socket://127.0.0.1:{B.port}"); pump(9)
+check("Verbindung orange, solange die Uhren nicht abgeglichen sind", app.connection_level() == 1
+      and "Uhren nicht abgeglichen" in app._conn_status[0])
 check("Knopf «Uhren prüfen» aktiv", str(app.btn_clock._o["state"]) != "disabled")
 check("Uhrenprüfung beim ersten Verbinden gestartet", getattr(app, "_clock_check", False)
       and "Uhren prüfen" in logs())
@@ -54,6 +56,7 @@ check("#WC 007 02 an den TM550 geschickt", any(c.startswith("#WC 007 02") for c 
 check("TM550-Uhr jetzt nahe der CP-Uhr", abs(B.clock_offset - A.clock_offset) < 0.3)
 A.impulse(m.CH_FINISH); B.impulse(m.CH_FINISH); pump(2)
 check("Kontrolle: Uhren stimmen überein", "stimmen überein" in logs())
+check("Verbindung jetzt grün", app.connection_level() == 2)
 # Wettkampf: Knopf gesperrt
 A.start(); B.start(); pump(2)
 check("Knopf während Wettkampf gesperrt", str(app.btn_clock._o["state"]) == "disabled")
